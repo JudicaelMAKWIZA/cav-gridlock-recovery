@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cav-gridlock-recovery"
+version = "0.1.0"
+description = "Systeme autonome de detection et de resolution active des conflits routiers dans un reseau de vehicules connectes et automatises."
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
