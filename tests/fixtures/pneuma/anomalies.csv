@@ -1,4 +1,4 @@
 track_id; type; traveled_d; avg_speed; lat; lon; speed; lon_acc; lat_acc; time
 same; odd; 1; 1; 91; 23; -3; -1; -1; 2; 37; 23; NaN; 0; 0; 2; 37; 23; 1; 0; 0; 1
 same; odd; 1; 1; 37; 23; 1; 0; 0;
-broken; car; 1; 1; 37; 23; 1
+broken; Car; 1; 1; 37; 23; 1

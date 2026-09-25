@@ -39,7 +39,9 @@ class QualificationTests(unittest.TestCase):
             report = (output / "qualification_report.md").read_text(encoding="utf-8")
             self.assertIn("Couverture temporelle observée", report)
             self.assertIn("Emprise géographique recevable", report)
-            self.assertIn("car : 1", report)
+            self.assertIn("Car : 1", report)
+            self.assertIn("## Exclusions", report)
+            self.assertIn("## Conclusion", report)
 
     def test_anomalies_preserved_and_reconciled(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -54,7 +56,7 @@ class QualificationTests(unittest.TestCase):
             with (output / "issues.csv").open(encoding="utf-8", newline="") as handle:
                 issues = list(csv.DictReader(handle))
             codes = {row["code"] for row in issues}
-            self.assertTrue({"STRUCTURE_ERROR", "DUPLICATE_TRACK_ID", "INVALID_NUMBER", "NEGATIVE_SPEED", "DUPLICATE_TIME", "NON_MONOTONIC_TIME"} <= codes)
+            self.assertTrue({"STRUCTURE_ERROR", "DUPLICATE_TRACK_ID", "INVALID_NUMBER", "NEGATIVE_SPEED", "DUPLICATE_TIME", "NON_MONOTONIC_TIME", "UNKNOWN_CATEGORY"} <= codes)
             with (output / "trajectories.csv").open(encoding="utf-8", newline="") as handle:
                 self.assertEqual(len(list(csv.DictReader(handle))), 3)
 
@@ -86,6 +88,7 @@ class QualificationTests(unittest.TestCase):
             self.assertEqual(summary["categories"], {"unknown": 1})
             self.assertEqual(summary["issues_by_code"]["MISSING_TRACK_ID"], 1)
             self.assertEqual(summary["issues_by_code"]["INVALID_NUMBER"], 1)
+            self.assertEqual(summary["issues_by_code"]["UNKNOWN_CATEGORY"], 1)
             with gzip.open(output / "observations.csv.gz", "rt", encoding="utf-8", newline="") as handle:
                 row = next(csv.DictReader(handle))
             self.assertEqual(row["lat"], "100.0")
@@ -103,6 +106,10 @@ class QualificationTests(unittest.TestCase):
             two_manifest = json.loads((second / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(one_manifest["source"], two_manifest["source"])
             self.assertEqual(one_manifest["software"]["code_state"], two_manifest["software"]["code_state"])
+            self.assertEqual(one_manifest["source"]["filename"], "five_observations.csv")
+            self.assertNotIn("path", one_manifest["source"])
+            self.assertNotIn("input", one_manifest["parameters"])
+            self.assertNotIn("output_dir", one_manifest["parameters"])
 
     def test_cli_is_independent_of_sumo(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -119,3 +126,10 @@ class QualificationTests(unittest.TestCase):
             self.assertEqual(refused.returncode, 2)
             unusable = subprocess.run([sys.executable, "scripts/qualify_pneuma.py", "--input", str(FIXTURES / "no_usable.csv"), "--output-dir", str(Path(directory) / "unusable")], cwd=ROOT, text=True, capture_output=True)
             self.assertEqual(unusable.returncode, 2)
+
+    def test_cli_returns_one_for_technical_output_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_file = Path(directory) / "not-a-directory"
+            output_file.write_text("occupied", encoding="utf-8")
+            result = subprocess.run([sys.executable, "scripts/qualify_pneuma.py", "--input", str(FIXTURES / "known.csv"), "--output-dir", str(output_file)], cwd=ROOT, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 1, result.stderr)
