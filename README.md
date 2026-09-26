@@ -14,3 +14,39 @@ Le dossier de sortie doit être nouveau ou vide. Il reçoit `manifest.json`,
 `.gitignore`. Un code de sortie `0` signifie qu'au moins un groupe est minimalement
 utilisable ; `2` signale une entrée refusée ou un fichier inutilisable ; `1` une erreur
 technique. Les diagnostics signalent les anomalies, sans les corriger.
+
+## CGR-E02 — Profil d'un secteur pNEUMA
+
+CGR-E02 réutilise exclusivement les exports normalisés de CGR-E01. Il associe
+prudemment les déplacements aux branches du secteur figé, détecte les portes
+franchies, reconstruit des visites et produit des comptages et proportions avec
+leur couverture et leurs dénominateurs. Il ne réalise ni map-matching exhaustif,
+ni reconstruction des origines-destinations réelles, ni simulation.
+
+```bash
+python scripts/profile_pneuma.py \
+  --source <20181024_d3_0830_0900.csv> \
+  --cgr-e01-dir outputs/empirical/CGR-E01/20181024_d3_0830_0900 \
+  --sector-seed data/external/osm/cgr_e02_c2_sector_seed.json \
+  --geometry-source data/external/osm/cgr_e02_roads_2018.osm \
+  --runtime-config <configuration-runtime.json> \
+  --output-dir outputs/empirical/CGR-E02/<execution>
+```
+
+La configuration d'exécution utilise le schéma `CGR-E02-runtime-1`. Elle doit
+déclarer explicitement les seuils `max_distance_m`,
+`max_heading_difference_deg`, `ambiguity_margin_m`,
+`minimum_displacement_m`, `gate_hysteresis_m`,
+`gate_rearm_distance_m`, `max_time_gap_s` et `max_space_gap_m`. La couverture
+est fournie par porte sous forme d'intervalles `[début, fin]`, ou par la chaîne
+`"unknown"`. Une couverture inconnue ne produit jamais un débit nul : le débit
+reste indéfini. Les seuils de diagnostic de présélection ne sont pas repris
+automatiquement. La configuration doit aussi contenir une justification des
+seuils, confirmer que la référence manuelle n'a pas servi à leur réglage et
+documenter la preuve — ou l'absence de preuve — de couverture pour chaque porte.
+
+Les résultats réels sont privés dans `outputs/`. Le manifeste vérifie et
+enregistre les empreintes de la source, des exports CGR-E01, du seed, de la
+géométrie et de la configuration utilisée. `validation_reference.csv` est créé
+comme gabarit vide : son annotation manuelle indépendante reste une étape de
+validation scientifique, distincte du pipeline automatique.

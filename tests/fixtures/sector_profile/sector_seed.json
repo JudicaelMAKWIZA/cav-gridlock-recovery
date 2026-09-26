@@ -1,0 +1,33 @@
+{
+  "schema": "CGR-E02-sector-seed-1",
+  "status": "synthetic_test_geometry",
+  "source": {
+    "pneuma_file": "synthetic.csv",
+    "pneuma_sha256": "replaced-by-test"
+  },
+  "geometry": {
+    "osm_file": "synthetic.osm",
+    "osm_sha256": "replaced-by-test",
+    "crs_source": "EPSG:4326",
+    "metric_crs": "selected_by_implementation"
+  },
+  "sector": {
+    "id": "SYNTHETIC_CROSS",
+    "center_osm_node_id": 1,
+    "center": {"lat": 0.0, "lon": 0.0}
+  },
+  "branches": [
+    {"id": "N", "name": "Nord", "role": "entry", "oneway": true},
+    {"id": "W", "name": "Ouest", "role": "entry", "oneway": true},
+    {"id": "E", "name": "Est", "role": "exit", "oneway": true},
+    {"id": "S", "name": "Sud", "role": "exit", "oneway": true}
+  ],
+  "gates": [
+    {"id": "N", "center": {"lat": 0.000179864, "lon": 0.0}, "length_m": 16.0, "endpoints": [{"lat": 0.000179864, "lon": -0.000071946}, {"lat": 0.000179864, "lon": 0.000071946}]},
+    {"id": "W", "center": {"lat": 0.0, "lon": -0.000179864}, "length_m": 16.0, "endpoints": [{"lat": -0.000071946, "lon": -0.000179864}, {"lat": 0.000071946, "lon": -0.000179864}]},
+    {"id": "E", "center": {"lat": 0.0, "lon": 0.000179864}, "length_m": 16.0, "endpoints": [{"lat": 0.000071946, "lon": 0.000179864}, {"lat": -0.000071946, "lon": 0.000179864}]},
+    {"id": "S", "center": {"lat": -0.000179864, "lon": 0.0}, "length_m": 16.0, "endpoints": [{"lat": -0.000179864, "lon": 0.000071946}, {"lat": -0.000179864, "lon": -0.000071946}]}
+  ],
+  "aggregation": {"window_s": 60.0, "interval_convention": "[a,b)", "origin_s": 0.0},
+  "admissibility": {"minimum_common_exposure_s": 60.0}
+}
