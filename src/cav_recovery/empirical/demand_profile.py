@@ -33,6 +33,9 @@ from .sector import (
 
 SCHEMA_VERSION = "CGR-E02-1"
 EXPECTED_E01_SCHEMA = "CGR-E01-1"
+E01_TRAJECTORY_FIELDS = {"source_line", "track_id", "type", "traveled_d_m", "avg_speed_kmh", "avg_speed_mps", "structural_status", "observation_count", "diagnostic_count"}
+E01_OBSERVATION_FIELDS = {"source_line", "group_index", "track_id", "type", "lat", "lon", "speed_kmh", "speed_mps", "lon_acc_mps2", "lat_acc_mps2", "time_s", "all_numeric_finite", "coordinate_in_range"}
+E01_ISSUE_FIELDS = {"source_line", "group_index", "field", "code", "severity", "source_value", "message"}
 OUTPUTS = (
     "manifest.json",
     "sector.geojson",
@@ -59,6 +62,20 @@ class CoverageInterval:
     end_s: float
 
 
+CrossingKey = tuple[int, int, str, str, int, int]
+
+
+@dataclass(frozen=True)
+class BranchEvidence:
+    """Association de branche localisée dans le temps et dans une continuité."""
+
+    continuity_id: int
+    start_s: float
+    end_s: float
+    status: str
+    branch_id: str | None
+
+
 @dataclass(frozen=True)
 class Visit:
     """Visite reconstruite à partir d'événements effectivement observés."""
@@ -75,6 +92,8 @@ class Visit:
     status: str
     route: tuple[str, ...]
     reason: str
+    entry_crossing_key: CrossingKey | None = None
+    exit_crossing_key: CrossingKey | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +144,21 @@ def _read_json(path: Path, label: str) -> dict:
     return value
 
 
+def _csv_header(path: Path, compressed: bool = False) -> set[str]:
+    opener = gzip.open if compressed else Path.open
+    if compressed:
+        handle = opener(path, "rt", encoding="utf-8", newline="")
+    else:
+        handle = opener(path, "r", encoding="utf-8", newline="")
+    with handle:
+        return set(csv.DictReader(handle).fieldnames or ())
+
+
+def _count_gzip_csv_rows(path: Path) -> int:
+    with gzip.open(path, "rt", encoding="utf-8", newline="") as handle:
+        return sum(1 for _ in csv.DictReader(handle))
+
+
 def _validate_inputs(source: Path, e01_directory: Path, seed_path: Path, geometry_path: Path) -> tuple[dict, dict[str, str]]:
     """Vérifie les identités source, CGR-E01 et géométrie avant calcul."""
     if not source.is_file():
@@ -159,6 +193,52 @@ def _validate_inputs(source: Path, e01_directory: Path, seed_path: Path, geometr
     summary = _read_json(e01_directory / "quality_summary.json", "Bilan CGR-E01")
     if summary.get("schema_version") != EXPECTED_E01_SCHEMA or summary.get("status") != "complete":
         raise ProfileInputError("Le bilan CGR-E01 est incompatible ou incomplet.")
+    headers = {
+        "trajectories.csv": (_csv_header(e01_directory / "trajectories.csv"), E01_TRAJECTORY_FIELDS),
+        "observations.csv.gz": (_csv_header(e01_directory / "observations.csv.gz", compressed=True), E01_OBSERVATION_FIELDS),
+        "issues.csv": (_csv_header(e01_directory / "issues.csv"), E01_ISSUE_FIELDS),
+    }
+    for name, (actual, expected) in headers.items():
+        if not expected.issubset(actual):
+            missing = ", ".join(sorted(expected - actual))
+            raise ProfileInputError(f"En-tête CGR-E01 incompatible pour {name} ; champs absents : {missing}.")
+    counts = summary.get("counts")
+    if not isinstance(counts, dict):
+        raise ProfileInputError("Le bilan CGR-E01 ne contient pas les comptages de réconciliation.")
+    required_counts = (
+        "candidate_lines",
+        "decomposable_lines",
+        "structure_excluded_lines",
+        "trajectory_export_rows",
+        "expected_groups_decomposable_lines",
+        "observation_export_rows",
+        "all_numeric_finite_groups",
+        "numeric_invalid_groups",
+        "distinct_nonempty_track_ids",
+    )
+    if any(type(counts.get(name)) is not int or counts[name] < 0 for name in required_counts):
+        raise ProfileInputError("Le bilan CGR-E01 contient un comptage absent ou invalide.")
+    if not isinstance(counts.get("duplicate_track_ids"), list):
+        raise ProfileInputError("Le bilan CGR-E01 ne décrit pas correctement les identifiants dupliqués.")
+    trajectory_rows = _count_csv_rows(e01_directory / "trajectories.csv")
+    observation_rows = _count_gzip_csv_rows(e01_directory / "observations.csv.gz")
+    reconciliations = (
+        (trajectory_rows, counts.get("trajectory_export_rows"), "trajectoires exportées"),
+        (observation_rows, counts.get("observation_export_rows"), "observations exportées"),
+        (observation_rows, counts.get("expected_groups_decomposable_lines"), "groupes attendus"),
+        (counts.get("candidate_lines"), trajectory_rows, "lignes candidates"),
+        (counts.get("decomposable_lines", 0) + counts.get("structure_excluded_lines", 0), counts.get("candidate_lines"), "bilan structurel"),
+        (counts.get("all_numeric_finite_groups", 0) + counts.get("numeric_invalid_groups", 0), observation_rows, "bilan numérique"),
+        (counts.get("distinct_nonempty_track_ids") <= trajectory_rows, True, "identifiants distincts"),
+    )
+    for actual, expected, label in reconciliations:
+        if actual != expected:
+            raise ProfileInputError(f"Réconciliation CGR-E01 incohérente : {label}.")
+    categories = summary.get("categories")
+    if not isinstance(categories, dict) or any(type(value) is not int or value < 0 for value in categories.values()):
+        raise ProfileInputError("Le bilan CGR-E01 ne décrit pas correctement les catégories.")
+    if sum(categories.values()) != trajectory_rows:
+        raise ProfileInputError("Réconciliation CGR-E01 incohérente : catégories de trajectoires.")
     return manifest, hashes
 
 
@@ -173,6 +253,7 @@ def load_runtime_configuration(path: str | Path, sector: Sector) -> RuntimeConfi
     try:
         parameters = AssociationParameters(
             max_distance_m=float(algorithm["max_distance_m"]),
+            max_branch_extent_m=float(algorithm["max_branch_extent_m"]),
             max_heading_difference_deg=float(algorithm["max_heading_difference_deg"]),
             ambiguity_margin_m=float(algorithm["ambiguity_margin_m"]),
             minimum_displacement_m=float(algorithm["minimum_displacement_m"]),
@@ -257,10 +338,9 @@ def iter_tracks(observations_path: str | Path) -> Iterator[list[TrackObservation
         yield current
 
 
-def _routes_by_continuity(observations: list[TrackObservation], sector: Sector, parameters: AssociationParameters) -> tuple[dict[int, tuple[str, ...]], set[int], Counter[str]]:
+def _routes_by_continuity(observations: list[TrackObservation], sector: Sector, parameters: AssociationParameters) -> tuple[dict[int, list[BranchEvidence]], Counter[str]]:
     projection = LocalMetricProjection(sector.center_lat, sector.center_lon)
-    routes: dict[int, list[str]] = defaultdict(list)
-    ambiguous: set[int] = set()
+    evidence: dict[int, list[BranchEvidence]] = defaultdict(list)
     association_counts: Counter[str] = Counter()
     continuity_id = 0
     for previous, current in zip(observations, observations[1:]):
@@ -270,15 +350,11 @@ def _routes_by_continuity(observations: list[TrackObservation], sector: Sector, 
             continue
         association = associate_segment(previous, current, sector, parameters)
         association_counts[association.status] += 1
-        if association.status == "ambiguous":
-            ambiguous.add(continuity_id)
-        elif association.status == "accepted" and association.branch_id is not None:
-            if not routes[continuity_id] or routes[continuity_id][-1] != association.branch_id:
-                routes[continuity_id].append(association.branch_id)
-    return {key: tuple(value) for key, value in routes.items()}, ambiguous, association_counts
+        evidence[continuity_id].append(BranchEvidence(continuity_id, previous.time_s, current.time_s, association.status, association.branch_id))
+    return dict(evidence), association_counts
 
 
-def reconstruct_visits(crossings: list[Crossing], routes: dict[int, tuple[str, ...]], ambiguous_continuities: set[int]) -> list[Visit]:
+def reconstruct_visits(crossings: list[Crossing], evidence: dict[int, list[BranchEvidence]]) -> list[Visit]:
     """Reconstruit des visites sans apparier des événements séparés par une rupture."""
     visits: list[Visit] = []
     by_continuity: dict[int, list[Crossing]] = defaultdict(list)
@@ -289,33 +365,70 @@ def reconstruct_visits(crossings: list[Crossing], routes: dict[int, tuple[str, .
     sequence = 0
     for continuity_id in sorted(by_continuity):
         pending: Crossing | None = None
+        previous_crossing_time_s: float | None = None
         for event in sorted(by_continuity[continuity_id], key=lambda item: (item.estimated_time_s, item.gate_id)):
             if event.role == "entry":
                 if pending is not None:
                     sequence += 1
-                    visits.append(_visit(sequence, pending, None, continuity_id, routes, ambiguous_continuities, "censored_exit", "nouvelle entrée avant sortie observable"))
+                    visits.append(_visit(sequence, pending, None, continuity_id, evidence, "censored_exit", "nouvelle entrée avant sortie observable", end_boundary_s=event.estimated_time_s))
                 pending = event
             elif pending is None:
                 sequence += 1
-                visits.append(_visit(sequence, None, event, continuity_id, routes, ambiguous_continuities, "censored_entry", "sortie observée sans entrée observable"))
+                visits.append(_visit(sequence, None, event, continuity_id, evidence, "censored_entry", "sortie observée sans entrée observable", start_boundary_s=previous_crossing_time_s))
             else:
                 sequence += 1
-                status = "ambiguous" if continuity_id in ambiguous_continuities else "classifiable"
-                reason = "association de branche ambiguë" if status == "ambiguous" else "entrée et sortie observées dans la même continuité"
-                visits.append(_visit(sequence, pending, event, continuity_id, routes, ambiguous_continuities, status, reason))
+                visits.append(_visit(sequence, pending, event, continuity_id, evidence, "classifiable", "entrée et sortie observées dans la même continuité"))
                 pending = None
+            previous_crossing_time_s = event.estimated_time_s
         if pending is not None:
             sequence += 1
-            visits.append(_visit(sequence, pending, None, continuity_id, routes, ambiguous_continuities, "censored_exit", "fin de continuité sans sortie observable"))
+            visits.append(_visit(sequence, pending, None, continuity_id, evidence, "censored_exit", "fin de continuité sans sortie observable"))
     return visits
 
 
-def _visit(sequence: int, entry: Crossing | None, exit_event: Crossing | None, continuity_id: int, routes: dict[int, tuple[str, ...]], ambiguous: set[int], status: str, reason: str) -> Visit:
+def _crossing_key(crossing: Crossing) -> CrossingKey:
+    return (crossing.source_line, crossing.continuity_id, crossing.role, crossing.gate_id, crossing.from_group_index, crossing.to_group_index)
+
+
+def _visit_ids_by_crossing(visits: list[Visit]) -> dict[CrossingKey, str]:
+    """Relie chaque franchissement exact à la visite qui le contient."""
+    result: dict[CrossingKey, str] = {}
+    for visit in visits:
+        for key in (visit.entry_crossing_key, visit.exit_crossing_key):
+            if key is None:
+                continue
+            if key in result:
+                raise RuntimeError("Un même franchissement a été affecté à plusieurs visites.")
+            result[key] = visit.visit_id
+    return result
+
+
+def _visit(sequence: int, entry: Crossing | None, exit_event: Crossing | None, continuity_id: int, evidence: dict[int, list[BranchEvidence]], status: str, reason: str, start_boundary_s: float | None = None, end_boundary_s: float | None = None) -> Visit:
     event = entry or exit_event
     assert event is not None
-    if continuity_id in ambiguous and status.startswith("censored"):
-        reason += " ; association de branche ambiguë présente"
-    return Visit(f"{event.source_line}:{sequence}", event.source_line, event.track_id, event.category, continuity_id, entry.gate_id if entry else None, exit_event.gate_id if exit_event else None, entry.estimated_time_s if entry else None, exit_event.estimated_time_s if exit_event else None, status, routes.get(continuity_id, ()), reason)
+    start_s = entry.estimated_time_s if entry else start_boundary_s if start_boundary_s is not None else -math.inf
+    end_s = exit_event.estimated_time_s if exit_event else end_boundary_s if end_boundary_s is not None else math.inf
+    selected = []
+    for item in evidence.get(continuity_id, ()):
+        midpoint_s = (item.start_s + item.end_s) / 2
+        lower_matches = midpoint_s >= start_s if entry is not None or start_boundary_s is None else midpoint_s > start_s
+        upper_matches = midpoint_s <= end_s if exit_event is not None or end_boundary_s is None else midpoint_s < end_s
+        if lower_matches and upper_matches:
+            selected.append(item)
+    route: list[str] = []
+    for item in selected:
+        if item.status == "accepted" and item.branch_id is not None and (not route or route[-1] != item.branch_id):
+            route.append(item.branch_id)
+    if any(item.status == "ambiguous" for item in selected):
+        status = "ambiguous"
+        reason = "association de branche ambiguë dans l'intervalle propre à la visite"
+    return Visit(
+        f"{event.source_line}:{sequence}", event.source_line, event.track_id, event.category,
+        continuity_id, entry.gate_id if entry else None, exit_event.gate_id if exit_event else None,
+        entry.estimated_time_s if entry else None, exit_event.estimated_time_s if exit_event else None,
+        status, tuple(route), reason, _crossing_key(entry) if entry else None,
+        _crossing_key(exit_event) if exit_event else None,
+    )
 
 
 def _windows(origin_s: float, end_s: float, width_s: float) -> list[tuple[float, float]]:
@@ -325,6 +438,79 @@ def _windows(origin_s: float, end_s: float, width_s: float) -> list[tuple[float,
     return [(origin_s + index * width_s, min(origin_s + (index + 1) * width_s, end_s)) for index in range(count)]
 
 
+def _intersect_intervals(first: list[CoverageInterval], second: tuple[CoverageInterval, ...]) -> list[CoverageInterval]:
+    intersections: list[CoverageInterval] = []
+    for left in first:
+        for right in second:
+            start = max(left.start_s, right.start_s)
+            end = min(left.end_s, right.end_s)
+            if end > start:
+                intersections.append(CoverageInterval(start, end))
+    return intersections
+
+
+def _common_exposure(coverage: dict[str, tuple[CoverageInterval, ...] | None]) -> float | None:
+    """Calcule l'intersection temporelle commune, ou indique qu'elle est inconnue."""
+    values = list(coverage.values())
+    if any(intervals is None for intervals in values):
+        return None
+    if not values:
+        return 0.0
+    common = list(values[0] or ())
+    for intervals in values[1:]:
+        common = _intersect_intervals(common, intervals or ())
+    return sum(interval.end_s - interval.start_s for interval in common)
+
+
+def evaluate_admissibility(sector: Sector, runtime: RuntimeConfiguration, visits: list[Visit]) -> dict[str, object]:
+    """Évalue séparément les critères empiriques figés dans le seed."""
+    contract = sector.source_document.get("admissibility")
+    if not isinstance(contract, dict):
+        raise SectorConfigurationError("La section admissibility du seed est obligatoire.")
+    required_keys = (
+        "minimum_common_exposure_s",
+        "minimum_complete_visits",
+        "minimum_distinct_movements",
+        "minimum_visits_per_movement",
+    )
+    try:
+        required = {key: float(contract[key]) for key in required_keys}
+    except (KeyError, TypeError, ValueError) as error:
+        raise SectorConfigurationError("Les quatre critères d'admissibilité doivent être numériques.") from error
+    if any(value < 0 for value in required.values()):
+        raise SectorConfigurationError("Les critères d'admissibilité ne peuvent pas être négatifs.")
+    classifiable = [visit for visit in visits if visit.status == "classifiable" and visit.entry_gate and visit.exit_gate]
+    movements = Counter(f"{visit.entry_gate}->{visit.exit_gate}" for visit in classifiable)
+    common_exposure = _common_exposure(runtime.coverage)
+    qualifying_movements = sum(count >= required["minimum_visits_per_movement"] for count in movements.values())
+    criteria: dict[str, dict[str, object]] = {
+        "minimum_common_exposure_s": {
+            "required": required["minimum_common_exposure_s"],
+            "observed": common_exposure,
+            "status": "unknown" if common_exposure is None else "pass" if common_exposure >= required["minimum_common_exposure_s"] else "fail",
+        },
+        "minimum_complete_visits": {
+            "required": int(required["minimum_complete_visits"]),
+            "observed": len(classifiable),
+            "status": "pass" if len(classifiable) >= required["minimum_complete_visits"] else "fail",
+        },
+        "minimum_distinct_movements": {
+            "required": int(required["minimum_distinct_movements"]),
+            "observed": len(movements),
+            "status": "pass" if len(movements) >= required["minimum_distinct_movements"] else "fail",
+        },
+        "minimum_visits_per_movement": {
+            "required": int(required["minimum_visits_per_movement"]),
+            "observed_counts": dict(sorted(movements.items())),
+            "movements_meeting_threshold": qualifying_movements,
+            "status": "pass" if qualifying_movements >= required["minimum_distinct_movements"] else "fail",
+        },
+    }
+    statuses = {criterion["status"] for criterion in criteria.values()}
+    status = "not_admissible" if "fail" in statuses else "undetermined" if "unknown" in statuses else "admissible"
+    return {"status": status, "criteria": criteria}
+
+
 def _exposure(intervals: tuple[CoverageInterval, ...] | None, start: float, end: float) -> tuple[str, float | None]:
     if intervals is None:
         return "unknown", None
@@ -332,17 +518,28 @@ def _exposure(intervals: tuple[CoverageInterval, ...] | None, start: float, end:
     return ("known" if duration > 0 else "zero_exposure"), duration
 
 
+def _belongs_to_exposure(time_s: float, intervals: tuple[CoverageInterval, ...]) -> bool:
+    """Applique la convention temporelle semi-ouverte aux intervalles exposés."""
+    return any(interval.start_s <= time_s < interval.end_s for interval in intervals)
+
+
 def build_flow_rows(crossings: list[Crossing], sector: Sector, categories: Iterable[str], coverage: dict[str, tuple[CoverageInterval, ...] | None], windows: list[tuple[float, float]]) -> list[dict[str, object]]:
     """Produit les comptages et débits en distinguant zéro observé et couverture inconnue."""
-    counts = Counter((event.gate_id, event.category, _window_index(event.estimated_time_s, windows)) for event in crossings)
+    raw_counts = Counter((event.gate_id, event.category, _window_index(event.estimated_time_s, windows)) for event in crossings)
+    covered_counts = Counter(
+        (event.gate_id, event.category, _window_index(event.estimated_time_s, windows))
+        for event in crossings
+        if coverage[event.gate_id] is not None and _belongs_to_exposure(event.estimated_time_s, coverage[event.gate_id])
+    )
     rows: list[dict[str, object]] = []
     for gate in sector.gates:
         for category in sorted(set(categories)):
             for index, (start, end) in enumerate(windows):
                 status, duration = _exposure(coverage[gate.identifier], start, end)
-                count = counts[(gate.identifier, category, index)]
-                rate = None if duration is None or duration <= 0 else 3600.0 * count / duration
-                rows.append({"gate_id": gate.identifier, "direction": gate.role, "category": category, "window_start_s": start, "window_end_s": end, "passages": count, "exposure_s": duration, "flow_veh_per_h": rate, "coverage_status": status, "coverage_assumption": "intervals_explicitly_provided" if status != "unknown" else "coverage_not_established"})
+                raw_count = raw_counts[(gate.identifier, category, index)]
+                covered_count = None if duration is None else covered_counts[(gate.identifier, category, index)]
+                rate = None if duration is None or duration <= 0 else 3600.0 * covered_count / duration
+                rows.append({"gate_id": gate.identifier, "direction": gate.role, "category": category, "window_start_s": start, "window_end_s": end, "raw_passages": raw_count, "passages_in_exposure": covered_count, "exposure_s": duration, "flow_veh_per_h": rate, "coverage_status": status, "coverage_assumption": "intervals_explicitly_provided" if status != "unknown" else "coverage_not_established"})
     return rows
 
 
@@ -437,12 +634,12 @@ def profile_pneuma(source_path: str | Path, e01_directory: str | Path, sector_se
     for observations in iter_tracks(e01_directory / "observations.csv.gz"):
         trajectories += 1
         categories.add(observations[0].category)
-        routes, ambiguous, counts = _routes_by_continuity(observations, sector, runtime.parameters)
+        evidence, counts = _routes_by_continuity(observations, sector, runtime.parameters)
         association_counts.update(counts)
         crossings, ruptures = detect_crossings(observations, sector, runtime.parameters)
         rupture_count += ruptures
         all_crossings.extend(crossings)
-        all_visits.extend(reconstruct_visits(crossings, routes, ambiguous))
+        all_visits.extend(reconstruct_visits(crossings, evidence))
 
     flow_rows = build_flow_rows(all_crossings, sector, categories, runtime.coverage, windows)
     movement_rows = build_movement_rows(all_visits, sector, categories, windows)
@@ -454,21 +651,24 @@ def profile_pneuma(source_path: str | Path, e01_directory: str | Path, sector_se
         for visit in all_visits
         if visit.status == "classifiable" and visit.entry_gate and visit.exit_gate
     )
-    has_known_exposure = any(intervals and sum(item.end_s - item.start_s for item in intervals) > 0 for intervals in runtime.coverage.values() if intervals is not None)
-    status = "complete" if visit_counts["classifiable"] and has_known_exposure else "insufficient_coverage" if visit_counts["classifiable"] else "insufficient"
+    admissibility = evaluate_admissibility(sector, runtime, all_visits)
     association_denominator = sum(association_counts[key] for key in ("accepted", "ambiguous", "outside", "insufficient"))
     summary = {
         "schema_version": SCHEMA_VERSION,
-        "status": status,
+        "execution": {"status": "succeeded"},
+        "empirical_admissibility": admissibility,
+        "scientific_validation": {
+            "status": "pending",
+            "validation_reference": "not_performed",
+            "sensitivity_analysis": "not_performed",
+        },
         "counts": {"input_trajectory_rows": input_trajectory_rows, "trajectories_with_valid_observations": trajectories, "trajectories_without_valid_observations": input_trajectory_rows - trajectories, "crossings": len(all_crossings), "visits": len(all_visits), "ruptures": rupture_count, "visits_by_status": dict(sorted(visit_counts.items())), "associations_by_status": dict(sorted(association_counts.items()))},
         "association_quality": {"accepted": association_counts["accepted"], "denominator": association_denominator, "rate": None if association_denominator == 0 else association_counts["accepted"] / association_denominator},
         "crossings_by_gate": dict(sorted(crossings_by_gate.items())),
         "crossings_by_category": dict(sorted(crossings_by_category.items())),
         "classifiable_movements": dict(sorted(movements.items())),
         "coverage": {gate: {"status": "unknown", "evidence": runtime.coverage_evidence[gate]} if intervals is None else {"status": "established" if intervals else "zero_exposure", "interval_count": len(intervals), "duration_s": sum(interval.end_s - interval.start_s for interval in intervals), "evidence": runtime.coverage_evidence[gate]} for gate, intervals in sorted(runtime.coverage.items())},
-        "manual_validation": {"status": "not_performed", "reference_rows": 0},
-        "sensitivity_analysis": {"status": "not_performed"},
-        "limitations": ["Les branches sont des axes locaux dérivés du centre et des portes figées, pas un map-matching de voie.", "Les débits ne sont définis que lorsque l'exposition de la porte est explicitement fournie.", "Les mouvements sont des couples entrée-sortie observés dans le secteur, pas des origines-destinations réelles."],
+        "limitations": ["Les branches sont des axes locaux bornés dérivés du centre et des portes figées, pas un map-matching de voie.", "Les débits ne sont définis que lorsque l'exposition de la porte est explicitement fournie ; seuls les événements inclus dans cette exposition alimentent leur numérateur.", "Les mouvements sont des couples entrée-sortie observés dans le secteur, pas des origines-destinations réelles."],
     }
 
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -477,16 +677,20 @@ def profile_pneuma(source_path: str | Path, e01_directory: str | Path, sector_se
         runtime_copy = {"schema": "CGR-E02-runtime-used-1", "sector_seed": sector.source_document, "sector_seed_sha256": _sha256(seed_path), "metric_crs": {"name": "repère tangent équirectangulaire local", "origin_lat": sector.center_lat, "origin_lon": sector.center_lon, "units": "m"}, "algorithm": asdict(runtime.parameters), "algorithm_justification": runtime.algorithm_justification, "manual_validation_used_for_tuning": False, "coverage": {gate: "unknown" if intervals is None else [[item.start_s, item.end_s] for item in intervals] for gate, intervals in sorted(runtime.coverage.items())}, "coverage_evidence": dict(sorted(runtime.coverage_evidence.items())), "aggregation": {"origin_s": origin_s, "window_s": window_s, "interval_convention": "[a,b)", "terminal_s": end_s}}
         (stage / "sector_config.json").write_text(json.dumps(runtime_copy, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         (stage / "sector.geojson").write_text(json.dumps(_sector_geojson(sector), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        crossing_rows = [{**asdict(event), "visit_id": next((visit.visit_id for visit in all_visits if visit.source_line == event.source_line and visit.continuity_id == event.continuity_id and (visit.entry_gate == event.gate_id or visit.exit_gate == event.gate_id)), ""), "status": "accepted", "uncertainty_reason": "interpolation locale entre observations encadrantes"} for event in all_crossings]
+        crossing_to_visit = _visit_ids_by_crossing(all_visits)
+        crossing_rows = [{**asdict(event), "visit_id": crossing_to_visit.get(_crossing_key(event), ""), "status": "accepted", "uncertainty_reason": "interpolation locale entre observations encadrantes"} for event in all_crossings]
         _write_csv(stage / "crossings.csv", crossing_rows, ["source_line", "track_id", "category", "gate_id", "role", "continuity_id", "from_group_index", "to_group_index", "estimated_time_s", "interval_start_s", "interval_end_s", "visit_id", "status", "uncertainty_reason"])
         route_rows = [{"visit_id": visit.visit_id, "source_line": visit.source_line, "track_id": visit.track_id, "category": visit.category, "continuity_id": visit.continuity_id, "branch_sequence": ">".join(visit.route), "entry_gate": visit.entry_gate, "exit_gate": visit.exit_gate, "entry_time_s": visit.entry_time_s, "exit_time_s": visit.exit_time_s, "status": visit.status, "censored_entry": str(visit.status == "censored_entry").lower(), "censored_exit": str(visit.status == "censored_exit").lower(), "reason": visit.reason} for visit in all_visits]
         _write_csv(stage / "partial_routes.csv", route_rows, ["visit_id", "source_line", "track_id", "category", "continuity_id", "branch_sequence", "entry_gate", "exit_gate", "entry_time_s", "exit_time_s", "status", "censored_entry", "censored_exit", "reason"])
-        _write_csv(stage / "flow_profile.csv", flow_rows, ["gate_id", "direction", "category", "window_start_s", "window_end_s", "passages", "exposure_s", "flow_veh_per_h", "coverage_status", "coverage_assumption"])
+        _write_csv(stage / "flow_profile.csv", flow_rows, ["gate_id", "direction", "category", "window_start_s", "window_end_s", "raw_passages", "passages_in_exposure", "exposure_s", "flow_veh_per_h", "coverage_status", "coverage_assumption"])
         _write_csv(stage / "movement_profile.csv", movement_rows, ["record_type", "entry_gate", "exit_gate", "category", "window_start_s", "window_end_s", "count", "denominator_classifiable", "proportion", "visit_status"])
         _write_csv(stage / "validation_reference.csv", [], ["source_line", "track_id", "review_set", "entry_gate", "exit_gate", "crossing_times_s", "censorship", "decision", "notes"])
         (stage / "quality_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         report = "# Profil du secteur pNEUMA — CGR-E02\n\n"
-        report += f"Statut automatique : **{summary['status']}**. {trajectories} trajectoires, {len(all_crossings)} franchissements et {len(all_visits)} visites reconstruits.\n\n"
+        report += f"Exécution technique : **{summary['execution']['status']}**. {trajectories} trajectoires, {len(all_crossings)} franchissements et {len(all_visits)} visites reconstruits.\n\n"
+        report += "## Admissibilité et validation\n\n"
+        report += f"- Admissibilité empirique : **{admissibility['status']}** ; critères : {admissibility['criteria']}.\n"
+        report += "- Validation scientifique : **pending** ; la référence manuelle et l'analyse de sensibilité restent à réaliser.\n\n"
         report += "## Qualité et couverture\n\n"
         report += f"- Associations : {dict(sorted(association_counts.items()))} ; taux accepté {summary['association_quality']['accepted']}/{summary['association_quality']['denominator']}.\n"
         report += f"- Franchissements par porte : {summary['crossings_by_gate']}.\n"
@@ -504,7 +708,7 @@ def profile_pneuma(source_path: str | Path, e01_directory: str | Path, sector_se
         report += "## Validation manuelle\n\nLa référence est fournie comme gabarit vide : elle doit rester indépendante du réglage automatique et être renseignée avant validation scientifique.\n"
         report += "\n## Sensibilité\n\nL'analyse bornée des seuils n'est pas exécutée automatiquement dans cette implémentation et reste à réaliser avant validation scientifique.\n"
         (stage / "profile_report.md").write_text(report, encoding="utf-8")
-        manifest = {"schema_version": SCHEMA_VERSION, "status": summary["status"], "source": manifest_e01["source"], "inputs": {"cgr_e01_manifest_sha256": _sha256(e01_directory / "manifest.json"), "cgr_e01_exports_sha256": dict(sorted(export_hashes.items())), "sector_seed_sha256": _sha256(seed_path), "geometry_sha256": _sha256(geometry_path), "runtime_config_sha256": _sha256(runtime_path)}, "configuration": runtime_copy, "software": _code_state(), "outputs": list(OUTPUTS), "validation_reference": "empty_template_requires_independent_manual_annotation"}
+        manifest = {"schema_version": SCHEMA_VERSION, "execution": summary["execution"], "empirical_admissibility": admissibility, "scientific_validation": summary["scientific_validation"], "source": manifest_e01["source"], "inputs": {"cgr_e01_manifest_sha256": _sha256(e01_directory / "manifest.json"), "locally_computed_cgr_e01_export_sha256": dict(sorted(export_hashes.items())), "sector_seed_sha256": _sha256(seed_path), "geometry_sha256": _sha256(geometry_path), "runtime_config_sha256": _sha256(runtime_path)}, "configuration": runtime_copy, "software": _code_state(), "outputs": list(OUTPUTS), "validation_reference": "empty_template_requires_independent_manual_annotation"}
         (stage / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         destination.mkdir(exist_ok=True)
         for name in [item for item in OUTPUTS if item != "manifest.json"] + ["manifest.json"]:

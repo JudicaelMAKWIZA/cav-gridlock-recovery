@@ -79,6 +79,7 @@ class AssociationParameters:
     """Seuils métriques et directionnels, indépendants des valeurs de présélection."""
 
     max_distance_m: float
+    max_branch_extent_m: float
     max_heading_difference_deg: float
     ambiguity_margin_m: float
     minimum_displacement_m: float
@@ -260,7 +261,7 @@ def associate_segment(previous: TrackObservation, current: TrackObservation, sec
     candidates: list[tuple[float, Branch]] = []
     for branch in sector.branches:
         along = _dot(midpoint, branch.outward_unit)
-        if along < 0:
+        if along < 0 or along > parameters.max_branch_extent_m:
             continue
         distance = abs(_cross(branch.outward_unit, midpoint))
         expected_heading = Point(-branch.outward_unit.x_m, -branch.outward_unit.y_m) if branch.role == "entry" else branch.outward_unit
@@ -343,7 +344,9 @@ def detect_crossings(observations: list[TrackObservation], sector: Sector, param
             if prior_state is not None and prior_state[0] == expected_start and side == expected_end and armed[gate.identifier]:
                 anchor = prior_state[1]
                 anchor_point = projection.project(anchor.lat, anchor.lon)
-                fraction = _intersection_fraction(anchor_point, current_point, gate)
+                # La bande d'hystérésis ne doit pas prolonger implicitement la
+                # fenêtre temporelle ou spatiale autorisée pour l'interpolation.
+                fraction = None if is_rupture(anchor, current, projection, parameters) else _intersection_fraction(anchor_point, current_point, gate)
                 if fraction is not None:
                     estimated = anchor.time_s + fraction * (current.time_s - anchor.time_s)
                     events.append(Crossing(anchor.source_line, anchor.track_id, anchor.category, gate.identifier, gate.role, continuity_id, anchor.group_index, current.group_index, estimated, anchor.time_s, current.time_s))

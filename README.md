@@ -35,18 +35,27 @@ python scripts/profile_pneuma.py \
 
 La configuration d'exécution utilise le schéma `CGR-E02-runtime-1`. Elle doit
 déclarer explicitement les seuils `max_distance_m`,
+`max_branch_extent_m`,
 `max_heading_difference_deg`, `ambiguity_margin_m`,
 `minimum_displacement_m`, `gate_hysteresis_m`,
-`gate_rearm_distance_m`, `max_time_gap_s` et `max_space_gap_m`. La couverture
-est fournie par porte sous forme d'intervalles `[début, fin]`, ou par la chaîne
+`gate_rearm_distance_m`, `max_time_gap_s` et `max_space_gap_m`.
+`max_branch_extent_m` borne, depuis le centre du secteur, la portée radiale où
+une branche peut recevoir une association ; les axes ne sont donc pas prolongés
+indéfiniment. La couverture est fournie par porte sous forme d'intervalles
+`[début, fin]`, ou par la chaîne
 `"unknown"`. Une couverture inconnue ne produit jamais un débit nul : le débit
-reste indéfini. Les seuils de diagnostic de présélection ne sont pas repris
+reste indéfini. Dans une fenêtre partiellement couverte, le débit utilise seulement
+les franchissements compris dans les sous-intervalles d'exposition ; le comptage brut
+reste disponible séparément. Les seuils de diagnostic de présélection ne sont pas repris
 automatiquement. La configuration doit aussi contenir une justification des
 seuils, confirmer que la référence manuelle n'a pas servi à leur réglage et
 documenter la preuve — ou l'absence de preuve — de couverture pour chaque porte.
 
 Les résultats réels sont privés dans `outputs/`. Le manifeste vérifie et
-enregistre les empreintes de la source, des exports CGR-E01, du seed, de la
-géométrie et de la configuration utilisée. `validation_reference.csv` est créé
+enregistre les empreintes calculées localement de la source, des exports CGR-E01,
+du seed, de la géométrie et de la configuration utilisée. L'état technique de
+l'exécution, l'admissibilité empirique et la validation scientifique sont publiés
+séparément ; une exécution réussie ne vaut pas validation scientifique.
+`validation_reference.csv` est créé
 comme gabarit vide : son annotation manuelle indépendante reste une étape de
 validation scientifique, distincte du pipeline automatique.

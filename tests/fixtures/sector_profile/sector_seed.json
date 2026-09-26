@@ -29,5 +29,10 @@
     {"id": "S", "center": {"lat": -0.000179864, "lon": 0.0}, "length_m": 16.0, "endpoints": [{"lat": -0.000179864, "lon": 0.000071946}, {"lat": -0.000179864, "lon": -0.000071946}]}
   ],
   "aggregation": {"window_s": 60.0, "interval_convention": "[a,b)", "origin_s": 0.0},
-  "admissibility": {"minimum_common_exposure_s": 60.0}
+  "admissibility": {
+    "minimum_common_exposure_s": 60.0,
+    "minimum_complete_visits": 1,
+    "minimum_distinct_movements": 1,
+    "minimum_visits_per_movement": 1
+  }
 }

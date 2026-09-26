@@ -2,6 +2,7 @@
   "schema": "CGR-E02-runtime-1",
   "algorithm": {
     "max_distance_m": 6.0,
+    "max_branch_extent_m": 60.0,
     "max_heading_difference_deg": 45.0,
     "ambiguity_margin_m": 1.0,
     "minimum_displacement_m": 0.05,

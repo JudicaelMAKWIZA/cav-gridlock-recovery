@@ -9,11 +9,15 @@ import tempfile
 import unittest
 
 from cav_recovery.empirical.demand_profile import (
+    BranchEvidence,
     CoverageInterval,
     ProfileInputError,
     Visit,
+    _crossing_key,
+    _visit_ids_by_crossing,
     build_flow_rows,
     build_movement_rows,
+    evaluate_admissibility,
     load_runtime_configuration,
     profile_pneuma,
     reconstruct_visits,
@@ -50,17 +54,38 @@ def prepare_inputs(root):
     e01.mkdir()
     manifest = {"schema_version": "CGR-E01-1", "status": "complete", "source": {"filename": source.name, "sha256": digest(source), "size_bytes": source.stat().st_size}}
     (e01 / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    summary = {"schema_version": "CGR-E01-1", "status": "complete", "time_seconds": {"min": 0.0, "max": 8.0}}
+    summary = {
+        "schema_version": "CGR-E01-1",
+        "status": "complete",
+        "time_seconds": {"min": 0.0, "max": 8.0},
+        "counts": {
+            "candidate_lines": 1,
+            "decomposable_lines": 1,
+            "structure_excluded_lines": 0,
+            "trajectory_export_rows": 1,
+            "expected_groups_decomposable_lines": 9,
+            "observation_export_rows": 9,
+            "all_numeric_finite_groups": 9,
+            "numeric_invalid_groups": 0,
+            "distinct_nonempty_track_ids": 1,
+            "duplicate_track_ids": [],
+        },
+        "categories": {"Car": 1},
+    }
     (e01 / "quality_summary.json").write_text(json.dumps(summary), encoding="utf-8")
-    (e01 / "trajectories.csv").write_text("source_line,track_id,type\n2,t,Car\n", encoding="utf-8")
-    (e01 / "issues.csv").write_text("source_line,code\n", encoding="utf-8")
-    headers = ["source_line", "group_index", "track_id", "type", "lat", "lon", "time_s", "coordinate_in_range"]
+    (e01 / "trajectories.csv").write_text(
+        "source_line,track_id,type,traveled_d_m,avg_speed_kmh,avg_speed_mps,structural_status,observation_count,diagnostic_count\n"
+        "2,t,Car,60,10,2.777,decomposable,9,0\n",
+        encoding="utf-8",
+    )
+    (e01 / "issues.csv").write_text("source_line,group_index,field,code,severity,source_value,message\n", encoding="utf-8")
+    headers = ["source_line", "group_index", "track_id", "type", "lat", "lon", "speed_kmh", "speed_mps", "lon_acc_mps2", "lat_acc_mps2", "time_s", "all_numeric_finite", "coordinate_in_range"]
     positions = [(0, 30), (0, 21), (0, 19), (0, 10), (0, 0), (0, -10), (0, -19), (0, -21), (0, -30)]
     with gzip.open(e01 / "observations.csv.gz", "wt", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=headers)
         writer.writeheader()
         for index, (x_m, y_m) in enumerate(positions):
-            writer.writerow({"source_line": 2, "group_index": index, "track_id": "t", "type": "Car", "lat": y_m * DEGREE_PER_METER, "lon": x_m * DEGREE_PER_METER, "time_s": index * 0.5, "coordinate_in_range": "true"})
+            writer.writerow({"source_line": 2, "group_index": index, "track_id": "t", "type": "Car", "lat": y_m * DEGREE_PER_METER, "lon": x_m * DEGREE_PER_METER, "speed_kmh": 10, "speed_mps": 2.777, "lon_acc_mps2": 0, "lat_acc_mps2": 0, "time_s": index * 0.5, "all_numeric_finite": "true", "coordinate_in_range": "true"})
     return source, geometry, seed_path, runtime, e01
 
 
@@ -70,26 +95,57 @@ class DemandProfileTests(unittest.TestCase):
 
     def test_true_exit_then_new_entry_creates_two_visits(self):
         events = [crossing("N", "entry", 1, 0), crossing("S", "exit", 2, 0), crossing("W", "entry", 4, 1), crossing("E", "exit", 5, 1)]
-        visits = reconstruct_visits(events, {0: ("N", "S"), 1: ("W", "E")}, set())
+        evidence = {
+            0: [BranchEvidence(0, 0.9, 1.5, "accepted", "N"), BranchEvidence(0, 1.5, 2.1, "accepted", "S")],
+            1: [BranchEvidence(1, 3.9, 4.5, "accepted", "W"), BranchEvidence(1, 4.5, 5.1, "accepted", "E")],
+        }
+        visits = reconstruct_visits(events, evidence)
         self.assertEqual([(visit.entry_gate, visit.exit_gate, visit.status) for visit in visits], [("N", "S", "classifiable"), ("W", "E", "classifiable")])
 
+    def test_two_visits_in_same_continuity_keep_routes_and_crossings_separate(self):
+        events = [crossing("N", "entry", 1), crossing("S", "exit", 2), crossing("N", "entry", 4), crossing("S", "exit", 5)]
+        evidence = {0: [
+            BranchEvidence(0, 0.9, 1.4, "accepted", "N"),
+            BranchEvidence(0, 1.5, 2.1, "accepted", "S"),
+            BranchEvidence(0, 3.9, 4.4, "accepted", "N"),
+            BranchEvidence(0, 4.5, 5.1, "accepted", "S"),
+        ]}
+        visits = reconstruct_visits(events, evidence)
+        assignments = _visit_ids_by_crossing(visits)
+        self.assertEqual([visit.route for visit in visits], [("N", "S"), ("N", "S")])
+        self.assertNotEqual(visits[0].visit_id, visits[1].visit_id)
+        self.assertEqual([assignments[_crossing_key(event)] for event in events], [visits[0].visit_id, visits[0].visit_id, visits[1].visit_id, visits[1].visit_id])
+
     def test_censorship_and_ambiguity_never_create_certain_movement(self):
-        censored = reconstruct_visits([crossing("S", "exit", 2)], {0: ("S",)}, set())
-        ambiguous = reconstruct_visits([crossing("N", "entry", 1), crossing("S", "exit", 2)], {0: ("N", "S")}, {0})
+        censored = reconstruct_visits([crossing("S", "exit", 2)], {0: [BranchEvidence(0, 1.5, 2.1, "accepted", "S")]})
+        ambiguous = reconstruct_visits([crossing("N", "entry", 1), crossing("S", "exit", 2)], {0: [BranchEvidence(0, 1.1, 1.9, "ambiguous", None)]})
         self.assertEqual(censored[0].status, "censored_entry")
         self.assertEqual(ambiguous[0].status, "ambiguous")
+
+    def test_distant_ambiguity_does_not_contaminate_local_visit(self):
+        events = [crossing("N", "entry", 10), crossing("S", "exit", 20)]
+        evidence = {0: [
+            BranchEvidence(0, 0, 1, "ambiguous", None),
+            BranchEvidence(0, 9.5, 11, "accepted", "N"),
+            BranchEvidence(0, 19, 20.5, "accepted", "S"),
+        ]}
+        visit = reconstruct_visits(events, evidence)[0]
+        self.assertEqual(visit.status, "classifiable")
+        self.assertEqual(visit.route, ("N", "S"))
 
     def test_coverage_unknown_differs_from_observed_zero(self):
         events = [crossing("N", "entry", 10)]
         coverage = {"N": (CoverageInterval(0, 60),), "W": None, "E": (CoverageInterval(0, 60),), "S": ()}
         rows = build_flow_rows(events, self.sector, ["Car"], coverage, [(0, 60)])
         by_gate = {row["gate_id"]: row for row in rows}
-        self.assertEqual(by_gate["N"]["passages"], 1)
+        self.assertEqual(by_gate["N"]["raw_passages"], 1)
+        self.assertEqual(by_gate["N"]["passages_in_exposure"], 1)
         self.assertEqual(by_gate["N"]["flow_veh_per_h"], 60.0)
-        self.assertEqual(by_gate["E"]["passages"], 0)
+        self.assertEqual(by_gate["E"]["passages_in_exposure"], 0)
         self.assertEqual(by_gate["E"]["coverage_status"], "known")
         self.assertEqual(by_gate["E"]["flow_veh_per_h"], 0.0)
         self.assertEqual(by_gate["W"]["coverage_status"], "unknown")
+        self.assertIsNone(by_gate["W"]["passages_in_exposure"])
         self.assertIsNone(by_gate["W"]["flow_veh_per_h"])
         self.assertEqual(by_gate["S"]["coverage_status"], "zero_exposure")
 
@@ -98,7 +154,16 @@ class DemandProfileTests(unittest.TestCase):
         coverage = {"N": (CoverageInterval(0, 120),), "W": None, "E": None, "S": None}
         rows = build_flow_rows(events, self.sector, ["Car"], coverage, [(0, 60), (60, 120)])
         north = [row for row in rows if row["gate_id"] == "N"]
-        self.assertEqual([row["passages"] for row in north], [0, 1])
+        self.assertEqual([row["passages_in_exposure"] for row in north], [0, 1])
+
+    def test_flow_numerator_excludes_crossing_outside_partial_coverage(self):
+        events = [crossing("N", "entry", 10), crossing("N", "entry", 40)]
+        coverage = {"N": (CoverageInterval(0, 30),), "W": None, "E": None, "S": None}
+        north = next(row for row in build_flow_rows(events, self.sector, ["Car"], coverage, [(0, 60)]) if row["gate_id"] == "N")
+        self.assertEqual(north["raw_passages"], 2)
+        self.assertEqual(north["passages_in_exposure"], 1)
+        self.assertEqual(north["exposure_s"], 30)
+        self.assertEqual(north["flow_veh_per_h"], 120.0)
 
     def test_movement_proportions_show_known_denominator(self):
         visits = [
@@ -121,6 +186,35 @@ class DemandProfileTests(unittest.TestCase):
             with self.assertRaises(ProfileInputError):
                 profile_pneuma(source, e01, seed, geometry, runtime, root / "out")
 
+    def test_inconsistent_e01_export_count_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, geometry, seed, runtime, e01 = prepare_inputs(root)
+            summary_path = e01 / "quality_summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["counts"]["observation_export_rows"] = 8
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+            with self.assertRaisesRegex(ProfileInputError, "observations exportées"):
+                profile_pneuma(source, e01, seed, geometry, runtime, root / "out")
+
+    def test_incompatible_e01_export_header_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, geometry, seed, runtime, e01 = prepare_inputs(root)
+            (e01 / "trajectories.csv").write_text("source_line,track_id,type\n2,t,Car\n", encoding="utf-8")
+            with self.assertRaisesRegex(ProfileInputError, "En-tête CGR-E01 incompatible"):
+                profile_pneuma(source, e01, seed, geometry, runtime, root / "out")
+
+    def test_admissibility_is_distinct_from_scientific_validation(self):
+        runtime = load_runtime_configuration(FIXTURES / "runtime_config.json", self.sector)
+        visit = Visit("1", 2, "t", "Car", 0, "N", "S", 1, 2, "classifiable", ("N", "S"), "ok")
+        result = evaluate_admissibility(self.sector, runtime, [visit])
+        self.assertEqual(result["status"], "undetermined")
+        self.assertEqual(result["criteria"]["minimum_common_exposure_s"]["status"], "unknown")
+        self.assertEqual(result["criteria"]["minimum_complete_visits"]["status"], "pass")
+        self.assertEqual(result["criteria"]["minimum_distinct_movements"]["status"], "pass")
+        self.assertEqual(result["criteria"]["minimum_visits_per_movement"]["status"], "pass")
+
     def test_runtime_configuration_requires_coverage_evidence(self):
         document = json.loads((FIXTURES / "runtime_config.json").read_text(encoding="utf-8"))
         del document["coverage_evidence"]["N"]
@@ -137,12 +231,16 @@ class DemandProfileTests(unittest.TestCase):
             first, second = root / "first", root / "second"
             first_summary = profile_pneuma(source, e01, seed, geometry, runtime, first)
             second_summary = profile_pneuma(source, e01, seed, geometry, runtime, second)
-            self.assertEqual(first_summary["status"], "complete")
+            self.assertEqual(first_summary["execution"]["status"], "succeeded")
+            self.assertEqual(first_summary["empirical_admissibility"]["status"], "undetermined")
+            self.assertEqual(first_summary["scientific_validation"]["status"], "pending")
             self.assertEqual(first_summary, second_summary)
             for name in ["crossings.csv", "partial_routes.csv", "flow_profile.csv", "movement_profile.csv", "quality_summary.json", "sector.geojson", "sector_config.json", "profile_report.md"]:
                 self.assertEqual((first / name).read_bytes(), (second / name).read_bytes(), name)
             manifest = json.loads((first / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["schema_version"], "CGR-E02-1")
+            self.assertIn("locally_computed_cgr_e01_export_sha256", manifest["inputs"])
+            self.assertNotIn("cgr_e01_exports_sha256", manifest["inputs"])
             self.assertNotIn(str(root), json.dumps(manifest))
             with (first / "partial_routes.csv").open(encoding="utf-8", newline="") as handle:
                 routes = list(csv.DictReader(handle))

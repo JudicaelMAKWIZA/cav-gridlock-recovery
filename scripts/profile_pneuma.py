@@ -31,8 +31,13 @@ def main() -> int:
     except Exception as error:
         print(f"CGR-E02 erreur technique : {error}", file=sys.stderr)
         return 1
-    print(f"CGR-E02 {summary['status']} : {summary['counts']['crossings']} franchissements, {summary['counts']['visits']} visites.")
-    return 0 if summary["status"] == "complete" else 2
+    print(
+        f"CGR-E02 exécution {summary['execution']['status']} ; "
+        f"admissibilité {summary['empirical_admissibility']['status']} ; "
+        f"validation scientifique {summary['scientific_validation']['status']} : "
+        f"{summary['counts']['crossings']} franchissements, {summary['counts']['visits']} visites."
+    )
+    return 0
 
 
 if __name__ == "__main__":
