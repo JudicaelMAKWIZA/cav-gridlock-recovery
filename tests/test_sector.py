@@ -22,9 +22,9 @@ def observation(index, x_m, y_m, time_s, track_id="t"):
 
 
 def parameters(**changes):
-    values = dict(max_distance_m=6.0, max_branch_extent_m=60.0, max_heading_difference_deg=45.0, ambiguity_margin_m=1.0,
-                  minimum_displacement_m=0.05, gate_hysteresis_m=0.5,
-                  gate_rearm_distance_m=5.0, max_time_gap_s=2.0, max_space_gap_m=15.0)
+    values = dict(branch_tol_m=6.0, branch_limit_m=60.0, heading_tol_deg=45.0, ambiguity_margin_m=1.0,
+                  min_move_m=0.05, hysteresis_m=0.5,
+                  rearm_dist_m=5.0, max_time_gap_s=2.0, max_space_gap_m=15.0)
     values.update(changes)
     return AssociationParameters(**values)
 
@@ -78,18 +78,18 @@ class SectorTests(unittest.TestCase):
     def test_branch_association_can_remain_ambiguous(self):
         previous = observation(0, -12, 12, 0)
         current = observation(1, -8, 8, 1)
-        result = associate_segment(previous, current, self.sector, parameters(max_distance_m=15.0, max_heading_difference_deg=50.0))
+        result = associate_segment(previous, current, self.sector, parameters(branch_tol_m=15.0, heading_tol_deg=50.0))
         self.assertEqual(result.status, "ambiguous")
         self.assertIsNone(result.branch_id)
 
     def test_association_is_bounded_to_the_useful_sector(self):
         previous = observation(0, -102, 102, 0)
         current = observation(1, -98, 98, 1)
-        result = associate_segment(previous, current, self.sector, parameters(max_distance_m=150.0, max_heading_difference_deg=50.0, max_branch_extent_m=60.0))
+        result = associate_segment(previous, current, self.sector, parameters(branch_tol_m=150.0, heading_tol_deg=50.0, branch_limit_m=60.0))
         self.assertEqual(result.status, "outside")
 
     def test_distant_ambiguity_does_not_affect_local_association(self):
-        configured = parameters(max_distance_m=150.0, max_heading_difference_deg=50.0, max_branch_extent_m=60.0)
+        configured = parameters(branch_tol_m=150.0, heading_tol_deg=50.0, branch_limit_m=60.0)
         distant = associate_segment(observation(0, -102, 102, 0), observation(1, -98, 98, 1), self.sector, configured)
         local = associate_segment(observation(2, 0, 30, 2), observation(3, 0, 25, 3), self.sector, configured)
         self.assertEqual(distant.status, "outside")
@@ -106,4 +106,4 @@ class SectorTests(unittest.TestCase):
 
     def test_parameters_reject_incoherent_hysteresis(self):
         with self.assertRaises(SectorConfigurationError):
-            parameters(gate_hysteresis_m=5.0, gate_rearm_distance_m=1.0).validate()
+            parameters(hysteresis_m=5.0, rearm_dist_m=1.0).validate()

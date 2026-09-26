@@ -78,13 +78,13 @@ class Sector:
 class AssociationParameters:
     """Seuils métriques et directionnels, indépendants des valeurs de présélection."""
 
-    max_distance_m: float
-    max_branch_extent_m: float
-    max_heading_difference_deg: float
+    branch_tol_m: float
+    branch_limit_m: float
+    heading_tol_deg: float
     ambiguity_margin_m: float
-    minimum_displacement_m: float
-    gate_hysteresis_m: float
-    gate_rearm_distance_m: float
+    min_move_m: float
+    hysteresis_m: float
+    rearm_dist_m: float
     max_time_gap_s: float
     max_space_gap_m: float
 
@@ -92,9 +92,9 @@ class AssociationParameters:
         values = self.__dict__
         if any(not math.isfinite(value) or value <= 0 for value in values.values()):
             raise SectorConfigurationError("Tous les seuils CGR-E02 doivent être finis et strictement positifs.")
-        if self.gate_rearm_distance_m <= self.gate_hysteresis_m:
+        if self.rearm_dist_m <= self.hysteresis_m:
             raise SectorConfigurationError("La distance de réarmement doit dépasser l'hystérésis de porte.")
-        if self.max_heading_difference_deg >= 180:
+        if self.heading_tol_deg >= 180:
             raise SectorConfigurationError("La tolérance directionnelle doit être inférieure à 180 degrés.")
 
 
@@ -254,20 +254,20 @@ def associate_segment(previous: TrackObservation, current: TrackObservation, sec
     end = projection.project(current.lat, current.lon)
     displacement = _subtract(end, start)
     length = _norm(displacement)
-    if length < parameters.minimum_displacement_m:
+    if length < parameters.min_move_m:
         return Association("insufficient", None, None, "déplacement trop faible pour estimer la direction")
     heading = _unit(displacement)
     midpoint = Point((start.x_m + end.x_m) / 2, (start.y_m + end.y_m) / 2)
     candidates: list[tuple[float, Branch]] = []
     for branch in sector.branches:
         along = _dot(midpoint, branch.outward_unit)
-        if along < 0 or along > parameters.max_branch_extent_m:
+        if along < 0 or along > parameters.branch_limit_m:
             continue
         distance = abs(_cross(branch.outward_unit, midpoint))
         expected_heading = Point(-branch.outward_unit.x_m, -branch.outward_unit.y_m) if branch.role == "entry" else branch.outward_unit
         cosine = max(-1.0, min(1.0, _dot(heading, expected_heading)))
         angle = math.degrees(math.acos(cosine))
-        if distance <= parameters.max_distance_m and angle <= parameters.max_heading_difference_deg:
+        if distance <= parameters.branch_tol_m and angle <= parameters.heading_tol_deg:
             candidates.append((distance, branch))
     if not candidates:
         return Association("outside", None, None, "aucune branche ne satisfait distance et direction")
@@ -313,7 +313,7 @@ def detect_crossings(observations: list[TrackObservation], sector: Sector, param
     first_point = projection.project(previous.lat, previous.lon)
     for gate in sector.gates:
         distance = _inside_distance(first_point, gate)
-        side = 1 if distance >= parameters.gate_hysteresis_m else -1 if distance <= -parameters.gate_hysteresis_m else 0
+        side = 1 if distance >= parameters.hysteresis_m else -1 if distance <= -parameters.hysteresis_m else 0
         if side:
             states[gate.identifier] = (side, previous)
     for current in observations[1:]:
@@ -325,7 +325,7 @@ def detect_crossings(observations: list[TrackObservation], sector: Sector, param
             current_point = projection.project(current.lat, current.lon)
             for gate in sector.gates:
                 distance = _inside_distance(current_point, gate)
-                side = 1 if distance >= parameters.gate_hysteresis_m else -1 if distance <= -parameters.gate_hysteresis_m else 0
+                side = 1 if distance >= parameters.hysteresis_m else -1 if distance <= -parameters.hysteresis_m else 0
                 if side:
                     states[gate.identifier] = (side, current)
             previous = current
@@ -333,13 +333,13 @@ def detect_crossings(observations: list[TrackObservation], sector: Sector, param
         current_point = projection.project(current.lat, current.lon)
         for gate in sector.gates:
             inside_distance = _inside_distance(current_point, gate)
-            side = 1 if inside_distance >= parameters.gate_hysteresis_m else -1 if inside_distance <= -parameters.gate_hysteresis_m else 0
+            side = 1 if inside_distance >= parameters.hysteresis_m else -1 if inside_distance <= -parameters.hysteresis_m else 0
             if side == 0:
                 continue
             prior_state = states[gate.identifier]
             expected_start = -1 if gate.role == "entry" else 1
             expected_end = -expected_start
-            if not armed[gate.identifier] and side == expected_start and abs(inside_distance) >= parameters.gate_rearm_distance_m:
+            if not armed[gate.identifier] and side == expected_start and abs(inside_distance) >= parameters.rearm_dist_m:
                 armed[gate.identifier] = True
             if prior_state is not None and prior_state[0] == expected_start and side == expected_end and armed[gate.identifier]:
                 anchor = prior_state[1]

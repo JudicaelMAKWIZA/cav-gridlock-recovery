@@ -252,13 +252,13 @@ def load_runtime_configuration(path: str | Path, sector: Sector) -> RuntimeConfi
         raise SectorConfigurationError("La section algorithm est obligatoire.")
     try:
         parameters = AssociationParameters(
-            max_distance_m=float(algorithm["max_distance_m"]),
-            max_branch_extent_m=float(algorithm["max_branch_extent_m"]),
-            max_heading_difference_deg=float(algorithm["max_heading_difference_deg"]),
+            branch_tol_m=float(algorithm["branch_tol_m"]),
+            branch_limit_m=float(algorithm["branch_limit_m"]),
+            heading_tol_deg=float(algorithm["heading_tol_deg"]),
             ambiguity_margin_m=float(algorithm["ambiguity_margin_m"]),
-            minimum_displacement_m=float(algorithm["minimum_displacement_m"]),
-            gate_hysteresis_m=float(algorithm["gate_hysteresis_m"]),
-            gate_rearm_distance_m=float(algorithm["gate_rearm_distance_m"]),
+            min_move_m=float(algorithm["min_move_m"]),
+            hysteresis_m=float(algorithm["hysteresis_m"]),
+            rearm_dist_m=float(algorithm["rearm_dist_m"]),
             max_time_gap_s=float(algorithm["max_time_gap_s"]),
             max_space_gap_m=float(algorithm["max_space_gap_m"]),
         )

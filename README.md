@@ -34,12 +34,12 @@ python scripts/profile_pneuma.py \
 ```
 
 La configuration d'exécution utilise le schéma `CGR-E02-runtime-1`. Elle doit
-déclarer explicitement les seuils `max_distance_m`,
-`max_branch_extent_m`,
-`max_heading_difference_deg`, `ambiguity_margin_m`,
-`minimum_displacement_m`, `gate_hysteresis_m`,
-`gate_rearm_distance_m`, `max_time_gap_s` et `max_space_gap_m`.
-`max_branch_extent_m` borne, depuis le centre du secteur, la portée radiale où
+déclarer explicitement les seuils `branch_tol_m`,
+`branch_limit_m`,
+`heading_tol_deg`, `ambiguity_margin_m`,
+`min_move_m`, `hysteresis_m`,
+`rearm_dist_m`, `max_time_gap_s` et `max_space_gap_m`.
+`branch_limit_m` borne, depuis le centre du secteur, la portée radiale où
 une branche peut recevoir une association ; les axes ne sont donc pas prolongés
 indéfiniment. La couverture est fournie par porte sous forme d'intervalles
 `[début, fin]`, ou par la chaîne
