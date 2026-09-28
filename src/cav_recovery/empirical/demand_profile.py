@@ -18,15 +18,12 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from .sector import (
-    AssociationParameters,
+    CrossingParameters,
     Crossing,
-    LocalMetricProjection,
     Sector,
     SectorConfigurationError,
     TrackObservation,
-    associate_segment,
     detect_crossings,
-    is_rupture,
     load_sector,
 )
 
@@ -66,17 +63,6 @@ CrossingKey = tuple[int, int, str, str, int, int]
 
 
 @dataclass(frozen=True)
-class BranchEvidence:
-    """Association de branche localisée dans le temps et dans une continuité."""
-
-    continuity_id: int
-    start_s: float
-    end_s: float
-    status: str
-    branch_id: str | None
-
-
-@dataclass(frozen=True)
 class Visit:
     """Visite reconstruite à partir d'événements effectivement observés."""
 
@@ -100,7 +86,7 @@ class Visit:
 class RuntimeConfiguration:
     """Configuration complète réellement utilisée, distincte du seed géométrique."""
 
-    parameters: AssociationParameters
+    parameters: CrossingParameters
     coverage: dict[str, tuple[CoverageInterval, ...] | None]
     algorithm_justification: str
     coverage_evidence: dict[str, str]
@@ -251,14 +237,8 @@ def load_runtime_configuration(path: str | Path, sector: Sector) -> RuntimeConfi
     if not isinstance(algorithm, dict):
         raise SectorConfigurationError("La section algorithm est obligatoire.")
     try:
-        parameters = AssociationParameters(
-            branch_tol_m=float(algorithm["branch_tol_m"]),
-            branch_limit_m=float(algorithm["branch_limit_m"]),
-            heading_tol_deg=float(algorithm["heading_tol_deg"]),
-            ambiguity_margin_m=float(algorithm["ambiguity_margin_m"]),
-            min_move_m=float(algorithm["min_move_m"]),
-            hysteresis_m=float(algorithm["hysteresis_m"]),
-            rearm_dist_m=float(algorithm["rearm_dist_m"]),
+        parameters = CrossingParameters(
+            deduplication_s=float(algorithm["deduplication_s"]),
             max_time_gap_s=float(algorithm["max_time_gap_s"]),
             max_space_gap_m=float(algorithm["max_space_gap_m"]),
         )
@@ -338,23 +318,7 @@ def iter_tracks(observations_path: str | Path) -> Iterator[list[TrackObservation
         yield current
 
 
-def _routes_by_continuity(observations: list[TrackObservation], sector: Sector, parameters: AssociationParameters) -> tuple[dict[int, list[BranchEvidence]], Counter[str]]:
-    projection = LocalMetricProjection(sector.center_lat, sector.center_lon)
-    evidence: dict[int, list[BranchEvidence]] = defaultdict(list)
-    association_counts: Counter[str] = Counter()
-    continuity_id = 0
-    for previous, current in zip(observations, observations[1:]):
-        if is_rupture(previous, current, projection, parameters):
-            association_counts["rupture"] += 1
-            continuity_id += 1
-            continue
-        association = associate_segment(previous, current, sector, parameters)
-        association_counts[association.status] += 1
-        evidence[continuity_id].append(BranchEvidence(continuity_id, previous.time_s, current.time_s, association.status, association.branch_id))
-    return dict(evidence), association_counts
-
-
-def reconstruct_visits(crossings: list[Crossing], evidence: dict[int, list[BranchEvidence]]) -> list[Visit]:
+def reconstruct_visits(crossings: list[Crossing]) -> list[Visit]:
     """Reconstruit des visites sans apparier des événements séparés par une rupture."""
     visits: list[Visit] = []
     by_continuity: dict[int, list[Crossing]] = defaultdict(list)
@@ -365,24 +329,22 @@ def reconstruct_visits(crossings: list[Crossing], evidence: dict[int, list[Branc
     sequence = 0
     for continuity_id in sorted(by_continuity):
         pending: Crossing | None = None
-        previous_crossing_time_s: float | None = None
         for event in sorted(by_continuity[continuity_id], key=lambda item: (item.estimated_time_s, item.gate_id)):
             if event.role == "entry":
                 if pending is not None:
                     sequence += 1
-                    visits.append(_visit(sequence, pending, None, continuity_id, evidence, "censored_exit", "nouvelle entrée avant sortie observable", end_boundary_s=event.estimated_time_s))
+                    visits.append(_visit(sequence, pending, None, continuity_id, "censored_exit", "nouvelle entrée avant sortie observable"))
                 pending = event
             elif pending is None:
                 sequence += 1
-                visits.append(_visit(sequence, None, event, continuity_id, evidence, "censored_entry", "sortie observée sans entrée observable", start_boundary_s=previous_crossing_time_s))
+                visits.append(_visit(sequence, None, event, continuity_id, "censored_entry", "sortie observée sans entrée observable"))
             else:
                 sequence += 1
-                visits.append(_visit(sequence, pending, event, continuity_id, evidence, "classifiable", "entrée et sortie observées dans la même continuité"))
+                visits.append(_visit(sequence, pending, event, continuity_id, "classifiable", "entrée et sortie observées dans la même continuité"))
                 pending = None
-            previous_crossing_time_s = event.estimated_time_s
         if pending is not None:
             sequence += 1
-            visits.append(_visit(sequence, pending, None, continuity_id, evidence, "censored_exit", "fin de continuité sans sortie observable"))
+            visits.append(_visit(sequence, pending, None, continuity_id, "censored_exit", "fin de continuité sans sortie observable"))
     return visits
 
 
@@ -403,30 +365,22 @@ def _visit_ids_by_crossing(visits: list[Visit]) -> dict[CrossingKey, str]:
     return result
 
 
-def _visit(sequence: int, entry: Crossing | None, exit_event: Crossing | None, continuity_id: int, evidence: dict[int, list[BranchEvidence]], status: str, reason: str, start_boundary_s: float | None = None, end_boundary_s: float | None = None) -> Visit:
+def _visit(
+    sequence: int,
+    entry: Crossing | None,
+    exit_event: Crossing | None,
+    continuity_id: int,
+    status: str,
+    reason: str,
+) -> Visit:
     event = entry or exit_event
     assert event is not None
-    start_s = entry.estimated_time_s if entry else start_boundary_s if start_boundary_s is not None else -math.inf
-    end_s = exit_event.estimated_time_s if exit_event else end_boundary_s if end_boundary_s is not None else math.inf
-    selected = []
-    for item in evidence.get(continuity_id, ()):
-        midpoint_s = (item.start_s + item.end_s) / 2
-        lower_matches = midpoint_s >= start_s if entry is not None or start_boundary_s is None else midpoint_s > start_s
-        upper_matches = midpoint_s <= end_s if exit_event is not None or end_boundary_s is None else midpoint_s < end_s
-        if lower_matches and upper_matches:
-            selected.append(item)
-    route: list[str] = []
-    for item in selected:
-        if item.status == "accepted" and item.branch_id is not None and (not route or route[-1] != item.branch_id):
-            route.append(item.branch_id)
-    if any(item.status == "ambiguous" for item in selected):
-        status = "ambiguous"
-        reason = "association de branche ambiguë dans l'intervalle propre à la visite"
+    route = tuple(gate for gate in (entry.gate_id if entry else None, exit_event.gate_id if exit_event else None) if gate is not None)
     return Visit(
         f"{event.source_line}:{sequence}", event.source_line, event.track_id, event.category,
         continuity_id, entry.gate_id if entry else None, exit_event.gate_id if exit_event else None,
         entry.estimated_time_s if entry else None, exit_event.estimated_time_s if exit_event else None,
-        status, tuple(route), reason, _crossing_key(entry) if entry else None,
+        status, route, reason, _crossing_key(entry) if entry else None,
         _crossing_key(exit_event) if exit_event else None,
     )
 
@@ -552,8 +506,8 @@ def _window_index(time_s: float, windows: list[tuple[float, float]]) -> int | No
 
 def build_movement_rows(visits: list[Visit], sector: Sector, categories: Iterable[str], windows: list[tuple[float, float]]) -> list[dict[str, object]]:
     """Calcule les proportions sur les seules visites classifiables et affiche le dénominateur."""
-    entries = sorted(branch.identifier for branch in sector.branches if branch.role == "entry")
-    exits = sorted(branch.identifier for branch in sector.branches if branch.role == "exit")
+    entries = sorted(gate.identifier for gate in sector.gates if gate.role == "entry")
+    exits = sorted(gate.identifier for gate in sector.gates if gate.role == "exit")
     categories = sorted(set(categories))
     movement_counts = Counter()
     denominators = Counter()
@@ -629,17 +583,14 @@ def profile_pneuma(source_path: str | Path, e01_directory: str | Path, sector_se
     all_crossings: list[Crossing] = []
     all_visits: list[Visit] = []
     categories: set[str] = set()
-    association_counts: Counter[str] = Counter()
     trajectories = rupture_count = 0
     for observations in iter_tracks(e01_directory / "observations.csv.gz"):
         trajectories += 1
         categories.add(observations[0].category)
-        evidence, counts = _routes_by_continuity(observations, sector, runtime.parameters)
-        association_counts.update(counts)
         crossings, ruptures = detect_crossings(observations, sector, runtime.parameters)
         rupture_count += ruptures
         all_crossings.extend(crossings)
-        all_visits.extend(reconstruct_visits(crossings, evidence))
+        all_visits.extend(reconstruct_visits(crossings))
 
     flow_rows = build_flow_rows(all_crossings, sector, categories, runtime.coverage, windows)
     movement_rows = build_movement_rows(all_visits, sector, categories, windows)
@@ -652,7 +603,6 @@ def profile_pneuma(source_path: str | Path, e01_directory: str | Path, sector_se
         if visit.status == "classifiable" and visit.entry_gate and visit.exit_gate
     )
     admissibility = evaluate_admissibility(sector, runtime, all_visits)
-    association_denominator = sum(association_counts[key] for key in ("accepted", "ambiguous", "outside", "insufficient"))
     summary = {
         "schema_version": SCHEMA_VERSION,
         "execution": {"status": "succeeded"},
@@ -662,13 +612,13 @@ def profile_pneuma(source_path: str | Path, e01_directory: str | Path, sector_se
             "validation_reference": "not_performed",
             "sensitivity_analysis": "not_performed",
         },
-        "counts": {"input_trajectory_rows": input_trajectory_rows, "trajectories_with_valid_observations": trajectories, "trajectories_without_valid_observations": input_trajectory_rows - trajectories, "crossings": len(all_crossings), "visits": len(all_visits), "ruptures": rupture_count, "visits_by_status": dict(sorted(visit_counts.items())), "associations_by_status": dict(sorted(association_counts.items()))},
-        "association_quality": {"accepted": association_counts["accepted"], "denominator": association_denominator, "rate": None if association_denominator == 0 else association_counts["accepted"] / association_denominator},
+        "method": "oriented_finite_virtual_gates",
+        "counts": {"input_trajectory_rows": input_trajectory_rows, "trajectories_with_valid_observations": trajectories, "trajectories_without_valid_observations": input_trajectory_rows - trajectories, "crossings": len(all_crossings), "visits": len(all_visits), "ruptures": rupture_count, "visits_by_status": dict(sorted(visit_counts.items()))},
         "crossings_by_gate": dict(sorted(crossings_by_gate.items())),
         "crossings_by_category": dict(sorted(crossings_by_category.items())),
         "classifiable_movements": dict(sorted(movements.items())),
         "coverage": {gate: {"status": "unknown", "evidence": runtime.coverage_evidence[gate]} if intervals is None else {"status": "established" if intervals else "zero_exposure", "interval_count": len(intervals), "duration_s": sum(interval.end_s - interval.start_s for interval in intervals), "evidence": runtime.coverage_evidence[gate]} for gate, intervals in sorted(runtime.coverage.items())},
-        "limitations": ["Les branches sont des axes locaux bornés dérivés du centre et des portes figées, pas un map-matching de voie.", "Les débits ne sont définis que lorsque l'exposition de la porte est explicitement fournie ; seuls les événements inclus dans cette exposition alimentent leur numérateur.", "Les mouvements sont des couples entrée-sortie observés dans le secteur, pas des origines-destinations réelles."],
+        "limitations": ["La méthode détecte des intersections avec des portes finies orientées ; elle ne réalise aucun map-matching de voie.", "Les débits ne sont définis que lorsque l'exposition de la porte est explicitement fournie ; seuls les événements inclus dans cette exposition alimentent leur numérateur.", "Les mouvements sont des couples entrée-sortie observés dans le secteur, pas des origines-destinations réelles."],
     }
 
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -692,7 +642,7 @@ def profile_pneuma(source_path: str | Path, e01_directory: str | Path, sector_se
         report += f"- Admissibilité empirique : **{admissibility['status']}** ; critères : {admissibility['criteria']}.\n"
         report += "- Validation scientifique : **pending** ; la référence manuelle et l'analyse de sensibilité restent à réaliser.\n\n"
         report += "## Qualité et couverture\n\n"
-        report += f"- Associations : {dict(sorted(association_counts.items()))} ; taux accepté {summary['association_quality']['accepted']}/{summary['association_quality']['denominator']}.\n"
+        report += "- Méthode : intersections orientées avec des portes virtuelles finies.\n"
         report += f"- Franchissements par porte : {summary['crossings_by_gate']}.\n"
         report += f"- Franchissements par catégorie : {summary['crossings_by_category']}.\n"
         report += f"- Visites : {dict(sorted(visit_counts.items()))}.\n"

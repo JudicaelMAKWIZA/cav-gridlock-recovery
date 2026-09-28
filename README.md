@@ -17,31 +17,26 @@ technique. Les diagnostics signalent les anomalies, sans les corriger.
 
 ## CGR-E02 — Profil d'un secteur pNEUMA
 
-CGR-E02 réutilise exclusivement les exports normalisés de CGR-E01. Il associe
-prudemment les déplacements aux branches du secteur figé, détecte les portes
-franchies, reconstruit des visites et produit des comptages et proportions avec
-leur couverture et leurs dénominateurs. Il ne réalise ni map-matching exhaustif,
-ni reconstruction des origines-destinations réelles, ni simulation.
+CGR-E02 réutilise exclusivement les exports normalisés de CGR-E01. Il détecte
+les intersections orientées avec les portes finies du secteur figé, reconstruit
+des visites et produit des comptages et proportions avec leur couverture et
+leurs dénominateurs. Il ne réalise ni map-matching, ni reconstruction des
+origines-destinations réelles, ni simulation.
 
 ```bash
 python scripts/profile_pneuma.py \
   --source <20181024_d3_0830_0900.csv> \
   --cgr-e01-dir outputs/empirical/CGR-E01/20181024_d3_0830_0900 \
-  --sector-seed data/external/osm/cgr_e02_c2_sector_seed.json \
+  --sector-seed data/external/osm/cgr_e02_sector_seed.json \
   --geometry-source data/external/osm/cgr_e02_roads_2018.osm \
-  --runtime-config <configuration-runtime.json> \
+  --runtime-config data/external/osm/cgr_e02_runtime.json \
   --output-dir outputs/empirical/CGR-E02/<execution>
 ```
 
 La configuration d'exécution utilise le schéma `CGR-E02-runtime-1`. Elle doit
-déclarer explicitement les seuils `branch_tol_m`,
-`branch_limit_m`,
-`heading_tol_deg`, `ambiguity_margin_m`,
-`min_move_m`, `hysteresis_m`,
-`rearm_dist_m`, `max_time_gap_s` et `max_space_gap_m`.
-`branch_limit_m` borne, depuis le centre du secteur, la portée radiale où
-une branche peut recevoir une association ; les axes ne sont donc pas prolongés
-indéfiniment. La couverture est fournie par porte sous forme d'intervalles
+déclarer explicitement `deduplication_s`, `max_time_gap_s` et
+`max_space_gap_m`. La géométrie bornée est celle des segments de portes : aucun
+axe de branche n'est prolongé. La couverture est fournie par porte sous forme d'intervalles
 `[début, fin]`, ou par la chaîne
 `"unknown"`. Une couverture inconnue ne produit jamais un débit nul : le débit
 reste indéfini. Dans une fenêtre partiellement couverte, le débit utilise seulement

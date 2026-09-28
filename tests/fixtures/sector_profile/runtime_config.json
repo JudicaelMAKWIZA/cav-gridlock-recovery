@@ -1,13 +1,7 @@
 {
   "schema": "CGR-E02-runtime-1",
   "algorithm": {
-    "branch_tol_m": 6.0,
-    "branch_limit_m": 60.0,
-    "heading_tol_deg": 45.0,
-    "ambiguity_margin_m": 1.0,
-    "min_move_m": 0.05,
-    "hysteresis_m": 0.5,
-    "rearm_dist_m": 5.0,
+    "deduplication_s": 1.0,
     "max_time_gap_s": 2.0,
     "max_space_gap_m": 15.0
   },

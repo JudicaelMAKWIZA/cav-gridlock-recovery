@@ -9,7 +9,6 @@ import tempfile
 import unittest
 
 from cav_recovery.empirical.demand_profile import (
-    BranchEvidence,
     CoverageInterval,
     ProfileInputError,
     Visit,
@@ -95,43 +94,21 @@ class DemandProfileTests(unittest.TestCase):
 
     def test_true_exit_then_new_entry_creates_two_visits(self):
         events = [crossing("N", "entry", 1, 0), crossing("S", "exit", 2, 0), crossing("W", "entry", 4, 1), crossing("E", "exit", 5, 1)]
-        evidence = {
-            0: [BranchEvidence(0, 0.9, 1.5, "accepted", "N"), BranchEvidence(0, 1.5, 2.1, "accepted", "S")],
-            1: [BranchEvidence(1, 3.9, 4.5, "accepted", "W"), BranchEvidence(1, 4.5, 5.1, "accepted", "E")],
-        }
-        visits = reconstruct_visits(events, evidence)
+        visits = reconstruct_visits(events)
         self.assertEqual([(visit.entry_gate, visit.exit_gate, visit.status) for visit in visits], [("N", "S", "classifiable"), ("W", "E", "classifiable")])
 
     def test_two_visits_in_same_continuity_keep_routes_and_crossings_separate(self):
         events = [crossing("N", "entry", 1), crossing("S", "exit", 2), crossing("N", "entry", 4), crossing("S", "exit", 5)]
-        evidence = {0: [
-            BranchEvidence(0, 0.9, 1.4, "accepted", "N"),
-            BranchEvidence(0, 1.5, 2.1, "accepted", "S"),
-            BranchEvidence(0, 3.9, 4.4, "accepted", "N"),
-            BranchEvidence(0, 4.5, 5.1, "accepted", "S"),
-        ]}
-        visits = reconstruct_visits(events, evidence)
+        visits = reconstruct_visits(events)
         assignments = _visit_ids_by_crossing(visits)
         self.assertEqual([visit.route for visit in visits], [("N", "S"), ("N", "S")])
         self.assertNotEqual(visits[0].visit_id, visits[1].visit_id)
         self.assertEqual([assignments[_crossing_key(event)] for event in events], [visits[0].visit_id, visits[0].visit_id, visits[1].visit_id, visits[1].visit_id])
 
-    def test_censorship_and_ambiguity_never_create_certain_movement(self):
-        censored = reconstruct_visits([crossing("S", "exit", 2)], {0: [BranchEvidence(0, 1.5, 2.1, "accepted", "S")]})
-        ambiguous = reconstruct_visits([crossing("N", "entry", 1), crossing("S", "exit", 2)], {0: [BranchEvidence(0, 1.1, 1.9, "ambiguous", None)]})
+    def test_censorship_never_creates_certain_movement(self):
+        censored = reconstruct_visits([crossing("S", "exit", 2)])
         self.assertEqual(censored[0].status, "censored_entry")
-        self.assertEqual(ambiguous[0].status, "ambiguous")
-
-    def test_distant_ambiguity_does_not_contaminate_local_visit(self):
-        events = [crossing("N", "entry", 10), crossing("S", "exit", 20)]
-        evidence = {0: [
-            BranchEvidence(0, 0, 1, "ambiguous", None),
-            BranchEvidence(0, 9.5, 11, "accepted", "N"),
-            BranchEvidence(0, 19, 20.5, "accepted", "S"),
-        ]}
-        visit = reconstruct_visits(events, evidence)[0]
-        self.assertEqual(visit.status, "classifiable")
-        self.assertEqual(visit.route, ("N", "S"))
+        self.assertEqual(censored[0].route, ("S",))
 
     def test_coverage_unknown_differs_from_observed_zero(self):
         events = [crossing("N", "entry", 10)]

@@ -4,10 +4,9 @@ import tempfile
 import unittest
 
 from cav_recovery.empirical.sector import (
-    AssociationParameters,
+    CrossingParameters,
     SectorConfigurationError,
     TrackObservation,
-    associate_segment,
     detect_crossings,
     load_sector,
 )
@@ -22,11 +21,9 @@ def observation(index, x_m, y_m, time_s, track_id="t"):
 
 
 def parameters(**changes):
-    values = dict(branch_tol_m=6.0, branch_limit_m=60.0, heading_tol_deg=45.0, ambiguity_margin_m=1.0,
-                  min_move_m=0.05, hysteresis_m=0.5,
-                  rearm_dist_m=5.0, max_time_gap_s=2.0, max_space_gap_m=15.0)
+    values = dict(deduplication_s=1.0, max_time_gap_s=2.0, max_space_gap_m=15.0)
     values.update(changes)
-    return AssociationParameters(**values)
+    return CrossingParameters(**values)
 
 
 class SectorTests(unittest.TestCase):
@@ -39,6 +36,12 @@ class SectorTests(unittest.TestCase):
         self.assertEqual([(event.gate_id, event.role) for event in crossings], [("N", "entry"), ("S", "exit")])
         self.assertEqual(ruptures, 0)
         self.assertTrue(all(event.interval_start_s <= event.estimated_time_s <= event.interval_end_s for event in crossings))
+
+    def test_turn_crosses_one_entry_and_one_exit(self):
+        coordinates = [(0, 30), (0, 21), (0, 19), (0, 5), (5, 0), (19, 0), (21, 0), (30, 0)]
+        points = [observation(index, x_m, y_m, index * 0.2) for index, (x_m, y_m) in enumerate(coordinates)]
+        crossings, _ = detect_crossings(points, self.sector, parameters())
+        self.assertEqual([(event.gate_id, event.role) for event in crossings], [("N", "entry"), ("E", "exit")])
 
     def test_oscillation_near_gate_does_not_recount(self):
         points = [observation(index, 0, y, index * 0.2) for index, y in enumerate([25, 21, 19, 21, 19, 15, 10])]
@@ -63,7 +66,7 @@ class SectorTests(unittest.TestCase):
         self.assertEqual(crossings, [])
         self.assertEqual(ruptures, 1)
 
-    def test_hysteresis_band_cannot_extend_interpolation_beyond_limits(self):
+    def test_slow_progression_uses_only_the_pair_that_crosses(self):
         points = [
             observation(0, 0, 21, 0.0),
             observation(1, 0, 20.2, 0.8),
@@ -72,28 +75,46 @@ class SectorTests(unittest.TestCase):
             observation(4, 0, 19.0, 3.2),
         ]
         crossings, ruptures = detect_crossings(points, self.sector, parameters(max_time_gap_s=1.0))
-        self.assertEqual(crossings, [])
+        self.assertEqual(len(crossings), 1)
+        self.assertEqual((crossings[0].from_group_index, crossings[0].to_group_index), (2, 3))
         self.assertEqual(ruptures, 0)
 
-    def test_branch_association_can_remain_ambiguous(self):
-        previous = observation(0, -12, 12, 0)
-        current = observation(1, -8, 8, 1)
-        result = associate_segment(previous, current, self.sector, parameters(branch_tol_m=15.0, heading_tol_deg=50.0))
-        self.assertEqual(result.status, "ambiguous")
-        self.assertIsNone(result.branch_id)
+    def test_reverse_crossing_is_not_counted(self):
+        points = [observation(0, 0, 15, 0), observation(1, 0, 25, 1)]
+        crossings, _ = detect_crossings(points, self.sector, parameters())
+        self.assertEqual(crossings, [])
 
-    def test_association_is_bounded_to_the_useful_sector(self):
-        previous = observation(0, -102, 102, 0)
-        current = observation(1, -98, 98, 1)
-        result = associate_segment(previous, current, self.sector, parameters(branch_tol_m=150.0, heading_tol_deg=50.0, branch_limit_m=60.0))
-        self.assertEqual(result.status, "outside")
+    def test_distant_motion_cannot_cross_a_finite_gate(self):
+        points = [observation(0, -100, 25, 0), observation(1, -100, 15, 1)]
+        crossings, _ = detect_crossings(points, self.sector, parameters())
+        self.assertEqual(crossings, [])
 
-    def test_distant_ambiguity_does_not_affect_local_association(self):
-        configured = parameters(branch_tol_m=150.0, heading_tol_deg=50.0, branch_limit_m=60.0)
-        distant = associate_segment(observation(0, -102, 102, 0), observation(1, -98, 98, 1), self.sector, configured)
-        local = associate_segment(observation(2, 0, 30, 2), observation(3, 0, 25, 3), self.sector, configured)
-        self.assertEqual(distant.status, "outside")
-        self.assertEqual(local.status, "accepted")
+    def test_near_gate_without_crossing_is_negative(self):
+        points = [observation(0, -5, 21, 0), observation(1, 5, 21, 1)]
+        crossings, _ = detect_crossings(points, self.sector, parameters())
+        self.assertEqual(crossings, [])
+
+    def test_two_passages_separated_by_deduplication_are_retained(self):
+        points = [
+            observation(0, 0, 21, 0),
+            observation(1, 0, 19, 0.2),
+            observation(2, 0, 21, 1.2),
+            observation(3, 0, 19, 2.2),
+        ]
+        crossings, _ = detect_crossings(points, self.sector, parameters())
+        self.assertEqual([event.gate_id for event in crossings], ["N", "N"])
+
+    def test_non_increasing_time_breaks_continuity(self):
+        points = [observation(0, 0, 25, 1), observation(1, 0, 15, 0.5)]
+        crossings, ruptures = detect_crossings(points, self.sector, parameters())
+        self.assertEqual(crossings, [])
+        self.assertEqual(ruptures, 1)
+
+    def test_detection_is_deterministic(self):
+        points = [observation(index, 0, y, index * 0.2) for index, y in enumerate([25, 21, 19, 10])]
+        first = detect_crossings(points, self.sector, parameters())
+        second = detect_crossings(points, self.sector, parameters())
+        self.assertEqual(first, second)
 
     def test_degenerate_gate_is_rejected(self):
         document = json.loads((FIXTURES / "sector_seed.json").read_text(encoding="utf-8"))
@@ -104,6 +125,6 @@ class SectorTests(unittest.TestCase):
             with self.assertRaises(SectorConfigurationError):
                 load_sector(path)
 
-    def test_parameters_reject_incoherent_hysteresis(self):
+    def test_parameters_reject_non_positive_threshold(self):
         with self.assertRaises(SectorConfigurationError):
-            parameters(hysteresis_m=5.0, rearm_dist_m=1.0).validate()
+            parameters(deduplication_s=0.0).validate()
