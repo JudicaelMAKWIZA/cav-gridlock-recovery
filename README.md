@@ -1,7 +1,7 @@
 ## CGR-E01 — Qualification pNEUMA
 
-La seule fonction empirique disponible qualifie un fichier pNEUMA à une ligne par
-trajectoire. Elle lit la source progressivement, ne la modifie jamais et ne fait ni
+CGR-E01 qualifie un fichier pNEUMA à une ligne par trajectoire. Il lit la source
+progressivement, ne la modifie jamais et ne fait ni
 analyse de flux, ni reconstruction de route/OD, ni map-matching, ni simulation.
 
 ```bash
@@ -25,11 +25,11 @@ origines-destinations réelles, ni simulation.
 
 ```bash
 python scripts/profile_pneuma.py \
-  --source <20181024_d3_0830_0900.csv> \
-  --cgr-e01-dir outputs/empirical/CGR-E01/20181024_d3_0830_0900 \
-  --sector-seed data/external/osm/cgr_e02_sector_seed.json \
-  --geometry-source data/external/osm/cgr_e02_roads_2018.osm \
-  --runtime-config data/external/osm/cgr_e02_runtime.json \
+  --source <fichier-pNEUMA-prive.csv> \
+  --cgr-e01-dir <dossier-prive-des-exports-CGR-E01> \
+  --sector-seed <seed-prive-du-secteur.json> \
+  --geometry-source <geometrie-OSM-historique-privee.osm> \
+  --runtime-config <configuration-privee-CGR-E02.json> \
   --output-dir outputs/empirical/CGR-E02/<execution>
 ```
 
