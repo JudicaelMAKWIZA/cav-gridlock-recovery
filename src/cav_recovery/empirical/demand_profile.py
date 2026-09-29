@@ -248,8 +248,8 @@ def load_runtime_configuration(path: str | Path, sector: Sector) -> RuntimeConfi
     justification = document.get("algorithm_justification")
     if not isinstance(justification, str) or not justification.strip():
         raise SectorConfigurationError("La justification des seuils algorithmiques est obligatoire.")
-    if document.get("manual_validation_used_for_tuning") is not False:
-        raise SectorConfigurationError("La configuration doit déclarer que la référence manuelle n'a pas servi au réglage.")
+    if document.get("validation_reference_used_for_tuning") is not False:
+        raise SectorConfigurationError("La configuration doit déclarer que la référence de validation n'a pas servi au réglage.")
     coverage_document = document.get("coverage")
     coverage_evidence_document = document.get("coverage_evidence")
     if not isinstance(coverage_document, dict):
@@ -514,7 +514,8 @@ def build_movement_rows(visits: list[Visit], sector: Sector, categories: Iterabl
     status_counts = Counter()
     for visit in visits:
         if visit.entry_gate is None or visit.entry_time_s is None:
-            status_counts[("NO_OBSERVED_ENTRY", visit.category, _window_index(visit.exit_time_s or -math.inf, windows), visit.status)] += 1
+            exit_time_s = visit.exit_time_s if visit.exit_time_s is not None else -math.inf
+            status_counts[("NO_OBSERVED_ENTRY", visit.category, _window_index(exit_time_s, windows), visit.status)] += 1
             continue
         window_index = _window_index(visit.entry_time_s, windows)
         if visit.status == "classifiable" and visit.exit_gate is not None:
@@ -609,7 +610,7 @@ def profile_pneuma(source_path: str | Path, e01_directory: str | Path, sector_se
         "empirical_admissibility": admissibility,
         "scientific_validation": {
             "status": "pending",
-            "validation_reference": "human_review_pending",
+            "validation_reference": "pending",
             "sensitivity_analysis": "not_assessed_by_automatic_pipeline",
         },
         "method": "oriented_finite_virtual_gates",
@@ -624,7 +625,7 @@ def profile_pneuma(source_path: str | Path, e01_directory: str | Path, sector_se
     destination.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=".cgr-e02-", dir=destination.parent))
     try:
-        runtime_copy = {"schema": "CGR-E02-runtime-used-1", "sector_seed": sector.source_document, "sector_seed_sha256": _sha256(seed_path), "metric_crs": {"name": "repère tangent équirectangulaire local", "origin_lat": sector.center_lat, "origin_lon": sector.center_lon, "units": "m"}, "algorithm": asdict(runtime.parameters), "algorithm_justification": runtime.algorithm_justification, "manual_validation_used_for_tuning": False, "coverage": {gate: "unknown" if intervals is None else [[item.start_s, item.end_s] for item in intervals] for gate, intervals in sorted(runtime.coverage.items())}, "coverage_evidence": dict(sorted(runtime.coverage_evidence.items())), "aggregation": {"origin_s": origin_s, "window_s": window_s, "interval_convention": "[a,b)", "terminal_s": end_s}}
+        runtime_copy = {"schema": "CGR-E02-runtime-used-1", "sector_seed": sector.source_document, "sector_seed_sha256": _sha256(seed_path), "metric_crs": {"name": "repère tangent équirectangulaire local", "origin_lat": sector.center_lat, "origin_lon": sector.center_lon, "units": "m"}, "algorithm": asdict(runtime.parameters), "algorithm_justification": runtime.algorithm_justification, "validation_reference_used_for_tuning": False, "coverage": {gate: "unknown" if intervals is None else [[item.start_s, item.end_s] for item in intervals] for gate, intervals in sorted(runtime.coverage.items())}, "coverage_evidence": dict(sorted(runtime.coverage_evidence.items())), "aggregation": {"origin_s": origin_s, "window_s": window_s, "interval_convention": "[a,b)", "terminal_s": end_s}}
         (stage / "sector_config.json").write_text(json.dumps(runtime_copy, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         (stage / "sector.geojson").write_text(json.dumps(_sector_geojson(sector), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         crossing_to_visit = _visit_ids_by_crossing(all_visits)
@@ -640,7 +641,7 @@ def profile_pneuma(source_path: str | Path, e01_directory: str | Path, sector_se
         report += f"Exécution technique : **{summary['execution']['status']}**. {trajectories} trajectoires, {len(all_crossings)} franchissements et {len(all_visits)} visites reconstruits.\n\n"
         report += "## Admissibilité et validation\n\n"
         report += f"- Admissibilité empirique : **{admissibility['status']}** ; critères : {admissibility['criteria']}.\n"
-        report += "- Validation scientifique : **pending** ; le pipeline automatique ne décide ni de la revue humaine ni de la sensibilité externe.\n\n"
+        report += "- Validation scientifique : **pending** ; la référence de validation et la sensibilité restent évaluées séparément.\n\n"
         report += "## Qualité et couverture\n\n"
         report += "- Méthode : intersections orientées avec des portes virtuelles finies.\n"
         report += f"- Franchissements par porte : {summary['crossings_by_gate']}.\n"
@@ -655,10 +656,10 @@ def profile_pneuma(source_path: str | Path, e01_directory: str | Path, sector_se
         report += "- La géométrie de contrôle est exportée dans `sector.geojson` et la configuration complète dans `sector_config.json`.\n"
         report += "- Reproduction : relancer `scripts/profile_pneuma.py` avec les cinq entrées dont les empreintes figurent dans `manifest.json`.\n\n"
         report += "## Limites\n\n" + "\n".join(f"- {item}" for item in summary["limitations"]) + "\n\n"
-        report += "## Validation manuelle\n\nLa référence est fournie comme gabarit vide : elle doit rester indépendante du réglage automatique et être renseignée avant validation scientifique.\n"
+        report += "## Référence de validation\n\nLa référence est fournie comme gabarit vide : elle doit rester indépendante du réglage automatique et être renseignée avant validation scientifique.\n"
         report += "\n## Sensibilité\n\nL'analyse bornée des seuils n'est pas exécutée automatiquement par ce pipeline ; son statut doit être documenté séparément avant validation scientifique.\n"
         (stage / "profile_report.md").write_text(report, encoding="utf-8")
-        manifest = {"schema_version": SCHEMA_VERSION, "execution": summary["execution"], "empirical_admissibility": admissibility, "scientific_validation": summary["scientific_validation"], "source": manifest_e01["source"], "inputs": {"cgr_e01_manifest_sha256": _sha256(e01_directory / "manifest.json"), "locally_computed_cgr_e01_export_sha256": dict(sorted(export_hashes.items())), "sector_seed_sha256": _sha256(seed_path), "geometry_sha256": _sha256(geometry_path), "runtime_config_sha256": _sha256(runtime_path)}, "configuration": runtime_copy, "software": _code_state(), "outputs": list(OUTPUTS), "validation_reference": "empty_template_requires_independent_manual_annotation"}
+        manifest = {"schema_version": SCHEMA_VERSION, "execution": summary["execution"], "empirical_admissibility": admissibility, "scientific_validation": summary["scientific_validation"], "source": manifest_e01["source"], "inputs": {"cgr_e01_manifest_sha256": _sha256(e01_directory / "manifest.json"), "locally_computed_cgr_e01_export_sha256": dict(sorted(export_hashes.items())), "sector_seed_sha256": _sha256(seed_path), "geometry_sha256": _sha256(geometry_path), "runtime_config_sha256": _sha256(runtime_path)}, "configuration": runtime_copy, "software": _code_state(), "outputs": list(OUTPUTS), "validation_reference": "empty_template_requires_independent_annotation"}
         (stage / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         destination.mkdir(exist_ok=True)
         for name in [item for item in OUTPUTS if item != "manifest.json"] + ["manifest.json"]:

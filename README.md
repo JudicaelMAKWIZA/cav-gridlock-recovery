@@ -43,7 +43,7 @@ reste indéfini. Dans une fenêtre partiellement couverte, le débit utilise seu
 les franchissements compris dans les sous-intervalles d'exposition ; le comptage brut
 reste disponible séparément. Les seuils de diagnostic de présélection ne sont pas repris
 automatiquement. La configuration doit aussi contenir une justification des
-seuils, confirmer que la référence manuelle n'a pas servi à leur réglage et
+seuils, confirmer que la référence de validation n'a pas servi à leur réglage et
 documenter la preuve — ou l'absence de preuve — de couverture pour chaque porte.
 
 Le dossier de sortie reçoit le manifeste et la configuration utilisés, la
@@ -57,5 +57,5 @@ du seed, de la géométrie et de la configuration utilisée. L'état technique d
 l'exécution, l'admissibilité empirique et la validation scientifique sont publiés
 séparément ; une exécution réussie ne vaut pas validation scientifique.
 `validation_reference.csv` est créé
-comme gabarit vide : son annotation manuelle indépendante reste une étape de
+comme gabarit vide : son annotation indépendante reste une étape de
 validation scientifique, distincte du pipeline automatique.

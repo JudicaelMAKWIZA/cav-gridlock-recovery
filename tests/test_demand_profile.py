@@ -155,6 +155,14 @@ class DemandProfileTests(unittest.TestCase):
         self.assertEqual(movements[("N", "E")]["proportion"], 0.5)
         self.assertTrue(any(row["visit_status"] == "censored_exit" for row in rows))
 
+    def test_censored_entry_at_zero_uses_first_window(self):
+        visit = Visit("1", 2, "a", "Car", 0, None, "S", None, 0.0, "censored_entry", ("S",), "entrée non observée")
+        rows = build_movement_rows([visit], self.sector, ["Car"], [(0.0, 60.0)])
+        censored = next(row for row in rows if row["record_type"] == "unclassified_visit")
+        self.assertEqual(censored["window_start_s"], 0.0)
+        self.assertEqual(censored["window_end_s"], 60.0)
+        self.assertEqual(censored["visit_status"], "censored_entry")
+
     def test_incompatible_provenance_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -211,16 +219,19 @@ class DemandProfileTests(unittest.TestCase):
             self.assertEqual(first_summary["execution"]["status"], "succeeded")
             self.assertEqual(first_summary["empirical_admissibility"]["status"], "undetermined")
             self.assertEqual(first_summary["scientific_validation"]["status"], "pending")
-            self.assertEqual(first_summary["scientific_validation"]["validation_reference"], "human_review_pending")
+            self.assertEqual(first_summary["scientific_validation"]["validation_reference"], "pending")
             self.assertEqual(first_summary["scientific_validation"]["sensitivity_analysis"], "not_assessed_by_automatic_pipeline")
             self.assertEqual(first_summary, second_summary)
             for name in ["crossings.csv", "partial_routes.csv", "flow_profile.csv", "movement_profile.csv", "quality_summary.json", "sector.geojson", "sector_config.json", "profile_report.md"]:
                 self.assertEqual((first / name).read_bytes(), (second / name).read_bytes(), name)
             manifest = json.loads((first / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["schema_version"], "CGR-E02-1")
+            self.assertEqual(manifest["validation_reference"], "empty_template_requires_independent_annotation")
+            self.assertFalse(manifest["configuration"]["validation_reference_used_for_tuning"])
             self.assertIn("locally_computed_cgr_e01_export_sha256", manifest["inputs"])
             self.assertNotIn("cgr_e01_exports_sha256", manifest["inputs"])
             self.assertNotIn(str(root), json.dumps(manifest))
+            self.assertIn("## Référence de validation", (first / "profile_report.md").read_text(encoding="utf-8"))
             with (first / "partial_routes.csv").open(encoding="utf-8", newline="") as handle:
                 routes = list(csv.DictReader(handle))
             self.assertEqual([(row["entry_gate"], row["exit_gate"], row["status"]) for row in routes], [("N", "S", "classifiable")])

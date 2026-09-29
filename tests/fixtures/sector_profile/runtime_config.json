@@ -5,8 +5,8 @@
     "max_time_gap_s": 2.0,
     "max_space_gap_m": 15.0
   },
-  "algorithm_justification": "Seuils dédiés à la géométrie synthétique connue ; aucune référence manuelle réelle n'est utilisée.",
-  "manual_validation_used_for_tuning": false,
+  "algorithm_justification": "Seuils dédiés à la géométrie synthétique connue ; aucune référence de validation n'est utilisée.",
+  "validation_reference_used_for_tuning": false,
   "coverage": {
     "N": [[0.0, 120.0]],
     "W": "unknown",
