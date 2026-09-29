@@ -46,6 +46,11 @@ automatiquement. La configuration doit aussi contenir une justification des
 seuils, confirmer que la référence manuelle n'a pas servi à leur réglage et
 documenter la preuve — ou l'absence de preuve — de couverture pour chaque porte.
 
+Le dossier de sortie reçoit le manifeste et la configuration utilisés, la
+géométrie du secteur, les franchissements, les routes partielles, les profils de
+flux et de mouvements, le bilan de qualité, le gabarit de validation et le
+rapport d'exécution.
+
 Les résultats réels sont privés dans `outputs/`. Le manifeste vérifie et
 enregistre les empreintes calculées localement de la source, des exports CGR-E01,
 du seed, de la géométrie et de la configuration utilisée. L'état technique de

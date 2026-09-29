@@ -609,8 +609,8 @@ def profile_pneuma(source_path: str | Path, e01_directory: str | Path, sector_se
         "empirical_admissibility": admissibility,
         "scientific_validation": {
             "status": "pending",
-            "validation_reference": "not_performed",
-            "sensitivity_analysis": "not_performed",
+            "validation_reference": "human_review_pending",
+            "sensitivity_analysis": "not_assessed_by_automatic_pipeline",
         },
         "method": "oriented_finite_virtual_gates",
         "counts": {"input_trajectory_rows": input_trajectory_rows, "trajectories_with_valid_observations": trajectories, "trajectories_without_valid_observations": input_trajectory_rows - trajectories, "crossings": len(all_crossings), "visits": len(all_visits), "ruptures": rupture_count, "visits_by_status": dict(sorted(visit_counts.items()))},
@@ -640,7 +640,7 @@ def profile_pneuma(source_path: str | Path, e01_directory: str | Path, sector_se
         report += f"Exécution technique : **{summary['execution']['status']}**. {trajectories} trajectoires, {len(all_crossings)} franchissements et {len(all_visits)} visites reconstruits.\n\n"
         report += "## Admissibilité et validation\n\n"
         report += f"- Admissibilité empirique : **{admissibility['status']}** ; critères : {admissibility['criteria']}.\n"
-        report += "- Validation scientifique : **pending** ; la référence manuelle et l'analyse de sensibilité restent à réaliser.\n\n"
+        report += "- Validation scientifique : **pending** ; le pipeline automatique ne décide ni de la revue humaine ni de la sensibilité externe.\n\n"
         report += "## Qualité et couverture\n\n"
         report += "- Méthode : intersections orientées avec des portes virtuelles finies.\n"
         report += f"- Franchissements par porte : {summary['crossings_by_gate']}.\n"
@@ -656,7 +656,7 @@ def profile_pneuma(source_path: str | Path, e01_directory: str | Path, sector_se
         report += "- Reproduction : relancer `scripts/profile_pneuma.py` avec les cinq entrées dont les empreintes figurent dans `manifest.json`.\n\n"
         report += "## Limites\n\n" + "\n".join(f"- {item}" for item in summary["limitations"]) + "\n\n"
         report += "## Validation manuelle\n\nLa référence est fournie comme gabarit vide : elle doit rester indépendante du réglage automatique et être renseignée avant validation scientifique.\n"
-        report += "\n## Sensibilité\n\nL'analyse bornée des seuils n'est pas exécutée automatiquement dans cette implémentation et reste à réaliser avant validation scientifique.\n"
+        report += "\n## Sensibilité\n\nL'analyse bornée des seuils n'est pas exécutée automatiquement par ce pipeline ; son statut doit être documenté séparément avant validation scientifique.\n"
         (stage / "profile_report.md").write_text(report, encoding="utf-8")
         manifest = {"schema_version": SCHEMA_VERSION, "execution": summary["execution"], "empirical_admissibility": admissibility, "scientific_validation": summary["scientific_validation"], "source": manifest_e01["source"], "inputs": {"cgr_e01_manifest_sha256": _sha256(e01_directory / "manifest.json"), "locally_computed_cgr_e01_export_sha256": dict(sorted(export_hashes.items())), "sector_seed_sha256": _sha256(seed_path), "geometry_sha256": _sha256(geometry_path), "runtime_config_sha256": _sha256(runtime_path)}, "configuration": runtime_copy, "software": _code_state(), "outputs": list(OUTPUTS), "validation_reference": "empty_template_requires_independent_manual_annotation"}
         (stage / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

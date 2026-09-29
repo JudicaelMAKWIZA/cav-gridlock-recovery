@@ -211,6 +211,8 @@ class DemandProfileTests(unittest.TestCase):
             self.assertEqual(first_summary["execution"]["status"], "succeeded")
             self.assertEqual(first_summary["empirical_admissibility"]["status"], "undetermined")
             self.assertEqual(first_summary["scientific_validation"]["status"], "pending")
+            self.assertEqual(first_summary["scientific_validation"]["validation_reference"], "human_review_pending")
+            self.assertEqual(first_summary["scientific_validation"]["sensitivity_analysis"], "not_assessed_by_automatic_pipeline")
             self.assertEqual(first_summary, second_summary)
             for name in ["crossings.csv", "partial_routes.csv", "flow_profile.csv", "movement_profile.csv", "quality_summary.json", "sector.geojson", "sector_config.json", "profile_report.md"]:
                 self.assertEqual((first / name).read_bytes(), (second / name).read_bytes(), name)
