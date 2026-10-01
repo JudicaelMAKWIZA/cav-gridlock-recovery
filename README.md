@@ -62,7 +62,7 @@ validation scientifique, distincte du pipeline automatique.
 
 ## CGR-E03 — Contrat empirique des scénarios
 
-CGR-E03 utilise les agrégats privés validés de CGR-E02. Les passages Car+Taxi
+Cette étape utilise les profils de trafic privés validés. Les passages Car+Taxi
 aux deux portes d'entrée définissent trois niveaux relatifs de charge sur les
 fenêtres complètes. Les six catégories pNEUMA restent documentées, mais seule
 la sous-population Car+Taxi alimente le contrat principal `passenger_CAV` :
@@ -70,8 +70,8 @@ LOW, MID et HIGH ne signifient ni congestion ni capacité.
 
 ```bash
 python scripts/build_empirical_contract.py \
-  --cgr-e02-dir <dossier-prive-CGR-E02> \
-  --coverage <couverture-privee-CGR-E02.json> \
+  --profile-dir <dossier-prive-de-profils> \
+  --coverage <couverture-privee.json> \
   --output-dir outputs/empirical/CGR-E03/<execution>
 ```
 

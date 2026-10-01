@@ -1,4 +1,4 @@
-"""Interface de construction du contrat empirique CGR-E03."""
+"""Interface de construction du contrat empirique de trafic."""
 
 from __future__ import annotations
 
@@ -13,23 +13,26 @@ from cav_recovery.empirical.scenario_contract import ContractInputError, build_e
 
 
 def main() -> int:
-    """Valide les chemins, exécute CGR-E03 et traduit les erreurs en codes stables."""
-    parser = argparse.ArgumentParser(description="Construire le contrat empirique CGR-E03 depuis les agrégats CGR-E02.")
-    parser.add_argument("--cgr-e02-dir", required=True, help="Dossier privé de l'exécution nominale CGR-E02")
-    parser.add_argument("--coverage", required=True, help="Preuve privée de couverture CGR-E02")
-    parser.add_argument("--output-dir", required=True, help="Nouveau dossier privé de résultats CGR-E03")
+    """Construit le contrat et traduit les erreurs en codes de sortie stables."""
+
+    parser = argparse.ArgumentParser(
+        description="Construire un contrat empirique depuis des profils de trafic validés."
+    )
+    parser.add_argument("--profile-dir", required=True, help="Dossier contenant les profils de trafic validés")
+    parser.add_argument("--coverage", required=True, help="Fichier décrivant la couverture temporelle")
+    parser.add_argument("--output-dir", required=True, help="Nouveau dossier de résultats")
     arguments = parser.parse_args()
     try:
-        summary = build_empirical_contract(arguments.cgr_e02_dir, arguments.coverage, arguments.output_dir)
+        summary = build_empirical_contract(arguments.profile_dir, arguments.coverage, arguments.output_dir)
     except ContractInputError as error:
-        print(f"CGR-E03 refusé : {error}", file=sys.stderr)
+        print(f"Contrat refusé : {error}", file=sys.stderr)
         return 2
     except Exception as error:
-        print(f"CGR-E03 erreur technique : {error}", file=sys.stderr)
+        print(f"Erreur technique : {error}", file=sys.stderr)
         return 1
     windows = summary["windows"]
     print(
-        f"CGR-E03 {summary['status']} : {windows['total']} fenêtres, "
+        f"Contrat {summary['status']} : {windows['total']} fenêtres, "
         f"dont {windows['complete']} complètes et {windows['partial']} partielle."
     )
     return 0
