@@ -1,80 +1,156 @@
-## CGR-E01 — Qualification pNEUMA
+# CAV Gridlock Recovery
 
-CGR-E01 qualifie un fichier pNEUMA à une ligne par trajectoire. Il lit la source
-progressivement, ne la modifie jamais et ne fait ni
-analyse de flux, ni reconstruction de route/OD, ni map-matching, ni simulation.
+Ce projet étudie la circulation de véhicules connectés et automatisés dans des
+situations où plusieurs véhicules peuvent se bloquer mutuellement. Il prépare
+d'abord des données de trafic réelles, puis servira à construire et évaluer des
+méthodes de détection et de récupération.
 
-```bash
-python scripts/qualify_pneuma.py --input <fichier.csv> --output-dir outputs/empirical/CGR-E01/<execution>
+## Objectif du projet
+
+Le projet vise à :
+
+- détecter les blocages formés par des dépendances entre véhicules et zones
+  routières ;
+- représenter ces dépendances sous une forme exploitable par un algorithme ;
+- choisir des actions capables de rétablir la circulation après la formation
+  d'un blocage ;
+- étudier ensuite une approche d'apprentissage multi-agent.
+
+La récupération après un blocage est donc aussi importante que sa prévention.
+Ces fonctions ne sont pas encore toutes implémentées.
+
+## État actuel
+
+Le dépôt permet actuellement de :
+
+- lire et vérifier progressivement des trajectoires pNEUMA sans modifier le
+  fichier source ;
+- étudier un secteur routier réel à partir d'une géométrie et de portes
+  virtuelles ;
+- extraire les passages, les visites et les mouvements observés ;
+- calculer des comptages, des proportions et des flux lorsque la couverture
+  temporelle est connue ;
+- répartir les fenêtres complètes entre trois niveaux relatifs de charge ;
+- construire un profil de trafic destiné aux futurs scénarios.
+
+Aucune simulation de blocage ni méthode de récupération n'est encore incluse.
+
+## Technologies
+
+- Python 3.12 ou version ultérieure ;
+- bibliothèque standard Python pour les traitements principaux ;
+- pytest pour les tests automatisés ;
+- fichiers CSV, JSON, GeoJSON et Markdown pour les entrées et les résultats.
+
+Le projet n'utilise pas encore SUMO ni TraCI.
+
+## Structure du dépôt
+
+```text
+src/cav_recovery/empirical/   lecture, validation et préparation du trafic
+scripts/                      commandes utilisables depuis le dépôt
+tests/                        tests automatisés et petites données synthétiques
+configs/                      configurations publiques du projet
+outputs/                      résultats générés, ignorés par Git
 ```
 
-Le dossier de sortie doit être nouveau ou vide. Il reçoit `manifest.json`,
-`trajectories.csv`, `observations.csv.gz`, `issues.csv`, `quality_summary.json` et
-`qualification_report.md`. Ces sorties et les données réelles restent privées via
-`.gitignore`. Un code de sortie `0` signifie qu'au moins un groupe est minimalement
-utilisable ; `2` signale une entrée refusée ou un fichier inutilisable ; `1` une erreur
-technique. Les diagnostics signalent les anomalies, sans les corriger.
+## Installation
 
-## CGR-E02 — Profil d'un secteur pNEUMA
-
-CGR-E02 réutilise exclusivement les exports normalisés de CGR-E01. Il détecte
-les intersections orientées avec les portes finies du secteur figé, reconstruit
-des visites et produit des comptages et proportions avec leur couverture et
-leurs dénominateurs. Il ne réalise ni map-matching, ni reconstruction des
-origines-destinations réelles, ni simulation.
+Créer un environnement Python puis installer le projet et les outils de test :
 
 ```bash
-python scripts/profile_pneuma.py \
-  --source <fichier-pNEUMA-prive.csv> \
-  --cgr-e01-dir <dossier-prive-des-exports-CGR-E01> \
-  --sector-seed <seed-prive-du-secteur.json> \
-  --geometry-source <geometrie-OSM-historique-privee.osm> \
-  --runtime-config <configuration-privee-CGR-E02.json> \
-  --output-dir outputs/empirical/CGR-E02/<execution>
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+python -m pip install -r requirements.txt
 ```
 
-La configuration d'exécution utilise le schéma `CGR-E02-runtime-1`. Elle doit
-déclarer explicitement `deduplication_s`, `max_time_gap_s` et
-`max_space_gap_m`. La géométrie bornée est celle des segments de portes : aucun
-axe de branche n'est prolongé. La couverture est fournie par porte sous forme d'intervalles
-`[début, fin]`, ou par la chaîne
-`"unknown"`. Une couverture inconnue ne produit jamais un débit nul : le débit
-reste indéfini. Dans une fenêtre partiellement couverte, le débit utilise seulement
-les franchissements compris dans les sous-intervalles d'exposition ; le comptage brut
-reste disponible séparément. Les seuils de diagnostic de présélection ne sont pas repris
-automatiquement. La configuration doit aussi contenir une justification des
-seuils, confirmer que la référence de validation n'a pas servi à leur réglage et
-documenter la preuve — ou l'absence de preuve — de couverture pour chaque porte.
+Sous Windows PowerShell, l'activation s'effectue avec :
 
-Le dossier de sortie reçoit le manifeste et la configuration utilisés, la
-géométrie du secteur, les franchissements, les routes partielles, les profils de
-flux et de mouvements, le bilan de qualité, le gabarit de validation et le
-rapport d'exécution.
+```powershell
+.venv\Scripts\Activate.ps1
+```
 
-Les résultats réels sont privés dans `outputs/`. Le manifeste vérifie et
-enregistre les empreintes calculées localement de la source, des exports CGR-E01,
-du seed, de la géométrie et de la configuration utilisée. L'état technique de
-l'exécution, l'admissibilité empirique et la validation scientifique sont publiés
-séparément ; une exécution réussie ne vaut pas validation scientifique.
-`validation_reference.csv` est créé
-comme gabarit vide : son annotation indépendante reste une étape de
-validation scientifique, distincte du pipeline automatique.
+## Vérifier l'installation
 
-## CGR-E03 — Contrat empirique des scénarios
+```bash
+python -m compileall -q src scripts tests
+python -m pytest -q
+```
 
-Cette étape utilise les profils de trafic privés validés. Les passages Car+Taxi
-aux deux portes d'entrée définissent trois niveaux relatifs de charge sur les
-fenêtres complètes. Les six catégories pNEUMA restent documentées, mais seule
-la sous-population Car+Taxi alimente le contrat principal `passenger_CAV` :
-LOW, MID et HIGH ne signifient ni congestion ni capacité.
+## Préparer les données de trafic
+
+### Vérifier un fichier pNEUMA
+
+La première commande lit le fichier progressivement, signale ses anomalies et
+produit des exports structurés sans modifier la source :
+
+```bash
+python scripts/qualify_pneuma.py \
+  --input <fichier-pneuma.csv> \
+  --output-dir <dossier-de-sortie>
+```
+
+### Construire les profils d'un secteur
+
+Cette commande utilise plusieurs fichiers de géométrie et de configuration.
+Afficher son aide pour connaître les arguments attendus :
+
+```bash
+python scripts/profile_pneuma.py --help
+```
+
+Elle produit notamment les passages par porte, les visites, les mouvements et
+les profils temporels du secteur étudié.
+
+### Construire le contrat de trafic
+
+Une fois les profils et leur couverture validés :
 
 ```bash
 python scripts/build_empirical_contract.py \
-  --profile-dir <dossier-prive-de-profils> \
-  --coverage <couverture-privee.json> \
-  --output-dir outputs/empirical/CGR-E03/<execution>
+  --profile-dir <dossier-des-profils> \
+  --coverage <fichier-de-couverture.json> \
+  --output-dir <dossier-de-sortie>
 ```
 
-Le dossier de sortie reçoit `regime_profile.csv`, `empirical_contract.json`,
-`quality_summary.json` et `regime_report.md`. Ces résultats restent privés.
-CGR-E03 ne construit encore aucun réseau, processus d'arrivée ou scénario SUMO.
+Le dossier de sortie contient :
+
+- `regime_profile.csv` ;
+- `empirical_contract.json` ;
+- `quality_summary.json` ;
+- `regime_report.md`.
+
+Chaque dossier de sortie doit être absent ou vide. Les commandes refusent
+d'écraser silencieusement des résultats existants.
+
+## Tests
+
+Lancer toute la suite avec :
+
+```bash
+python -m pytest -q
+```
+
+Les tests utilisent uniquement de petites données synthétiques.
+
+## Limites actuelles
+
+- Les données étudiées viennent actuellement d'un seul secteur pNEUMA.
+- Seules les catégories Car et Taxi servent à construire la population
+  principale de véhicules autonomes.
+- Motorcycle, Bus, Medium Vehicle et Heavy Vehicle restent décrits, mais ne
+  sont pas encore simulés.
+- LOW, MID et HIGH sont seulement des niveaux relatifs de trafic ; ils ne
+  représentent ni la congestion, ni la capacité de la route.
+- Les flux observés ne sont pas encore des taux d'insertion dans une
+  simulation.
+- Aucune simulation de blocage et aucune stratégie de récupération ne sont
+  intégrées dans cette branche.
+
+## Suite du projet
+
+Les prochaines étapes consisteront à construire les scénarios de simulation,
+représenter les conflits entre véhicules et zones routières, détecter les
+blocages, puis comparer des stratégies de récupération. L'apprentissage
+multi-agent sera étudié après la mise en place de cette base expérimentale.
