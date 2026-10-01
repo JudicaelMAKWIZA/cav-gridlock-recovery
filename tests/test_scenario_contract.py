@@ -351,6 +351,57 @@ class ScenarioContractTests(unittest.TestCase):
                 self.run_builder(e02, coverage, output)
             self.assertEqual((output / "keep.txt").read_text(encoding="utf-8"), "à conserver")
 
+    def test_provenance_limits_and_epistemic_statuses_are_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            e02, coverage = prepare_inputs(root)
+            output = root / "out"
+            self.run_builder(e02, coverage, output)
+            contract = json.loads((output / "empirical_contract.json").read_text(encoding="utf-8"))
+            report = (output / "regime_report.md").read_text(encoding="utf-8")
+            for limitation in scenario_contract.PROVENANCE_LIMITATIONS:
+                self.assertIn(limitation, contract["limitations"])
+                self.assertIn(limitation, report)
+            self.assertIn("## Statut des informations", report)
+            self.assertIn("OBSERVÉ", report)
+            self.assertIn("DÉRIVÉ", report)
+            self.assertIn("SUPPOSÉ", report)
+
+    def test_outputs_use_censoring_term(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            e02, coverage = prepare_inputs(root)
+            output = root / "out"
+            self.run_builder(e02, coverage, output)
+            contents = "\n".join(path.read_text(encoding="utf-8") for path in output.iterdir())
+            forbidden_term = "censor" + "ship"
+            self.assertNotIn(forbidden_term, contents.lower())
+            contract = json.loads((output / "empirical_contract.json").read_text(encoding="utf-8"))
+            statuses = contract["empirical_context"]["epistemic_status"]
+            self.assertIn("observed_counts_and_censoring", statuses)
+
+    def test_promotion_failure_leaves_existing_destination_empty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            e02, coverage = prepare_inputs(root)
+            output = root / "out"
+            output.mkdir()
+            with patch.object(scenario_contract.os, "replace", side_effect=OSError("promotion impossible")):
+                with self.assertRaisesRegex(OSError, "promotion impossible"):
+                    self.run_builder(e02, coverage, output)
+            self.assertTrue(output.is_dir())
+            self.assertEqual(list(output.iterdir()), [])
+            self.assertEqual(list(root.glob(".cgr-e03-*")), [])
+
+    def test_empty_output_directory_accepts_atomic_promotion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            e02, coverage = prepare_inputs(root)
+            output = root / "out"
+            output.mkdir()
+            self.run_builder(e02, coverage, output)
+            self.assertEqual(sorted(path.name for path in output.iterdir()), sorted(scenario_contract.OUTPUTS))
+
     def test_cli_refuses_incompatible_inputs_with_code_2(self):
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run([

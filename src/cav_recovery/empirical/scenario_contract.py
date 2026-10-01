@@ -54,6 +54,10 @@ MOVEMENT_FIELDS = {
     "visit_status",
 }
 OUTPUTS = ("regime_profile.csv", "empirical_contract.json", "quality_summary.json", "regime_report.md")
+PROVENANCE_LIMITATIONS = (
+    "La référence TEST de CGR-E02 a été révisée après une première évaluation ; le score final ne provient donc pas d'un jeu de vérité resté totalement intact. Cette réserve de provenance n'invalide pas les agrégats E02 audités.",
+    "Le profil nominal CGR-E02 a été produit avant le commit public final 2212be0 et n'a pas été rejoué sous ce commit ; la correction ultérieure du cas exit_time_s == 0.0 reste une réserve de reproductibilité, sans modifier les agrégats E02 audités.",
+)
 
 
 class ContractInputError(ValueError):
@@ -534,7 +538,7 @@ def _contract_document(
             "categories": list(ALL_CATEGORIES),
             "composition_observed": composition,
             "epistemic_status": {
-                "source_counts_and_censorship": "OBSERVÉ / issu du pipeline empirique validé",
+                "observed_counts_and_censoring": "OBSERVÉ / issu du pipeline empirique validé",
                 "sector_and_gates": "DÉRIVÉ / ESTIMÉ",
                 "shares_and_rates": "DÉRIVÉ / ESTIMÉ",
             },
@@ -563,6 +567,7 @@ def _contract_document(
             "Les mouvements sont locaux, conditionnels aux visites complètes et ne sont pas des origines-destinations réelles.",
             "La caractérisation repose sur une seule séquence courte et aucune période empirique indépendante n'est réservée.",
             "La couverture est inférée sans inspection du masque vidéo brut et aucun second secteur de transfert n'est validé.",
+            *PROVENANCE_LIMITATIONS,
         ],
     }
 
@@ -602,7 +607,7 @@ def _quality_document(window_rows: list[dict[str, object]], load_levels: list[di
             "window_partition_4_5_4": "pass",
             "flow_reconciliation": "pass",
             "movement_denominators": "pass",
-            "censorship_reconciliation": "pass",
+            "censoring_reconciliation": "pass",
             "excluded_categories_not_converted": "pass",
         },
     }
@@ -685,11 +690,27 @@ def _report(load_levels: list[dict[str, object]], composition: dict[str, object]
         "",
         "Motorcycle, Bus, Medium Vehicle et Heavy Vehicle restent documentés, sans conversion en voitures. Seuls Car et Taxi alimentent le contrat principal passenger_CAV.",
         "",
+        "## Statut des informations",
+        "",
+        "### OBSERVÉ / issu du pipeline empirique",
+        "",
+        "Les catégories pNEUMA, les comptages de passages, les mouvements classifiables, les censures et l'exposition selon le contrat E02 proviennent du pipeline empirique validé. Les franchissements et mouvements sont extraits des trajectoires ; ils ne sont pas annotés directement sur une vidéo brute.",
+        "",
+        "### DÉRIVÉ / ESTIMÉ",
+        "",
+        "Les portes et la configuration C3, les taux en véh/h, les parts d'entrée, les probabilités de mouvements, N_passenger_in, les niveaux LOW/MID/HIGH et l'agrégation Car+Taxi sont dérivés des données validées.",
+        "",
+        "### SUPPOSÉ / EXPÉRIMENTAL",
+        "",
+        "La population simulée principale en CAV et ses paramètres restent différés : dynamique longitudinale, car-following, dimensions, accélération et décélération, processus d'arrivée, feux, capacités, incidents et actions de récupération. Aucune valeur nouvelle n'est fixée ici.",
+        "",
         "## Limites",
         "",
         "Les taux sont des références empiriques de passages. Leur transformation en arrivées ou insertions SUMO n'est pas définie dans CGR-E03. La caractérisation porte sur un seul secteur et une seule séquence courte, avec une couverture inférée sans inspection vidéo brute.",
         "",
     ])
+    lines.extend(f"- {limitation}" for limitation in PROVENANCE_LIMITATIONS)
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -731,14 +752,20 @@ def build_empirical_contract(cgr_e02_dir: str | Path, coverage_path: str | Path,
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=".cgr-e03-", dir=destination.parent))
+    destination_was_empty = destination.exists()
     try:
         _write_csv(stage / "regime_profile.csv", window_rows)
         (stage / "empirical_contract.json").write_text(json.dumps(contract, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         (stage / "quality_summary.json").write_text(json.dumps(quality, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         (stage / "regime_report.md").write_text(_report(load_levels, composition), encoding="utf-8")
-        destination.mkdir(exist_ok=True)
-        for name in OUTPUTS:
-            os.replace(stage / name, destination / name)
+        if destination_was_empty:
+            destination.rmdir()
+        try:
+            os.replace(stage, destination)
+        except Exception:
+            if destination_was_empty and not destination.exists():
+                destination.mkdir()
+            raise
     finally:
         shutil.rmtree(stage, ignore_errors=True)
     return quality
