@@ -59,3 +59,22 @@ séparément ; une exécution réussie ne vaut pas validation scientifique.
 `validation_reference.csv` est créé
 comme gabarit vide : son annotation indépendante reste une étape de
 validation scientifique, distincte du pipeline automatique.
+
+## CGR-E03 — Contrat empirique des scénarios
+
+CGR-E03 utilise les agrégats privés validés de CGR-E02. Les passages Car+Taxi
+aux deux portes d'entrée définissent trois niveaux relatifs de charge sur les
+fenêtres complètes. Les six catégories pNEUMA restent documentées, mais seule
+la sous-population Car+Taxi alimente le contrat principal `passenger_CAV` :
+LOW, MID et HIGH ne signifient ni congestion ni capacité.
+
+```bash
+python scripts/build_empirical_contract.py \
+  --cgr-e02-dir <dossier-prive-CGR-E02> \
+  --coverage <couverture-privee-CGR-E02.json> \
+  --output-dir outputs/empirical/CGR-E03/<execution>
+```
+
+Le dossier de sortie reçoit `regime_profile.csv`, `empirical_contract.json`,
+`quality_summary.json` et `regime_report.md`. Ces résultats restent privés.
+CGR-E03 ne construit encore aucun réseau, processus d'arrivée ou scénario SUMO.
