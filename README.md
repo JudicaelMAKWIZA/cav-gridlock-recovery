@@ -16,7 +16,8 @@ Le projet vise à :
   d'un blocage ;
 - étudier ensuite une approche d'apprentissage multi-agent.
 
-La récupération après un blocage est donc aussi importante que sa prévention.
+Le projet se concentre principalement sur la récupération après un blocage
+déjà formé. La prévention reste secondaire.
 Ces fonctions ne sont pas encore toutes implémentées.
 
 ## État actuel
@@ -55,8 +56,6 @@ src/cav_recovery/empirical/   lecture, validation et préparation du trafic
 src/cav_recovery/simulation/  contrôle d'un trajet SUMO avec TraCI
 scripts/                      commandes utilisables depuis le dépôt
 tests/                        tests automatisés et petites données synthétiques
-configs/                      configurations publiques du projet
-outputs/                      résultats générés, ignorés par Git
 ```
 
 ## Installation
