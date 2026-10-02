@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes>
+    <vType id="car" accel="2" decel="4.5" sigma="0" length="5" maxSpeed="10"/>
+    <route id="mission" edges="approach destination"/>
+    <vehicle id="smoke_car" type="car" route="mission" depart="0" departSpeed="0"/>
+</routes>
