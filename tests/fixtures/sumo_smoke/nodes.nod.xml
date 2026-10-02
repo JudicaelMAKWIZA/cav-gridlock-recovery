@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nodes>
+    <node id="start" x="0" y="0" type="dead_end"/>
+    <node id="middle" x="100" y="0" type="unregulated"/>
+    <node id="finish" x="200" y="0" type="dead_end"/>
+</nodes>
