@@ -201,6 +201,76 @@ def test_close_error_cannot_validate_trip(environment):
     environment.process.kill.assert_called_once()
 
 
+@pytest.mark.parametrize("stop_confirmed", [True, False])
+def test_wait_system_error_still_attempts_process_stop(environment, stop_confirmed):
+    environment.process.wait.side_effect = (
+        [OSError("Attente initiale impossible"), 0] if stop_confirmed else [
+            OSError("Attente initiale impossible"),
+            OSError("Attente après terminate impossible"),
+            OSError("Attente après kill impossible"),
+        ]
+    )
+    environment.process.poll.return_value = 0 if stop_confirmed else None
+    environment.process.returncode = 0 if stop_confirmed else None
+
+    result = sumo_smoke.run_sumo_smoke(FIXTURE)
+
+    assert result["status"] == "failed"
+    assert any("Attente initiale impossible" in error for error in result["cleanup_errors"])
+    assert result["forced_process_stop"]
+    assert result["process_stopped"] is stop_confirmed
+    assert result["process_returncode"] == (0 if stop_confirmed else None)
+    environment.process.terminate.assert_called_once()
+    if stop_confirmed:
+        environment.process.kill.assert_not_called()
+    else:
+        environment.process.kill.assert_called_once()
+        assert any("Attente après terminate impossible" in error for error in result["cleanup_errors"])
+        assert any("Attente après kill impossible" in error for error in result["cleanup_errors"])
+
+
+def test_terminate_system_error_does_not_prevent_kill(environment):
+    environment.process.wait.side_effect = [
+        OSError("Attente initiale impossible"), subprocess.TimeoutExpired("sumo", 5), 0,
+    ]
+    environment.process.terminate.side_effect = OSError("Terminate impossible")
+
+    result = sumo_smoke.run_sumo_smoke(FIXTURE)
+
+    environment.process.terminate.assert_called_once()
+    environment.process.kill.assert_called_once()
+    assert result["status"] == "failed"
+    assert result["process_stopped"]
+    assert any("Terminate impossible" in error for error in result["cleanup_errors"])
+
+
+def test_failed_kill_keeps_process_stop_unconfirmed(environment):
+    environment.process.wait.side_effect = OSError("Attente impossible")
+    environment.process.kill.side_effect = OSError("Kill impossible")
+    environment.process.poll.return_value = None
+    environment.process.returncode = None
+
+    result = sumo_smoke.run_sumo_smoke(FIXTURE)
+
+    environment.process.terminate.assert_called_once()
+    environment.process.kill.assert_called_once()
+    assert result["status"] == "failed"
+    assert not result["process_stopped"]
+    assert result["process_returncode"] is None
+    assert any("Kill impossible" in error for error in result["cleanup_errors"])
+
+
+def test_poll_error_cannot_confirm_process_stop(environment):
+    environment.process.poll.side_effect = OSError("État du processus inaccessible")
+
+    result = sumo_smoke.run_sumo_smoke(FIXTURE)
+
+    assert result["status"] == "failed"
+    assert not result["process_stopped"]
+    assert result["process_returncode"] is None
+    assert any("État du processus inaccessible" in error for error in result["cleanup_errors"])
+
+
 def test_nonzero_process_exit_fails(environment):
     environment.process.returncode = 1
     environment.process.poll.return_value = 1
