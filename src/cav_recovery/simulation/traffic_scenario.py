@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import xml.etree.ElementTree as ET
 
@@ -64,46 +65,65 @@ def write_traffic_files(directory: Path, missions: list, routes: dict, scenery: 
     write_xml(directory / "simulation.sumocfg", config)
 
 
-def prepare_traffic(osm_path: str | Path, contract_path: str | Path, output_dir: str | Path) -> dict:
+def prepare_traffic(osm_path: str | Path, contract_path: str | Path, output_dir: str | Path, *,
+                    failure_diagnostics_dir: str | Path | None = None) -> dict:
     """Prépare un réseau contrôlé et trois demandes, sans lancer de véhicules.
 
     Les sources restent inchangées. Le dossier entier n'est publié qu'après
     conversion, vérification et écriture de toutes les configurations.
+    Sur demande explicite, les fichiers d'une préparation interrompue sont
+    copiés séparément avant le nettoyage temporaire ; ils ne sont pas un scénario.
     """
     destination = new_output_directory(output_dir)
+    diagnostics = None
+    if failure_diagnostics_dir is not None:
+        diagnostics = new_output_directory(failure_diagnostics_dir)
+        if diagnostics.is_relative_to(destination) or destination.is_relative_to(diagnostics):
+            raise TrafficInputError("Les dossiers de scénario et de diagnostic doivent être séparés.")
     contract = read_contract(contract_path)
     versions = check_environment("sumo", "netconvert")
     plans = demand_plans(contract)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".traffic-", dir=destination.parent) as temporary:
         stage = Path(temporary)
-        conversion = convert_network(Path(osm_path), stage)
-        inspection = inspect_network(stage / "network.net.xml", Path(osm_path))
-        scenery = build_scenery(Path(osm_path), stage)
-        write_view(stage / "view.xml", inspection["center"])
-        regimes = {}
-        for name, plan in plans.items():
-            directory = stage / name
-            directory.mkdir()
-            missions = build_missions(name, plan, inspection["routes"])
-            write_traffic_files(directory, missions, inspection["routes"], (stage / "scenery.add.xml").exists())
-            regimes[name] = {"plan": plan, "missions": mission_records(missions)}
-        manifest = {"schema_version": "traffic-scenario-1", "status": "prepared", "versions": versions,
-                    "contract": {"filename": Path(contract_path).name, "sha256": CONTRACT_IDENTITY[1]},
-                    "conversion": conversion, "network": inspection, "scenery": scenery,
-                    "vehicle_type": VEHICLE_TYPE, "step_s": STEP_S, "seed": 0, "regimes": regimes,
-                    "limits": contract["limitations"],
-                    "files_sha256": {p.relative_to(stage).as_posix(): file_hash(p)
-                                     for p in sorted(stage.rglob("*")) if p.is_file() and p.suffix != ".log"}}
-        write_json(stage / "scenario.json", manifest)
-        existed = destination.exists()
-        if existed:
-            destination.rmdir()
         try:
-            os.replace(stage, destination)
-        except Exception:
-            if existed and not destination.exists():
-                destination.mkdir()
+            conversion = convert_network(Path(osm_path), stage)
+            inspection = inspect_network(stage / "network.net.xml", Path(osm_path))
+            scenery = build_scenery(Path(osm_path), stage)
+            write_view(stage / "view.xml", inspection["center"])
+            regimes = {}
+            for name, plan in plans.items():
+                directory = stage / name
+                directory.mkdir()
+                missions = build_missions(name, plan, inspection["routes"])
+                write_traffic_files(directory, missions, inspection["routes"], (stage / "scenery.add.xml").exists())
+                regimes[name] = {"plan": plan, "missions": mission_records(missions)}
+            manifest = {"schema_version": "traffic-scenario-1", "status": "prepared", "versions": versions,
+                        "contract": {"filename": Path(contract_path).name, "sha256": CONTRACT_IDENTITY[1]},
+                        "conversion": conversion, "network": inspection, "scenery": scenery,
+                        "vehicle_type": VEHICLE_TYPE, "step_s": STEP_S, "seed": 0, "regimes": regimes,
+                        "limits": contract["limitations"],
+                        "files_sha256": {p.relative_to(stage).as_posix(): file_hash(p)
+                                         for p in sorted(stage.rglob("*")) if p.is_file() and p.suffix != ".log"}}
+            write_json(stage / "scenario.json", manifest)
+            existed = destination.exists()
+            if existed:
+                destination.rmdir()
+            try:
+                os.replace(stage, destination)
+            except Exception:
+                if existed and not destination.exists():
+                    destination.mkdir()
+                raise
+        except BaseException as error:
+            # Sauvegarder aussi sur interruption, puis relancer la même erreur.
+            if diagnostics is not None:
+                try:
+                    if stage.exists() and any(stage.iterdir()):
+                        new_output_directory(diagnostics)
+                        shutil.copytree(stage, diagnostics, dirs_exist_ok=True)
+                except BaseException as copy_error:
+                    error.add_note(f"Sauvegarde des diagnostics impossible dans {diagnostics} : {copy_error}")
             raise
     return manifest
 

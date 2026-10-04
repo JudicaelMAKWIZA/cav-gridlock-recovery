@@ -32,7 +32,14 @@ def main() -> int:
             # Pas de TemporaryDirectory : une erreur doit laisser les fichiers accessibles.
             workspace = Path(tempfile.mkdtemp(prefix="traffic-demo-")).resolve()
         scenario = workspace / "scenario"
-        prepare_traffic(args.osm, args.contract, scenario)
+        try:
+            prepare_traffic(args.osm, args.contract, scenario,
+                            failure_diagnostics_dir=workspace / "preparation-failure")
+        except BaseException as error:
+            # Les notes de sauvegarde restent visibles malgré le code de sortie CLI.
+            for note in getattr(error, "__notes__", ()):
+                print(note, file=sys.stderr)
+            raise
         result = run_traffic(scenario, args.regime, workspace / "result", gui=True,
                              gui_delay_ms=args.gui_delay_ms, drain_horizon_s=args.drain_horizon_s)
         closed_normally = (

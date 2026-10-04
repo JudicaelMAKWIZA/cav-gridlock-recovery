@@ -7,6 +7,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from cav_recovery.simulation import traffic_scenario as scenario
+
 
 def load_cli(name):
     spec = importlib.util.spec_from_file_location(name, Path(__file__).parents[1] / f"scripts/{name}.py")
@@ -19,9 +21,13 @@ def load_cli(name):
 def demo(monkeypatch, tmp_path):
     cli = load_cli("demo_traffic")
     mkdtemp = cli.tempfile.mkdtemp
-    monkeypatch.setattr(cli.tempfile, "mkdtemp", Mock(side_effect=lambda **kwargs: mkdtemp(dir=tmp_path, **kwargs)))
 
-    def prepare(osm, contract, output):
+    def temporary_workspace(suffix=None, prefix=None, dir=None):
+        return mkdtemp(suffix=suffix, prefix=prefix, dir=tmp_path if dir is None else dir)
+
+    monkeypatch.setattr(cli.tempfile, "mkdtemp", Mock(side_effect=temporary_workspace))
+
+    def prepare(osm, contract, output, *, failure_diagnostics_dir=None):
         output.mkdir()
         (output / "scenario.json").write_text("{}", encoding="utf-8")
 
@@ -49,6 +55,7 @@ def test_success_cleans_workspace_after_gui_run(demo, monkeypatch, capsys, regim
     demo.tempfile.mkdtemp.assert_called_once_with(prefix="traffic-demo-")
     osm, contract, scenario = demo.prepare_traffic.call_args.args
     assert (osm, contract) == ("synthetic.osm", "synthetic.json")
+    assert demo.prepare_traffic.call_args.kwargs == {"failure_diagnostics_dir": scenario.parent / "preparation-failure"}
     demo.run_traffic.assert_called_once_with(scenario, regime, scenario.parent / "result", gui=True,
                                              gui_delay_ms=7, drain_horizon_s=300)
     assert not scenario.parent.exists()
@@ -124,23 +131,6 @@ def test_nonempty_keep_directory_is_refused_without_changes(demo, monkeypatch, t
     assert protected.read_text(encoding="utf-8") == "à conserver"
 
 
-@pytest.mark.parametrize("input_error", [False, True])
-def test_preparation_failure_preserves_diagnostics_without_running(demo, capsys, input_error):
-    def fail(osm, contract, output):
-        output.mkdir()
-        (output / "conversion.log").write_text("Conversion interrompue", encoding="utf-8")
-        error = demo.TrafficInputError if input_error else RuntimeError
-        raise error("Préparation refusée")
-
-    demo.prepare_traffic.side_effect = fail
-    assert demo.main() == (2 if input_error else 1)
-    demo.run_traffic.assert_not_called()
-    workspace = demo.prepare_traffic.call_args.args[2].parent
-    assert (workspace / "scenario/conversion.log").exists()
-    error = capsys.readouterr().err
-    assert str(workspace) in error and "Préparation refusée" in error
-
-
 def test_cleanup_error_is_not_reported_as_success(demo, monkeypatch, capsys):
     monkeypatch.setattr(demo.shutil, "rmtree", Mock(side_effect=OSError("Nettoyage refusé")))
     assert demo.main() == 1
@@ -164,3 +154,183 @@ def test_scientific_scripts_still_require_explicit_output_directory(monkeypatch,
         cli.main()
     assert error.value.code == 2
     operation.assert_not_called()
+
+
+@pytest.fixture
+def preparation(monkeypatch):
+    contract_path = Path(__file__).parent / "fixtures/traffic/demand.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    monkeypatch.setattr(scenario, "read_contract", Mock(return_value=contract))
+    monkeypatch.setattr(scenario, "check_environment", Mock(return_value={}))
+    return scenario
+
+
+@pytest.mark.parametrize("preserve", [False, True])
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_real_preparation_failure_copies_stage_only_when_requested(preparation, monkeypatch, tmp_path,
+                                                                  preserve, error_type):
+    error = error_type("Conversion interrompue")
+    stages = []
+
+    def convert(osm, stage):
+        stages.append(stage)
+        (stage / "conversion.log").write_text("Conversion interrompue", encoding="utf-8")
+        (stage / "LOW").mkdir()
+        (stage / "LOW/traffic.rou.xml").write_text("<routes/>", encoding="utf-8")
+        raise error
+
+    monkeypatch.setattr(preparation, "convert_network", convert)
+    output = tmp_path / "scenario"
+    diagnostics = tmp_path / "preparation-failure"
+    options = {"failure_diagnostics_dir": diagnostics} if preserve else {}
+    with pytest.raises(error_type) as caught:
+        preparation.prepare_traffic("synthetic", "synthetic", output, **options)
+    assert caught.value is error
+    assert len(stages) == 1 and not stages[0].exists()
+    assert not output.exists()
+    assert not list(tmp_path.glob(".traffic-*"))
+    if preserve:
+        assert (diagnostics / "conversion.log").read_text(encoding="utf-8") == "Conversion interrompue"
+        assert (diagnostics / "LOW/traffic.rou.xml").read_text(encoding="utf-8") == "<routes/>"
+        assert not (diagnostics / "scenario.json").exists()
+    else:
+        assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("copy_fails", [False, True])
+def test_demo_real_preparation_failure_keeps_stage_diagnostics(demo, preparation, monkeypatch, capsys, copy_fails):
+    error = RuntimeError("Conversion SUMO en échec")
+    stages = []
+
+    def convert(osm, stage):
+        stages.append(stage)
+        (stage / "conversion.log").write_text("Conversion interrompue", encoding="utf-8")
+        raise error
+
+    monkeypatch.setattr(preparation, "convert_network", convert)
+    monkeypatch.setattr(demo, "prepare_traffic", preparation.prepare_traffic)
+    if copy_fails:
+        monkeypatch.setattr(preparation.shutil, "copytree", Mock(side_effect=OSError("Copie refusée")))
+    assert demo.main() == 1
+    demo.run_traffic.assert_not_called()
+    workspace = stages[0].parent
+    assert workspace.exists() and not stages[0].exists()
+    assert not (workspace / "scenario").exists()
+    captured = capsys.readouterr()
+    assert str(workspace) in captured.err and "Conversion SUMO en échec" in captured.err
+    if copy_fails:
+        assert "Copie refusée" in captured.err
+        assert "Copie refusée" in error.__notes__[0]
+    else:
+        assert (workspace / "preparation-failure/conversion.log").read_text(encoding="utf-8") == "Conversion interrompue"
+        assert not (workspace / "preparation-failure/scenario.json").exists()
+
+
+def test_demo_interrupt_preserves_real_preparation_diagnostics(demo, preparation, monkeypatch, capsys):
+    stages = []
+
+    def convert(osm, stage):
+        stages.append(stage)
+        (stage / "conversion.log").write_text("Interruption", encoding="utf-8")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(preparation, "convert_network", convert)
+    monkeypatch.setattr(demo, "prepare_traffic", preparation.prepare_traffic)
+    assert demo.main() == 130
+    demo.run_traffic.assert_not_called()
+    workspace = stages[0].parent
+    assert not stages[0].exists() and not (workspace / "scenario").exists()
+    assert (workspace / "preparation-failure/conversion.log").read_text(encoding="utf-8") == "Interruption"
+    assert str(workspace) in capsys.readouterr().err
+
+
+def test_diagnostic_copy_error_preserves_original_exception(preparation, monkeypatch, tmp_path):
+    error = RuntimeError("Erreur de préparation originale")
+
+    def convert(osm, stage):
+        (stage / "conversion.log").write_text("Erreur originale", encoding="utf-8")
+        raise error
+
+    monkeypatch.setattr(preparation, "convert_network", convert)
+    monkeypatch.setattr(preparation.shutil, "copytree", Mock(side_effect=OSError("Copie refusée")))
+    with pytest.raises(RuntimeError) as caught:
+        preparation.prepare_traffic("synthetic", "synthetic", tmp_path / "scenario",
+                                    failure_diagnostics_dir=tmp_path / "diagnostics")
+    assert caught.value is error
+    assert "Copie refusée" in error.__notes__[0]
+    assert not (tmp_path / "scenario").exists()
+    assert not list(tmp_path.glob(".traffic-*"))
+
+
+def test_nonempty_diagnostics_refused_before_preparation(preparation, tmp_path):
+    diagnostics = tmp_path / "diagnostics"
+    diagnostics.mkdir()
+    protected = diagnostics / "conversion.log"
+    protected.write_text("à conserver", encoding="utf-8")
+    with pytest.raises(preparation.TrafficInputError):
+        preparation.prepare_traffic("synthetic", "synthetic", tmp_path / "scenario",
+                                    failure_diagnostics_dir=diagnostics)
+    preparation.read_contract.assert_not_called()
+    assert protected.read_text(encoding="utf-8") == "à conserver"
+    assert not (tmp_path / "scenario").exists()
+
+
+def test_empty_diagnostics_directory_accepts_failure_copy(preparation, monkeypatch, tmp_path):
+    output = tmp_path / "scenario"
+    output.mkdir()
+    diagnostics = tmp_path / "diagnostics"
+    diagnostics.mkdir()
+
+    def convert(osm, stage):
+        (stage / "conversion.log").write_text("Conversion interrompue", encoding="utf-8")
+        raise RuntimeError("Conversion interrompue")
+
+    monkeypatch.setattr(preparation, "convert_network", convert)
+    with pytest.raises(RuntimeError, match="Conversion interrompue"):
+        preparation.prepare_traffic("synthetic", "synthetic", output, failure_diagnostics_dir=diagnostics)
+    assert not list(output.iterdir())
+    assert (diagnostics / "conversion.log").read_text(encoding="utf-8") == "Conversion interrompue"
+    assert not list(tmp_path.glob(".traffic-*"))
+
+
+@pytest.mark.parametrize("location", ["same", "inside", "parent"])
+def test_diagnostics_cannot_be_published_as_partial_scenario(preparation, tmp_path, location):
+    output = tmp_path / "scenario"
+    diagnostics = {"same": output, "inside": output / "diagnostics", "parent": tmp_path}[location]
+    with pytest.raises(preparation.TrafficInputError, match="séparés"):
+        preparation.prepare_traffic("synthetic", "synthetic", output, failure_diagnostics_dir=diagnostics)
+    preparation.read_contract.assert_not_called()
+    assert not output.exists()
+
+
+def test_failure_before_staging_creates_no_diagnostics(demo, preparation, monkeypatch, tmp_path, capsys):
+    preparation.read_contract.side_effect = preparation.TrafficInputError("Contrat invalide")
+    monkeypatch.setattr(demo, "prepare_traffic", preparation.prepare_traffic)
+    assert demo.main() == 2
+    demo.run_traffic.assert_not_called()
+    preparation.check_environment.assert_not_called()
+    workspace, = tmp_path.iterdir()
+    assert not list(workspace.iterdir())
+    captured = capsys.readouterr()
+    assert "Contrat invalide" in captured.err and str(workspace) in captured.err
+
+
+def test_success_keeps_atomic_publication_without_creating_diagnostics(preparation, monkeypatch, tmp_path):
+    def convert(osm, stage):
+        (stage / "network.net.xml").write_text("<net/>", encoding="utf-8")
+        return {}
+
+    monkeypatch.setattr(preparation, "convert_network", convert)
+    monkeypatch.setattr(preparation, "inspect_network", lambda *args: {
+        "center": {"x": "0", "y": "0"}, "routes": preparation.ROUTES,
+        "gate_mapping": {**preparation.GATE_EDGES, "entry_connector": ":2725672310_0"}})
+    monkeypatch.setattr(preparation, "build_scenery", lambda *args: {})
+    diagnostics = tmp_path / "diagnostics"
+    baseline = preparation.prepare_traffic("synthetic", "synthetic", tmp_path / "baseline")
+    output = tmp_path / "scenario"
+    output.mkdir()
+    result = preparation.prepare_traffic("synthetic", "synthetic", output, failure_diagnostics_dir=diagnostics)
+    assert result == baseline
+    assert preparation.read_scenario(output) == result
+    assert not diagnostics.exists()
+    assert not list(tmp_path.glob(".traffic-*"))
