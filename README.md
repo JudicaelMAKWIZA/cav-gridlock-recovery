@@ -225,6 +225,13 @@ ralentit seulement l'affichage ; le pas simulé reste de 0,5 s. Les véhicules
 sont représentés par des berlines natives de SUMO. Une interface graphique
 compatible est nécessaire, par exemple WSLg sous Windows.
 
+Pour une démonstration graphique en une commande :
+
+```bash
+python scripts/demo_traffic.py \
+  --osm <carte-historique.osm> --contract <contrat-de-trafic.json> --regime LOW
+```
+
 Les départs sont réguliers et déterministes, sans tirage aléatoire. Les feux
 restent statiques, avec un cycle de 90 s issu de la conversion. Ce programme
 et les paramètres des véhicules sont des hypothèses de simulation, pas des
