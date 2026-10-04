@@ -192,6 +192,12 @@ netconvert \
 
 ## Simuler le trafic
 
+L'expérience empirique complète nécessite des entrées validées qui ne sont pas
+distribuées avec le dépôt public. Leur identité est contrôlée avant la simulation.
+Le dépôt permet de reproduire l'installation, les tests synthétiques et les
+contrôles techniques, mais ne suffit pas à lui seul à reconstruire cette
+expérience empirique complète.
+
 La préparation utilise la carte historique et le contrat de trafic validés.
 Leur identité est contrôlée ; une autre carte ou un autre contrat est refusé.
 Elle produit un réseau, les routes, les missions LOW/MID/HIGH, les réglages

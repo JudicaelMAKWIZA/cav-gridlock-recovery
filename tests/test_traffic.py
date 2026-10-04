@@ -195,6 +195,10 @@ def test_normal_arrival_and_conservation():
     connection = Connection(normal_frames())
     for _ in range(3):
         counts = observe(ledger, connection)
+        assert ledger.observed_active == ledger.validated_active
+        assert counts["active"] == counts["observed_active"] == counts["validated_active"]
+        assert counts["missing_without_arrival"] == counts["active_unvalidated"] == 0
+        assert ledger.failure_observation is None
         assert counts["scheduled"] == counts["pending"] + counts["active"] + counts["arrived"]
         assert counts["departed"] == counts["active"] + counts["arrived"]
     assert counts["arrived"] == 1 and counts["pending"] == counts["active"] == 0
@@ -277,6 +281,56 @@ def test_runner_normal_success_and_files(monkeypatch, tmp_path):
     assert connection.closed and result["process_stopped"] and result["connection_closed"]
     assert process.wait.called and command[0] == "sumo"
     assert {"vehicles.csv", "timeline.csv", "summary.json", "sumo.log"}.issubset(p.name for p in (tmp_path / "result").iterdir())
+
+
+def test_failure_summary_missing_without_arrival(monkeypatch, tmp_path):
+    result, connection, _, _ = fake_run(monkeypatch, tmp_path, [normal_frames()[0], {}])
+    assert result["status"] == "failed" and "Disparition" in result["reason"]
+    counts = result["counts"]
+    assert counts["departed"] == 1 and counts["arrived"] == 0
+    assert counts["active"] == counts["pending"] == counts["delayed_not_inserted"] == 0
+    assert counts["observed_active"] == 0 and counts["validated_active"] == 1
+    assert counts["missing_without_arrival"] == 1
+    row = result["vehicles"][0]
+    assert row["status"] == "missing_without_arrival" and row["actual_departure_s"] == 0
+    assert not row["observed_active"] and row["validated_active"]
+    assert result["failure_observation"]["active_ids"] == []
+    assert result["failure_observation"]["time_s"] == 1
+    assert result["last_validated_state"]["active_ids"] == ["car"]
+    assert result["last_validated_state"]["time_s"] == 0.5
+    assert connection.closed and result["process_stopped"]
+    for group in ("by_entry", "by_movement"):
+        assert result[group][0]["departed"] == result[group][0]["missing_without_arrival"] == 1
+        assert result[group][0]["active"] == result[group][0]["delayed_not_inserted"] == 0
+    saved = json.loads((tmp_path / "result/summary.json").read_text(encoding="utf-8"))
+    assert saved["failure_observation"] == result["failure_observation"]
+    assert saved["vehicles"][0]["status"] == "missing_without_arrival"
+
+
+def test_failure_summary_invalid_route_at_departure(monkeypatch, tmp_path):
+    frame = {"departed": ["car"], "active": {"car": {"route": ("start", "wrong")}}}
+    result, connection, _, _ = fake_run(monkeypatch, tmp_path, [frame])
+    assert result["status"] == "failed" and "Route" in result["reason"]
+    counts = result["counts"]
+    assert counts["departed"] == 1 and counts["arrived"] == counts["pending"] == 0
+    row = result["vehicles"][0]
+    assert row["status"] != "delayed_not_inserted"
+    assert row["status"] == "active_unvalidated" and row["actual_departure_s"] == 0
+    assert row["observed_active"] and not row["validated_active"]
+    assert counts["active"] == counts["observed_active"] == 1 and counts["validated_active"] == 0
+    assert counts["delayed_not_inserted"] == counts["missing_without_arrival"] == 0
+    observation = result["failure_observation"]
+    assert observation["active_ids"] == observation["departed_ids"] == ["car"]
+    assert observation["vehicles"]["car"]["route"] == ["start", "wrong"]
+    assert result["last_validated_state"]["active_ids"] == []
+    assert result["last_validated_state"]["time_s"] == 0
+    assert connection.closed and result["process_stopped"]
+    for group in ("by_entry", "by_movement"):
+        assert result[group][0]["active"] == result[group][0]["active_unvalidated"] == 1
+        assert result[group][0]["delayed_not_inserted"] == 0
+    saved = json.loads((tmp_path / "result/summary.json").read_text(encoding="utf-8"))
+    assert saved["vehicles"][0]["status"] == "active_unvalidated"
+    assert saved["failure_observation"] == observation
 
 
 def test_runner_horizon_preserves_remaining_and_closes(monkeypatch, tmp_path):

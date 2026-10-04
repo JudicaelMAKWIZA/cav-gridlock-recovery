@@ -28,26 +28,57 @@ class TrafficLedger:
         self.departures: dict[str, float] = {}
         self.arrivals: dict[str, float] = {}
         self.last: dict[str, dict] = {}
-        self.active: set[str] = set()
+        self.observed_active: set[str] = set()
+        self.validated_active: set[str] = set()
+        self.observed_time_s = 0.0
+        self.failure_observation: dict | None = None
+        self.last_validated_state = {"time_s": 0.0, "active_ids": [], "departed_ids": [], "arrived_ids": []}
         self.teleport_starts: list[dict] = []
         self.teleport_ends: list[dict] = []
         self.time_s = 0.0
 
     def observe(self, connection) -> dict:
-        time_s = connection.simulation.getTime()
-        if not math.isfinite(time_s) or abs(time_s - self.time_s - STEP_S) > 1e-7:
-            raise RuntimeError("Le temps simulé ne progresse pas par pas de 0,5 s.")
-        self.time_s = time_s
-        for events, getter in ((self.teleport_starts, connection.simulation.getStartingTeleportIDList),
-                               (self.teleport_ends, connection.simulation.getEndingTeleportIDList)):
-            events.extend({"vehicle_id": item, "time_s": time_s} for item in getter())
+        """Conserve ce qui a été lu, même si le pas ne peut pas être validé."""
+        observation = {"time_s": None, "active_ids": None, "departed_ids": None, "arrived_ids": None,
+                       "vehicles": {}}
+        try:
+            time_s = connection.simulation.getTime()
+            observation["time_s"] = time_s
+            if not math.isfinite(time_s) or abs(time_s - self.time_s - STEP_S) > 1e-7:
+                raise RuntimeError("Le temps simulé ne progresse pas par pas de 0,5 s.")
+            self.time_s = time_s
+            self.observed_active = set(connection.vehicle.getIDList())
+            self.observed_time_s = time_s
+            observation["active_ids"] = sorted(self.observed_active)
+            observation["departed_ids"] = list(connection.simulation.getDepartedIDList())
+            observation["arrived_ids"] = list(connection.simulation.getArrivedIDList())
+            for name, events, getter in (
+                ("teleport_starts", self.teleport_starts, connection.simulation.getStartingTeleportIDList),
+                ("teleport_ends", self.teleport_ends, connection.simulation.getEndingTeleportIDList),
+            ):
+                observation[name] = list(getter())
+                events.extend({"vehicle_id": item, "time_s": time_s} for item in observation[name])
+            observation["collision_ids"] = list(connection.simulation.getCollidingVehiclesIDList())
+            self._validate_observation(connection, observation)
+        except Exception as error:
+            self.failure_observation = {**observation, "reason": str(error)}
+            raise
+        # La présence observée n'est pas une preuve de validation du pas entier.
+        self.validated_active = self.observed_active.copy()
+        self.last_validated_state = {"time_s": time_s, "active_ids": sorted(self.validated_active),
+                                     "departed_ids": sorted(self.departures), "arrived_ids": sorted(self.arrivals)}
+        self.failure_observation = None
+        return self.snapshot()
+
+    def _validate_observation(self, connection, observation: dict) -> None:
+        time_s = self.time_s
         if self.teleport_starts or self.teleport_ends:
             raise RuntimeError("Téléportation détectée : aucune arrivée assistée n'est admise.")
-        if connection.simulation.getCollidingVehiclesIDList():
+        if observation["collision_ids"]:
             raise RuntimeError("Collision détectée.")
-        departed = list(connection.simulation.getDepartedIDList())
-        arrived = list(connection.simulation.getArrivedIDList())
-        active = set(connection.vehicle.getIDList())
+        departed = observation["departed_ids"]
+        arrived = observation["arrived_ids"]
+        active = self.observed_active
         if not (set(departed) | set(arrived) | active).issubset(self.missions):
             raise RuntimeError("Véhicule inconnu dans la simulation.")
         if len(set(departed)) != len(departed) or len(set(arrived)) != len(arrived):
@@ -59,11 +90,13 @@ class TrafficLedger:
             if not math.isfinite(actual) or actual < self.missions[vehicle_id].scheduled_s or actual >= time_s:
                 raise RuntimeError("Temps réel d'insertion incompatible avec la mission.")
             self.departures[vehicle_id] = actual
-        for vehicle_id in active:
+        for vehicle_id in sorted(active):
             mission = self.missions[vehicle_id]
             if vehicle_id not in self.departures or vehicle_id in self.arrivals:
                 raise RuntimeError("Présence active incompatible avec les événements.")
-            if tuple(connection.vehicle.getRoute(vehicle_id)) != mission.route:
+            route = list(connection.vehicle.getRoute(vehicle_id))
+            observation["vehicles"][vehicle_id] = {"route": route}
+            if tuple(route) != mission.route:
                 raise RuntimeError("Route ou destination modifiée pendant l'exécution.")
             position = list(connection.vehicle.getPosition(vehicle_id))
             if len(position) != 2 or not all(math.isfinite(value) for value in position):
@@ -85,17 +118,19 @@ class TrafficLedger:
         expected_active = set(self.departures) - set(self.arrivals)
         if active != expected_active:
             raise RuntimeError("Disparition sans arrivée ou bilan des véhicules incohérent.")
-        self.active = active
-        return self.snapshot()
 
     def snapshot(self) -> dict:
-        pending = set(self.missions) - set(self.departures)
+        pending = set(self.missions) - set(self.departures) - self.observed_active
         # SUMO traite [t - pas, t) lors du dernier pas : un départ à t reste futur.
         future = {item for item in pending if self.missions[item].scheduled_s >= self.time_s}
         delays = [time - self.missions[item].scheduled_s for item, time in self.departures.items()]
         return {"simulation_time_s": self.time_s, "scheduled": len(self.missions),
                 "future": len(future), "delayed_not_inserted": len(pending - future),
-                "pending": len(pending), "departed": len(self.departures), "active": len(self.active),
+                "pending": len(pending), "departed": len(self.departures), "active": len(self.observed_active),
+                "observed_active": len(self.observed_active), "validated_active": len(self.validated_active),
+                "observed_time_s": self.observed_time_s,
+                "missing_without_arrival": len(set(self.departures) - set(self.arrivals) - self.observed_active),
+                "active_unvalidated": len(self.observed_active) if self.failure_observation is not None else 0,
                 "arrived": len(self.arrivals), "teleport_starts": len(self.teleport_starts),
                 "teleport_ends": len(self.teleport_ends),
                 "max_insertion_delay_s": max(delays, default=0),
@@ -104,9 +139,16 @@ class TrafficLedger:
     def vehicle_records(self, trips: dict[str, dict]) -> list[dict]:
         records = []
         for item, mission in sorted(self.missions.items()):
-            status = ("arrived" if item in self.arrivals else "active" if item in self.active
-                      else "future" if mission.scheduled_s >= self.time_s else "delayed_not_inserted")
+            if item in self.observed_active:
+                status = "active" if self.failure_observation is None else "active_unvalidated"
+            elif item in self.arrivals:
+                status = "arrived"
+            elif item in self.departures:
+                status = "missing_without_arrival"
+            else:
+                status = "future" if mission.scheduled_s >= self.time_s else "delayed_not_inserted"
             records.append({**mission.__dict__, "status": status, "actual_departure_s": self.departures.get(item),
+                            "observed_active": item in self.observed_active, "validated_active": item in self.validated_active,
                             "actual_arrival_s": trips.get(item, {}).get("arrival_s"),
                             "arrival_event_s": self.arrivals.get(item), "last_observation": self.last.get(item)})
         return records
@@ -185,8 +227,11 @@ def observe_traffic(connection, ledger: TrafficLedger, horizon_s: float, result:
 def group_counts(records: list[dict], ledger: TrafficLedger) -> dict:
     ids = {row["vehicle_id"] for row in records}
     return {"scheduled": len(records), "departed": sum(row["actual_departure_s"] is not None for row in records),
+            "active": sum(row["observed_active"] for row in records),
+            "observed_active": sum(row["observed_active"] for row in records),
+            "validated_active": sum(row["validated_active"] for row in records),
             **{state: sum(row["status"] == state for row in records)
-               for state in ("active", "arrived", "future", "delayed_not_inserted")},
+               for state in ("arrived", "future", "delayed_not_inserted", "missing_without_arrival", "active_unvalidated")},
             "teleport_starts": sum(e["vehicle_id"] in ids for e in ledger.teleport_starts),
             "teleport_ends": sum(e["vehicle_id"] in ids for e in ledger.teleport_ends)}
 
@@ -269,6 +314,8 @@ def run_traffic(scenario_dir: str | Path, regime: str, output_dir: str | Path, *
         result["status"] = "failed"
         result["reason"] = result["reason"] or str(error)
     result["counts"] = ledger.snapshot()
+    result["failure_observation"] = ledger.failure_observation
+    result["last_validated_state"] = ledger.last_validated_state
     result["vehicles"] = ledger.vehicle_records(trips)
     result["teleport_events"] = {"starts": ledger.teleport_starts, "ends": ledger.teleport_ends}
     result["remaining_ids"] = sorted(set(ledger.missions) - set(ledger.arrivals))
@@ -282,7 +329,7 @@ def run_traffic(scenario_dir: str | Path, regime: str, output_dir: str | Path, *
     write_json(output / "summary.json", result)
     with (output / "vehicles.csv").open("w", encoding="utf-8", newline="") as stream:
         fields = ["vehicle_id", "regime", "entry_gate", "exit_gate", "route_id", "route", "destination",
-                  "scheduled_s", "actual_departure_s", "actual_arrival_s", "status"]
+                  "scheduled_s", "actual_departure_s", "actual_arrival_s", "status", "observed_active", "validated_active"]
         writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
         writer.writerows({**row, "route": " ".join(row["route"])} for row in result["vehicles"])
