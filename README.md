@@ -33,7 +33,10 @@ Le dépôt permet actuellement de :
   temporelle est connue ;
 - répartir les fenêtres complètes entre trois niveaux relatifs de charge ;
 - construire un profil de trafic destiné aux futurs scénarios ;
-- exécuter un petit trajet synthétique dans SUMO et le vérifier avec TraCI.
+- vérifier un petit trajet synthétique dans SUMO avec TraCI ;
+- construire un réseau depuis la carte historique validée et simuler trois
+  demandes de trafic, avec ou sans interface graphique ;
+- suivre chaque véhicule jusqu'à sa destination et vérifier les bilans.
 
 Aucune simulation de blocage ni méthode de récupération n'est encore incluse.
 
@@ -46,14 +49,14 @@ Aucune simulation de blocage ni méthode de récupération n'est encore incluse.
   lire ses événements depuis Python ;
 - fichiers CSV, JSON, GeoJSON et Markdown pour les entrées et les résultats.
 
-SUMO et TraCI servent pour l'instant uniquement au contrôle technique décrit
-ci-dessous, pas à une simulation de blocage.
+SUMO et TraCI servent à la simulation de trafic nominal, sans incident ni
+simulation de blocage.
 
 ## Structure du dépôt
 
 ```text
 src/cav_recovery/empirical/   lecture, validation et préparation du trafic
-src/cav_recovery/simulation/  contrôle d'un trajet SUMO avec TraCI
+src/cav_recovery/simulation/  réseau, demandes et suivi des simulations SUMO
 scripts/                      commandes utilisables depuis le dépôt
 tests/                        tests automatisés et petites données synthétiques
 ```
@@ -187,6 +190,56 @@ netconvert \
   --no-internal-links --no-turnarounds
 ```
 
+## Simuler le trafic
+
+L'expérience empirique complète nécessite des entrées validées qui ne sont pas
+distribuées avec le dépôt public. Leur identité est contrôlée avant la simulation.
+Le dépôt permet de reproduire l'installation, les tests synthétiques et les
+contrôles techniques, mais ne suffit pas à lui seul à reconstruire cette
+expérience empirique complète.
+
+La préparation utilise la carte historique et le contrat de trafic validés.
+Leur identité est contrôlée ; une autre carte ou un autre contrat est refusé.
+Elle produit un réseau, les routes, les missions LOW/MID/HIGH, les réglages
+graphiques et un manifeste décrivant les choix de conversion :
+
+```bash
+python scripts/prepare_traffic.py \
+  --osm <carte-historique.osm> \
+  --contract <contrat-de-trafic.json> \
+  --output-dir <dossier-du-scenario>
+```
+
+Lancer ensuite un niveau de trafic :
+
+```bash
+python scripts/run_traffic.py \
+  --scenario-dir <dossier-du-scenario> \
+  --regime LOW \
+  --output-dir <nouveau-dossier-du-bilan>
+```
+
+Remplacer `LOW` par `MID` ou `HIGH` pour les autres niveaux. Ajouter `--gui`
+pour lancer `sumo-gui` avec démarrage automatique. `--gui-delay-ms 100`
+ralentit seulement l'affichage ; le pas simulé reste de 0,5 s. Les véhicules
+sont représentés par des berlines natives de SUMO. Une interface graphique
+compatible est nécessaire, par exemple WSLg sous Windows.
+
+Les départs sont réguliers et déterministes, sans tirage aléatoire. Les feux
+restent statiques, avec un cycle de 90 s issu de la conversion. Ce programme
+et les paramètres des véhicules sont des hypothèses de simulation, pas des
+mesures historiques. Le décor n'utilise que les objets présents dans la carte ;
+le fond graphique n'a aucune signification géographique.
+
+Le bilan contient `summary.json`, `vehicles.csv`, `timeline.csv`, `tripinfo.xml`
+et `sumo.log`. Il distingue les départs programmés, les insertions retardées,
+les véhicules actifs et les arrivées normales à la destination assignée.
+Une téléportation, une disparition ou une fermeture incomplète fait échouer
+l'exécution. Après l'injection, l'attente est limitée à 600 s ;
+`--drain-horizon-s` permet de définir explicitement une autre limite.
+Chaque préparation et chaque exécution exigent un dossier de sortie absent ou
+vide. Consulter `--help` pour tous les arguments.
+
 ## Limites actuelles
 
 - Les données étudiées viennent actuellement d'un seul secteur pNEUMA.
@@ -196,14 +249,16 @@ netconvert \
   sont pas encore simulés.
 - LOW, MID et HIGH sont seulement des niveaux relatifs de trafic ; ils ne
   représentent ni la congestion, ni la capacité de la route.
-- Les flux observés ne sont pas encore des taux d'insertion dans une
-  simulation.
+- Les volumes observés servent à programmer de nouvelles missions ; ils ne
+  garantissent pas un taux d'insertion réel dans le réseau simulé.
+- Les voies et vitesses absentes de la carte utilisent les règles de conversion
+  SUMO. Elles ne constituent pas des mesures de capacité routière.
 - Aucune simulation de blocage et aucune stratégie de récupération ne sont
   intégrées dans cette branche.
 
 ## Suite du projet
 
-Les prochaines étapes consisteront à construire les scénarios de simulation,
-représenter les conflits entre véhicules et zones routières, détecter les
+Les prochaines étapes consisteront à représenter les conflits entre véhicules
+et zones routières, détecter les
 blocages, puis comparer des stratégies de récupération. L'apprentissage
 multi-agent sera étudié après la mise en place de cette base expérimentale.
