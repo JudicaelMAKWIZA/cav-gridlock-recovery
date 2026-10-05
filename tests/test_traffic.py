@@ -15,6 +15,7 @@ from cav_recovery.simulation import traffic_demand as demand
 from cav_recovery.simulation import traffic_run as run
 from cav_recovery.simulation import traffic_scenario as scenario
 from cav_recovery.simulation import road_network as network
+from cav_recovery.simulation.sumo_process import close_sumo
 
 FIXTURE = Path(__file__).parent / "fixtures/traffic/demand.json"
 
@@ -275,12 +276,28 @@ def fake_run(monkeypatch, tmp_path, frames, gui=False, cleanup_error=False):
 
 
 def test_runner_normal_success_and_files(monkeypatch, tmp_path):
+    close = Mock(wraps=close_sumo)
+    monkeypatch.setattr(run, "close_sumo", close)
     result, connection, process, command = fake_run(monkeypatch, tmp_path, normal_frames())
+    close.assert_called_once_with(connection, process, result)
     assert result["status"] == "passed"
     assert result["counts"]["scheduled"] == result["counts"]["arrived"] == 1
     assert connection.closed and result["process_stopped"] and result["connection_closed"]
     assert process.wait.called and command[0] == "sumo"
     assert {"vehicles.csv", "timeline.csv", "summary.json", "sumo.log"}.issubset(p.name for p in (tmp_path / "result").iterdir())
+
+
+@pytest.mark.parametrize("filename,included", [("sumo_process.py", True), ("sumo_smoke.py", False)])
+def test_code_digest_tracks_shared_cleanup_not_smoke(monkeypatch, filename, included):
+    original = Path.read_bytes
+    before = run.code_provenance()["sha256"]
+
+    def read_bytes(path):
+        contents = original(path)
+        return contents + b"\n" if path.name == filename else contents
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    assert (run.code_provenance()["sha256"] != before) is included
 
 
 def test_failure_summary_missing_without_arrival(monkeypatch, tmp_path):
