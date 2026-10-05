@@ -4,21 +4,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ..canonical_scenario import CANONICAL_SCENARIO, CanonicalScenario
+
 from .contract_files import validate_output_directory, write_contract_files
 from .traffic_inputs import (
-    ALL_CATEGORIES,
-    ENTRY_GATES,
-    EXIT_GATES,
     ContractInputError,
     load_traffic_inputs,
     same_number,
 )
 
 
-SCHEMA_VERSION = "CGR-E03-1"
-SOURCE_CATEGORIES = ("Car", "Taxi")
-LOAD_LEVEL_ORDER = ("LOW", "MID", "HIGH")
-GROUP_SIZES = (4, 5, 4)
+SCHEMA_VERSION = CANONICAL_SCENARIO.contract.schema_version
+SOURCE_CATEGORIES = CANONICAL_SCENARIO.contract.source_categories
+LOAD_LEVEL_ORDER = CANONICAL_SCENARIO.contract.load_levels
+GROUP_SIZES = CANONICAL_SCENARIO.contract.group_sizes
 PROVENANCE_LIMITATIONS = (
     "La référence TEST utilisée pour valider l'extraction a été révisée après une première évaluation ; "
     "le score final ne provient donc pas d'un jeu de vérité resté totalement intact. Cette réserve de "
@@ -32,34 +31,37 @@ PROVENANCE_LIMITATIONS = (
 def _build_window_rows(
     flows: dict[tuple[str, str, float], dict[str, object]],
     windows: list[tuple[float, float]],
+    config: CanonicalScenario,
 ) -> list[dict[str, object]]:
     """Calcule la charge Car+Taxi de chaque fenêtre aux deux portes d'entrée.
 
     La dernière fenêtre reste dans le profil, mais seule une fenêtre complète de
     60 secondes peut participer au classement des niveaux de charge.
     """
+    entry_gates = config.sector.entry_gates
+    source_categories = config.contract.source_categories
 
     result = []
     for start, end in windows:
         by_gate = {
-            gate: sum(int(flows[(gate, category, start)]["count"]) for category in SOURCE_CATEGORIES)
-            for gate in ENTRY_GATES
+            gate: sum(int(flows[(gate, category, start)]["count"]) for category in source_categories)
+            for gate in entry_gates
         }
         duration = round(end - start, 10)
         result.append({
             "window_start_s": start,
             "window_end_s": end,
             "duration_s": duration,
-            "eligible_for_stratification": same_number(duration, 60.0),
-            "passenger_in_w23183369": by_gate[ENTRY_GATES[0]],
-            "passenger_in_w284241336": by_gate[ENTRY_GATES[1]],
+            "eligible_for_stratification": same_number(duration, config.sector.window_s),
+            "passenger_in_w23183369": by_gate[entry_gates[0]],
+            "passenger_in_w284241336": by_gate[entry_gates[1]],
             "passenger_in_total": sum(by_gate.values()),
             "regime_id": None,
         })
     return result
 
 
-def _assign_load_levels(window_rows: list[dict[str, object]]) -> None:
+def _assign_load_levels(window_rows: list[dict[str, object]], config: CanonicalScenario) -> None:
     """Classe les fenêtres complètes par charge croissante selon la règle 4/5/4.
 
     Le temps de début départage deux charges égales afin que le résultat reste
@@ -67,14 +69,14 @@ def _assign_load_levels(window_rows: list[dict[str, object]]) -> None:
     """
 
     eligible = [row for row in window_rows if row["eligible_for_stratification"]]
-    if len(eligible) != sum(GROUP_SIZES):
+    if len(eligible) != sum(config.contract.group_sizes):
         raise ContractInputError("La règle 4/5/4 exige exactement 13 fenêtres complètes.")
     ranked = sorted(
         eligible,
         key=lambda row: (int(row["passenger_in_total"]), float(row["window_start_s"])),
     )
     offset = 0
-    for load_level, size in zip(LOAD_LEVEL_ORDER, GROUP_SIZES):
+    for load_level, size in zip(config.contract.load_levels, config.contract.group_sizes):
         for row in ranked[offset:offset + size]:
             row["regime_id"] = load_level
         offset += size
@@ -83,26 +85,29 @@ def _assign_load_levels(window_rows: list[dict[str, object]]) -> None:
 def _aggregate_movements(
     member_windows: set[float],
     movements: dict[tuple[str, str, str, float], dict[str, int]],
+    config: CanonicalScenario,
 ) -> tuple[dict[str, dict[str, int]], dict[str, int], dict[str, dict[str, float | None]]]:
     """Agrège les mouvements Car+Taxi des fenêtres appartenant à un niveau."""
 
+    entry_gates, exit_gates = config.sector.entry_gates, config.sector.exit_gates
+    source_categories = config.contract.source_categories
     counts: dict[str, dict[str, int]] = {}
     denominators: dict[str, int] = {}
     probabilities: dict[str, dict[str, float | None]] = {}
-    for entry in ENTRY_GATES:
+    for entry in entry_gates:
         counts[entry] = {
             exit_gate: sum(
                 movements[(entry, exit_gate, category, start)]["count"]
-                for category in SOURCE_CATEGORIES
+                for category in source_categories
                 for start in member_windows
             )
-            for exit_gate in EXIT_GATES
+            for exit_gate in exit_gates
         }
         # Le profil répète le même dénominateur sur les deux sorties. Une seule
         # sortie est donc lue pour éviter de compter deux fois les visites.
         denominator = sum(
-            movements[(entry, EXIT_GATES[0], category, start)]["denominator"]
-            for category in SOURCE_CATEGORIES
+            movements[(entry, exit_gates[0], category, start)]["denominator"]
+            for category in source_categories
             for start in member_windows
         )
         if sum(counts[entry].values()) != denominator:
@@ -110,7 +115,7 @@ def _aggregate_movements(
         denominators[entry] = denominator
         probabilities[entry] = {
             exit_gate: None if denominator == 0 else counts[entry][exit_gate] / denominator
-            for exit_gate in EXIT_GATES
+            for exit_gate in exit_gates
         }
     return counts, denominators, probabilities
 
@@ -119,11 +124,14 @@ def _build_load_levels(
     window_rows: list[dict[str, object]],
     movements: dict[tuple[str, str, str, float], dict[str, int]],
     unclassified: list[dict[str, object]],
+    config: CanonicalScenario,
 ) -> list[dict[str, object]]:
     """Construit les comptes, taux et mouvements de chaque niveau de charge."""
 
+    entry_gates = config.sector.entry_gates
+    source_categories = config.contract.source_categories
     load_levels = []
-    for load_level in LOAD_LEVEL_ORDER:
+    for load_level in config.contract.load_levels:
         members = sorted(
             (row for row in window_rows if row["regime_id"] == load_level),
             key=lambda row: float(row["window_start_s"]),
@@ -131,18 +139,18 @@ def _build_load_levels(
         starts = {float(row["window_start_s"]) for row in members}
         exposure = sum(float(row["duration_s"]) for row in members)
         entry_counts = {
-            ENTRY_GATES[0]: sum(int(row["passenger_in_w23183369"]) for row in members),
-            ENTRY_GATES[1]: sum(int(row["passenger_in_w284241336"]) for row in members),
+            entry_gates[0]: sum(int(row["passenger_in_w23183369"]) for row in members),
+            entry_gates[1]: sum(int(row["passenger_in_w284241336"]) for row in members),
         }
         total = sum(entry_counts.values())
-        movement_counts, denominators, probabilities = _aggregate_movements(starts, movements)
+        movement_counts, denominators, probabilities = _aggregate_movements(starts, movements, config)
         # Une sortie censurée reste une entrée observée, mais ne devient jamais
         # un mouvement certain dans les probabilités ci-dessus.
         censored_exit = sum(
             int(row["count"])
             for row in unclassified
             if row["status"] == "censored_exit"
-            and row["category"] in SOURCE_CATEGORIES
+            and row["category"] in source_categories
             and float(row["start"]) in starts
         )
         classifiable = sum(denominators.values())
@@ -176,20 +184,23 @@ def _build_composition(
     movements: dict[tuple[str, str, str, float], dict[str, int]],
     unclassified: list[dict[str, object]],
     summary: dict,
+    config: CanonicalScenario,
 ) -> dict[str, object]:
     """Résume les six catégories sans convertir les véhicules non retenus."""
 
-    complete_starts = [start for start, end in windows if same_number(end - start, 60.0)]
+    entry_gates, exit_gates = config.sector.entry_gates, config.sector.exit_gates
+    source_categories = config.contract.source_categories
+    complete_starts = [start for start, end in windows if same_number(end - start, config.sector.window_s)]
     categories: dict[str, dict[str, object]] = {}
-    for category in ALL_CATEGORIES:
+    for category in config.sector.categories:
         by_gate = {
             gate: sum(int(flows[(gate, category, start)]["count"]) for start, _ in windows)
-            for gate in ENTRY_GATES
+            for gate in entry_gates
         }
         total = sum(by_gate.values())
         classifiable = sum(
-            movements[(entry, EXIT_GATES[0], category, start)]["denominator"]
-            for entry in ENTRY_GATES
+            movements[(entry, exit_gates[0], category, start)]["denominator"]
+            for entry in entry_gates
             for start, _ in windows
         )
         censored_exit = sum(
@@ -200,7 +211,7 @@ def _build_composition(
         if total != classifiable + censored_exit:
             raise ContractInputError(f"La composition ne se réconcilie pas pour {category}.")
         complete_counts = [
-            sum(int(flows[(gate, category, start)]["count"]) for gate in ENTRY_GATES)
+            sum(int(flows[(gate, category, start)]["count"]) for gate in entry_gates)
             for start in complete_starts
         ]
         categories[category] = {
@@ -232,7 +243,7 @@ def _build_composition(
         "classifiable_visits": total_classifiable,
         "censored_exit": total_censored_exit,
         "censored_entry": censored_entry,
-        "passenger_entries": sum(int(categories[category]["observed_entries"]) for category in SOURCE_CATEGORIES),
+        "passenger_entries": sum(int(categories[category]["observed_entries"]) for category in source_categories),
     }
 
 
@@ -243,11 +254,12 @@ def _contract_document(
     window_rows: list[dict[str, object]],
     load_levels: list[dict[str, object]],
     composition: dict[str, object],
+    config: CanonicalScenario,
 ) -> dict[str, object]:
     complete = [row for row in window_rows if row["eligible_for_stratification"]]
     partial = [row for row in window_rows if not row["eligible_for_stratification"]]
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": config.contract.schema_version,
         "status": "complete",
         "inputs": {
             "input_artifacts_sha256": dict(sorted(hashes.items())),
@@ -255,28 +267,28 @@ def _contract_document(
             "upstream_software": manifest["software"],
         },
         "method": {
-            "source_categories": list(SOURCE_CATEGORIES),
-            "complete_window_s": 60,
+            "source_categories": list(config.contract.source_categories),
+            "complete_window_s": config.sector.window_s,
             "eligible_window_count": len(complete),
             "partial_window_count": len(partial),
-            "regime_order": list(LOAD_LEVEL_ORDER),
-            "group_sizes": list(GROUP_SIZES),
+            "regime_order": list(config.contract.load_levels),
+            "group_sizes": list(config.contract.group_sizes),
             "primary_variable": "N_passenger_in",
             "tie_break": "window_start_s_ascending",
-            "upstream_method": "oriented_finite_virtual_gates",
+            "upstream_method": config.empirical.extraction_method,
         },
         "empirical_context": {
             "source": manifest["source"],
             "sector": {
-                "id": "C3",
-                "osm_node_id": 250691665,
-                "entry_gates": list(ENTRY_GATES),
-                "exit_gates": list(EXIT_GATES),
+                "id": config.sector.name,
+                "osm_node_id": config.sector.node_id,
+                "entry_gates": list(config.sector.entry_gates),
+                "exit_gates": list(config.sector.exit_gates),
             },
-            "observation_interval_s": [0.0, 802.8],
-            "interval_convention": "[a,b)",
+            "observation_interval_s": list(config.sector.observation_interval_s),
+            "interval_convention": config.sector.interval_convention,
             "coverage": {"status": coverage["status"], "intervals": coverage["intervals"]},
-            "categories": list(ALL_CATEGORIES),
+            "categories": list(config.sector.categories),
             "composition_observed": composition,
             "epistemic_status": {
                 "observed_counts_and_censoring": "OBSERVÉ / issu du pipeline empirique validé",
@@ -285,8 +297,8 @@ def _contract_document(
             },
         },
         "passenger_cav_contract": {
-            "population_id": "passenger_CAV",
-            "source_categories": list(SOURCE_CATEGORIES),
+            "population_id": config.simulation.vehicle_type["id"],
+            "source_categories": list(config.contract.source_categories),
             "epistemic_status": "DÉRIVÉ / ESTIMÉ",
             "regimes": load_levels,
             "complete_window_passenger_entries": sum(int(row["passenger_in_total"]) for row in complete),
@@ -324,18 +336,19 @@ def _quality_document(
     load_levels: list[dict[str, object]],
     composition: dict[str, object],
     hashes: dict[str, str],
+    config: CanonicalScenario,
 ) -> dict[str, object]:
     complete = [row for row in window_rows if row["eligible_for_stratification"]]
     partial = [row for row in window_rows if not row["eligible_for_stratification"]]
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": config.contract.schema_version,
         "status": "complete",
         "inputs_sha256": dict(sorted(hashes.items())),
         "windows": {
             "total": len(window_rows),
             "complete": len(complete),
             "partial": len(partial),
-            "group_sizes": {level: size for level, size in zip(LOAD_LEVEL_ORDER, GROUP_SIZES)},
+            "group_sizes": {level: size for level, size in zip(config.contract.load_levels, config.contract.group_sizes)},
         },
         "passenger_entries": {
             "complete_windows": sum(int(row["passenger_in_total"]) for row in complete),
@@ -384,15 +397,17 @@ def build_empirical_contract(
     validate_output_directory(output_dir)
     inputs = load_traffic_inputs(profile_dir, coverage_path)
 
-    window_rows = _build_window_rows(inputs.flows, inputs.windows)
-    _assign_load_levels(window_rows)
-    load_levels = _build_load_levels(window_rows, inputs.movements, inputs.unclassified)
+    config = CANONICAL_SCENARIO
+    window_rows = _build_window_rows(inputs.flows, inputs.windows, config)
+    _assign_load_levels(window_rows, config)
+    load_levels = _build_load_levels(window_rows, inputs.movements, inputs.unclassified, config)
     composition = _build_composition(
         inputs.flows,
         inputs.windows,
         inputs.movements,
         inputs.unclassified,
         inputs.summary,
+        config,
     )
     contract = _contract_document(
         inputs.hashes,
@@ -401,8 +416,9 @@ def build_empirical_contract(
         window_rows,
         load_levels,
         composition,
+        config,
     )
-    quality = _quality_document(window_rows, load_levels, composition, inputs.hashes)
+    quality = _quality_document(window_rows, load_levels, composition, inputs.hashes, config)
     write_contract_files(
         output_dir,
         window_rows,

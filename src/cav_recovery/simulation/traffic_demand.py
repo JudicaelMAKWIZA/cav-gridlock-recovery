@@ -8,21 +8,19 @@ import json
 import math
 from pathlib import Path
 
+from ..canonical_scenario import CANONICAL_SCENARIO, CanonicalScenario
+
 
 class TrafficInputError(ValueError):
     """Signale une entrée incompatible avec le scénario nominal."""
 
 
-CONTRACT_IDENTITY = (13055, "409564667c1ea1466bc41b70e4bdff3ef4922dbb648308fc526dabeb5c7f980a")
-OSM_IDENTITY = (76486, "c5c2105c28807e8bcb2743ca53079bacef23ccca0bdf18d7314d218f51b1f2bf")
-ENTRY_GATES = ("W23183369_IN", "W284241336_IN")
-EXIT_GATES = ("W23183369_OUT", "W284241336_OUT")
-STEP_S = 0.5
-VEHICLE_TYPE = {
-    "id": "passenger_CAV", "vClass": "passenger", "carFollowModel": "Krauss",
-    "length": "5.0", "minGap": "2.5", "accel": "2.6", "decel": "4.5",
-    "tau": "1.0", "sigma": "0", "speedFactor": "1.0", "guiShape": "passenger/sedan",
-}
+CONTRACT_IDENTITY = (CANONICAL_SCENARIO.contract.identity.size_bytes, CANONICAL_SCENARIO.contract.identity.sha256)
+OSM_IDENTITY = (CANONICAL_SCENARIO.network.source.size_bytes, CANONICAL_SCENARIO.network.source.sha256)
+ENTRY_GATES = CANONICAL_SCENARIO.sector.entry_gates
+EXIT_GATES = CANONICAL_SCENARIO.sector.exit_gates
+STEP_S = CANONICAL_SCENARIO.simulation.step_s
+VEHICLE_TYPE = CANONICAL_SCENARIO.simulation.vehicle_type
 
 
 def file_hash(path: str | Path) -> str:
@@ -46,36 +44,47 @@ def verify_identity(path: str | Path, identity: tuple[int, str]) -> dict:
 
 def read_contract(path: str | Path) -> dict:
     """Vérifie la sortie validée avant de réutiliser ses comptes et censures."""
-    verify_identity(path, CONTRACT_IDENTITY)
+    return _read_contract(Path(path), CANONICAL_SCENARIO)
+
+
+def _read_contract(path: Path, config: CanonicalScenario) -> dict:
+    identity = config.contract.identity
+    verify_identity(path, (identity.size_bytes, identity.sha256))
     try:
         contract = json.loads(Path(path).read_text(encoding="utf-8"))
+        plans = _demand_plans(contract, config)
+        _validate_canonical_contract(contract, plans, config)
+        return contract
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise TrafficInputError(f"Structure du contrat invalide : {error}") from error
+
+
+def _validate_canonical_contract(contract: dict, plans: dict, config: CanonicalScenario) -> None:
+    """Ne confond pas des comptes cohérents avec ceux de l'expérience figée."""
+    try:
         context = contract["empirical_context"]
         sector = context["sector"]
         passenger = contract["passenger_cav_contract"]
-        if (contract["schema_version"] != "CGR-E03-1" or contract["status"] != "complete"
-                or sector["id"] != "C3" or sector["osm_node_id"] != 250691665
-                or sector["entry_gates"] != list(ENTRY_GATES)
-                or sector["exit_gates"] != list(EXIT_GATES)
-                or context["coverage"] != {"status": "known", "intervals": [[0.0, 802.8]]}
-                or passenger["source_categories"] != ["Car", "Taxi"]
-                or passenger["population_id"] != "passenger_CAV"):
+        if (contract["schema_version"] != config.contract.schema_version or contract["status"] != "complete"
+                or sector["id"] != config.sector.name or sector["osm_node_id"] != config.sector.node_id
+                or sector["entry_gates"] != list(config.sector.entry_gates)
+                or sector["exit_gates"] != list(config.sector.exit_gates)
+                or context["coverage"] != {"status": "known", "intervals": [list(config.sector.observation_interval_s)]}
+                or passenger["source_categories"] != list(config.contract.source_categories)
+                or passenger["population_id"] != config.simulation.vehicle_type["id"]):
             raise TrafficInputError("Identité du secteur, couverture ou population incompatible.")
-        plans = demand_plans(contract)
-        expected = {"LOW": (240, [23, 72], [18, 5, 3, 69]),
-                    "MID": (300, [22, 144], [16, 6, 3, 141]),
-                    "HIGH": (240, [15, 141], [7, 8, 8, 133])}
-        if set(plans) != set(expected):
+        if set(plans) != set(config.contract.load_levels):
             raise TrafficInputError("Les trois niveaux de charge sont requis.")
-        for name, (duration, entries, movements) in expected.items():
-            plan = plans[name]
-            if (plan["injection_s"] != duration or list(plan["entries"].values()) != entries
-                    or [n for counts in plan["allocation"].values() for n in counts.values()] != movements):
-                raise TrafficInputError(f"Effectifs ou durée incompatibles pour {name}.")
-        high = next(r for r in passenger["regimes"] if r["regime_id"] == "HIGH")
-        if high["classifiable_visits"] != 154 or high["censored_exit"] != 2:
+        for expected in config.contract.loads:
+            plan = plans[expected.name]
+            if (plan["injection_s"] != expected.injection_s or tuple(plan["entries"].values()) != expected.entry_counts
+                    or tuple(n for counts in plan["allocation"].values() for n in counts.values()) != expected.mission_counts):
+                raise TrafficInputError(f"Effectifs ou durée incompatibles pour {expected.name}.")
+        expected_high = next(row for row in config.contract.loads if row.name == "HIGH")
+        high = next(r for r in passenger["regimes"] if r["regime_id"] == expected_high.name)
+        if high["classifiable_visits"] != expected_high.classifiable_visits or high["censored_exit"] != expected_high.censored_exit:
             raise TrafficInputError("La censure du niveau HIGH doit rester distincte des missions.")
-        return contract
-    except (KeyError, TypeError, json.JSONDecodeError) as error:
+    except (KeyError, TypeError) as error:
         raise TrafficInputError(f"Structure du contrat invalide : {error}") from error
 
 
@@ -101,15 +110,20 @@ def allocate_counts(total: int, observed: dict[str, int]) -> dict[str, int]:
 
 def demand_plans(contract: dict) -> dict:
     """Conserve la distribution observée à côté de l'allocation simulée."""
+    return _demand_plans(contract, CANONICAL_SCENARIO)
+
+
+def _demand_plans(contract: dict, config: CanonicalScenario) -> dict:
+    entry_gates, exit_gates = config.sector.entry_gates, config.sector.exit_gates
     plans = {}
     for row in contract["passenger_cav_contract"]["regimes"]:
         name = row["regime_id"]
         if name in plans:
             raise TrafficInputError("Niveau de charge répété.")
-        entries = {gate: row["passenger_entry_counts"][gate] for gate in ENTRY_GATES}
+        entries = {gate: row["passenger_entry_counts"][gate] for gate in entry_gates}
         observed = row["passenger_movement_counts"]
-        for gate in ENTRY_GATES:
-            if set(observed[gate]) != set(EXIT_GATES):
+        for gate in entry_gates:
+            if set(observed[gate]) != set(exit_gates):
                 raise TrafficInputError("La grille des mouvements est incomplète.")
             if sum(observed[gate].values()) != row["passenger_movement_denominators"][gate]:
                 raise TrafficInputError("Le dénominateur des mouvements est incohérent.")
@@ -120,7 +134,7 @@ def demand_plans(contract: dict) -> dict:
                        "observed_movements": observed,
                        "observed_denominators": row["passenger_movement_denominators"],
                        "censored_exit": row["censored_exit"],
-                       "allocation": {gate: allocate_counts(entries[gate], observed[gate]) for gate in ENTRY_GATES}}
+                       "allocation": {gate: allocate_counts(entries[gate], observed[gate]) for gate in entry_gates}}
     return plans
 
 

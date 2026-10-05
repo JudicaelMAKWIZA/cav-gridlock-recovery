@@ -2,6 +2,7 @@
 
 from collections import Counter
 from copy import deepcopy
+from dataclasses import replace
 import importlib.util
 import json
 from pathlib import Path
@@ -15,6 +16,7 @@ from cav_recovery.simulation import traffic_demand as demand
 from cav_recovery.simulation import traffic_run as run
 from cav_recovery.simulation import traffic_scenario as scenario
 from cav_recovery.simulation import road_network as network
+from cav_recovery.canonical_scenario import CANONICAL_SCENARIO
 
 FIXTURE = Path(__file__).parent / "fixtures/traffic/demand.json"
 
@@ -523,7 +525,7 @@ def test_network_mapping_routes_and_provenance(monkeypatch, tmp_path, change):
         result = network.inspect_network(path, FIXTURE.with_name("road.osm"))
         assert result["gate_mapping"]["W23183369_IN"] == "23183369#1"
         assert result["gate_mapping"]["entry_connector"] == ":2725672310_0"
-        assert result["routes"] == network.ROUTES
+        assert result["routes"] == {name: list(edges) for name, edges in network.ROUTES.items()}
         assert result["traffic_lights"][0]["cycle_s"] == 90
         assert all(e["speed_origin"] == "typemap/règle SUMO" for e in result["edges"])
 
@@ -614,7 +616,9 @@ def test_contract_identity_fields_checked_after_hash(monkeypatch, tmp_path, cont
         contract["empirical_context"]["coverage"]["status"] = "unknown"
     path = tmp_path / "contract.json"
     scenario.write_json(path, contract)
-    monkeypatch.setattr(demand, "CONTRACT_IDENTITY", (path.stat().st_size, demand.file_hash(path)))
+    identity = replace(CANONICAL_SCENARIO.contract.identity, size_bytes=path.stat().st_size, sha256=demand.file_hash(path))
+    config = replace(CANONICAL_SCENARIO, contract=replace(CANONICAL_SCENARIO.contract, identity=identity))
+    monkeypatch.setattr(demand, "CANONICAL_SCENARIO", config)
     with pytest.raises(demand.TrafficInputError, match="Effectifs" if field == "counts" else "Identité"):
         demand.read_contract(path)
 

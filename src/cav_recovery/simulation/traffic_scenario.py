@@ -9,8 +9,10 @@ import shutil
 import tempfile
 import xml.etree.ElementTree as ET
 
+from ..canonical_scenario import CANONICAL_SCENARIO, CanonicalScenario, SimulationSettings
+
 from .road_network import ROUTES, GATE_EDGES, check_environment, convert_network, inspect_network, build_scenery, write_xml
-from .traffic_demand import (TrafficInputError, VEHICLE_TYPE, STEP_S, ENTRY_GATES, EXIT_GATES, read_contract,
+from .traffic_demand import (TrafficInputError, STEP_S, read_contract,
                              allocate_counts, demand_plans, build_missions, mission_records, file_hash, CONTRACT_IDENTITY)
 
 
@@ -39,12 +41,16 @@ def write_view(path: Path, center: dict) -> None:
 
 
 def write_traffic_files(directory: Path, missions: list, routes: dict, scenery: bool) -> None:
+    _write_traffic_files(directory, missions, routes, scenery, CANONICAL_SCENARIO.simulation)
+
+
+def _write_traffic_files(directory: Path, missions: list, routes: dict, scenery: bool, settings: SimulationSettings) -> None:
     root = ET.Element("routes")
-    ET.SubElement(root, "vType", VEHICLE_TYPE)
+    ET.SubElement(root, "vType", dict(settings.vehicle_type))
     for route_id, edges in sorted(routes.items()):
         ET.SubElement(root, "route", id=route_id, edges=" ".join(edges))
     for mission in missions:
-        ET.SubElement(root, "vehicle", id=mission.vehicle_id, type="passenger_CAV",
+        ET.SubElement(root, "vehicle", id=mission.vehicle_id, type=settings.vehicle_type["id"],
                       route=mission.route_id, depart=str(mission.scheduled_s))
     write_xml(directory / "traffic.rou.xml", root)
     config = ET.Element("configuration")
@@ -54,12 +60,12 @@ def write_traffic_files(directory: Path, missions: list, routes: dict, scenery: 
     if scenery:
         ET.SubElement(inputs, "additional-files", value="../scenery.add.xml")
     time = ET.SubElement(config, "time")
-    ET.SubElement(time, "step-length", value=str(STEP_S))
+    ET.SubElement(time, "step-length", value=str(settings.step_s))
     processing = ET.SubElement(config, "processing")
-    ET.SubElement(processing, "time-to-teleport", value="-1")
-    ET.SubElement(processing, "max-depart-delay", value="-1")
+    ET.SubElement(processing, "time-to-teleport", value=str(settings.time_to_teleport_s))
+    ET.SubElement(processing, "max-depart-delay", value=str(settings.max_depart_delay_s))
     random = ET.SubElement(config, "random_number")
-    ET.SubElement(random, "seed", value="0")
+    ET.SubElement(random, "seed", value=str(settings.seed))
     gui = ET.SubElement(config, "gui_only")
     ET.SubElement(gui, "gui-settings-file", value="../view.xml")
     write_xml(directory / "simulation.sumocfg", config)
@@ -89,6 +95,8 @@ def prepare_traffic(osm_path: str | Path, contract_path: str | Path, output_dir:
         try:
             conversion = convert_network(Path(osm_path), stage)
             inspection = inspect_network(stage / "network.net.xml", Path(osm_path))
+            # Le format écrit conserve des listes, même si les routes internes sont immuables.
+            inspection = {**inspection, "routes": {name: list(edges) for name, edges in inspection["routes"].items()}}
             scenery = build_scenery(Path(osm_path), stage)
             write_view(stage / "view.xml", inspection["center"])
             regimes = {}
@@ -101,7 +109,8 @@ def prepare_traffic(osm_path: str | Path, contract_path: str | Path, output_dir:
             manifest = {"schema_version": "traffic-scenario-1", "status": "prepared", "versions": versions,
                         "contract": {"filename": Path(contract_path).name, "sha256": CONTRACT_IDENTITY[1]},
                         "conversion": conversion, "network": inspection, "scenery": scenery,
-                        "vehicle_type": VEHICLE_TYPE, "step_s": STEP_S, "seed": 0, "regimes": regimes,
+                        "vehicle_type": dict(CANONICAL_SCENARIO.simulation.vehicle_type), "step_s": STEP_S,
+                        "seed": CANONICAL_SCENARIO.simulation.seed, "regimes": regimes,
                         "limits": contract["limitations"],
                         "files_sha256": {p.relative_to(stage).as_posix(): file_hash(p)
                                          for p in sorted(stage.rglob("*")) if p.is_file() and p.suffix != ".log"}}
@@ -130,40 +139,46 @@ def prepare_traffic(osm_path: str | Path, contract_path: str | Path, output_dir:
 
 def validate_prepared_missions(directory: Path, manifest: dict) -> None:
     """Vérifie aussi la cohérence du manifeste avec les missions et les fichiers XML."""
-    if (manifest["vehicle_type"] != VEHICLE_TYPE or manifest["step_s"] != STEP_S or manifest["seed"] != 0
-            or manifest["network"]["routes"] != ROUTES
-            or manifest["network"]["gate_mapping"] != {**GATE_EDGES, "entry_connector": ":2725672310_0"}
-            or set(manifest["regimes"]) != {"LOW", "MID", "HIGH"}):
+    _validate_prepared_missions(directory, manifest, CANONICAL_SCENARIO)
+
+
+def _validate_prepared_missions(directory: Path, manifest: dict, config: CanonicalScenario) -> None:
+    settings = config.simulation
+    routes_expected = {name: list(edges) for name, edges in config.network.routes.items()}
+    if (manifest["vehicle_type"] != settings.vehicle_type or manifest["step_s"] != settings.step_s or manifest["seed"] != settings.seed
+            or manifest["network"]["routes"] != routes_expected
+            or manifest["network"]["gate_mapping"] != {**config.network.gate_edges, "entry_connector": config.network.entry_connector}
+            or set(manifest["regimes"]) != set(config.contract.load_levels)):
         raise TrafficInputError("Paramètres ou mapping du scénario incompatibles.")
     for name, record in manifest["regimes"].items():
         plan = record["plan"]
         observed = plan["observed_movements"]
-        for gate in ENTRY_GATES:
-            if (set(observed[gate]) != set(EXIT_GATES)
+        for gate in config.sector.entry_gates:
+            if (set(observed[gate]) != set(config.sector.exit_gates)
                     or sum(observed[gate].values()) != plan["observed_denominators"][gate]
                     or allocate_counts(plan["entries"][gate], observed[gate]) != plan["allocation"][gate]):
                 raise TrafficInputError("Allocation ou distribution observée incohérente.")
         if sum(plan["entries"].values()) != sum(plan["observed_denominators"].values()) + plan["censored_exit"]:
             raise TrafficInputError("Les comptes préparés ne conservent pas les censures.")
-        expected = build_missions(name, plan, ROUTES)
+        expected = build_missions(name, plan, routes_expected)
         if record["missions"] != mission_records(expected):
             raise TrafficInputError("Les missions ne correspondent pas à la demande préparée.")
         root = ET.parse(directory / name / "traffic.rou.xml").getroot()
         vehicle_types = root.findall("vType")
         routes = {r.get("id"): r.get("edges").split() for r in root.findall("route")}
         vehicles = [v.attrib for v in root.findall("vehicle")]
-        expected_vehicles = [{"id": m.vehicle_id, "type": "passenger_CAV", "route": m.route_id,
+        expected_vehicles = [{"id": m.vehicle_id, "type": settings.vehicle_type["id"], "route": m.route_id,
                               "depart": str(m.scheduled_s)} for m in expected]
-        if (len(vehicle_types) != 1 or vehicle_types[0].attrib != VEHICLE_TYPE or routes != ROUTES
-                or len(root.findall("route")) != len(ROUTES) or vehicles != expected_vehicles):
+        if (len(vehicle_types) != 1 or vehicle_types[0].attrib != settings.vehicle_type or routes != routes_expected
+                or len(root.findall("route")) != len(routes_expected) or vehicles != expected_vehicles):
             raise TrafficInputError("Les routes XML ne correspondent pas aux missions.")
-        config = ET.parse(directory / name / "simulation.sumocfg").getroot()
+        simulation_config = ET.parse(directory / name / "simulation.sumocfg").getroot()
         checks = {"input/net-file": "../network.net.xml", "input/route-files": "traffic.rou.xml",
-                  "time/step-length": str(STEP_S), "processing/time-to-teleport": "-1",
-                  "processing/max-depart-delay": "-1", "random_number/seed": "0",
+                  "time/step-length": str(settings.step_s), "processing/time-to-teleport": str(settings.time_to_teleport_s),
+                  "processing/max-depart-delay": str(settings.max_depart_delay_s), "random_number/seed": str(settings.seed),
                   "gui_only/gui-settings-file": "../view.xml"}
         for path, value in checks.items():
-            row = config.find(path)
+            row = simulation_config.find(path)
             if row is None or row.get("value") != value:
                 raise TrafficInputError(f"Paramètre de simulation incompatible : {path}")
 
@@ -176,7 +191,7 @@ def read_scenario(directory: str | Path) -> dict:
         if manifest["schema_version"] != "traffic-scenario-1" or manifest["status"] != "prepared":
             raise TrafficInputError("Format de scénario incompatible.")
         required = {"network.net.xml", "view.xml"}
-        required.update(f"{name}/{file}" for name in ("LOW", "MID", "HIGH")
+        required.update(f"{name}/{file}" for name in CANONICAL_SCENARIO.contract.load_levels
                         for file in ("traffic.rou.xml", "simulation.sumocfg"))
         if not required.issubset(manifest["files_sha256"]):
             raise TrafficInputError("Fichiers préparés obligatoires absents du manifeste.")

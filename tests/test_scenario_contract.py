@@ -1,5 +1,6 @@
 import csv
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 import hashlib
 import importlib.util
 import io
@@ -15,6 +16,7 @@ from unittest.mock import patch
 from cav_recovery.empirical import contract_files
 from cav_recovery.empirical import scenario_contract
 from cav_recovery.empirical import traffic_inputs
+from cav_recovery.canonical_scenario import CANONICAL_SCENARIO
 from cav_recovery.empirical.scenario_contract import (
     ContractInputError,
     _aggregate_movements,
@@ -38,6 +40,12 @@ def digest(path):
 def input_hashes(directory, coverage):
     names = ["manifest.json", "sector_config.json", "quality_summary.json", "flow_profile.csv", "movement_profile.csv"]
     return {**{name: digest(directory / name) for name in names}, "coverage.json": digest(coverage)}
+
+
+def patch_input_hashes(hashes):
+    profiles = tuple(replace(item, sha256=hashes[item.filename]) for item in CANONICAL_SCENARIO.empirical.profiles)
+    config = replace(CANONICAL_SCENARIO, empirical=replace(CANONICAL_SCENARIO.empirical, profiles=profiles))
+    return patch.object(traffic_inputs, "CANONICAL_SCENARIO", config)
 
 
 def load_cli_module():
@@ -232,7 +240,7 @@ def prepare_inputs(root):
 
 class ScenarioContractTests(unittest.TestCase):
     def run_builder(self, profiles, coverage, output):
-        with patch.dict(traffic_inputs.EXPECTED_INPUT_SHA256, input_hashes(profiles, coverage), clear=True):
+        with patch_input_hashes(input_hashes(profiles, coverage)):
             return build_empirical_contract(profiles, coverage, output)
 
     def test_builds_four_deterministic_artifacts_and_applies_4_5_4(self):
@@ -294,7 +302,7 @@ class ScenarioContractTests(unittest.TestCase):
                     denominator = 3 if entry == ENTRIES[1] and category == "Car" else 0
                     count = denominator if exit_gate == EXITS[0] else 0
                     rows[(entry, exit_gate, category, 0.0)] = {"count": count, "denominator": denominator}
-        counts, denominators, probabilities = _aggregate_movements({0.0}, rows)
+        counts, denominators, probabilities = _aggregate_movements({0.0}, rows, CANONICAL_SCENARIO)
         self.assertEqual(denominators[ENTRIES[0]], 0)
         self.assertEqual(probabilities[ENTRIES[0]], {EXITS[0]: None, EXITS[1]: None})
         self.assertEqual(denominators[ENTRIES[1]], 3)
@@ -306,7 +314,7 @@ class ScenarioContractTests(unittest.TestCase):
             profiles, coverage = prepare_inputs(root)
             expected = input_hashes(profiles, coverage)
             (profiles / "flow_profile.csv").unlink()
-            with patch.dict(traffic_inputs.EXPECTED_INPUT_SHA256, expected, clear=True):
+            with patch_input_hashes(expected):
                 with self.assertRaisesRegex(ContractInputError, "obligatoire absent"):
                     build_empirical_contract(profiles, coverage, root / "out")
 
@@ -316,7 +324,7 @@ class ScenarioContractTests(unittest.TestCase):
             profiles, coverage = prepare_inputs(root)
             expected = input_hashes(profiles, coverage)
             (profiles / "flow_profile.csv").write_text("altéré\n", encoding="utf-8")
-            with patch.dict(traffic_inputs.EXPECTED_INPUT_SHA256, expected, clear=True):
+            with patch_input_hashes(expected):
                 with self.assertRaisesRegex(ContractInputError, "Empreinte SHA-256"):
                     build_empirical_contract(profiles, coverage, root / "out")
 
@@ -328,7 +336,7 @@ class ScenarioContractTests(unittest.TestCase):
             rows = list(csv.DictReader(path.open(encoding="utf-8", newline="")))
             fields = [field for field in rows[0] if field != "passages_in_exposure"]
             write_csv(path, fields, ({key: value for key, value in row.items() if key in fields} for row in rows))
-            with patch.dict(traffic_inputs.EXPECTED_INPUT_SHA256, input_hashes(profiles, coverage), clear=True):
+            with patch_input_hashes(input_hashes(profiles, coverage)):
                 with self.assertRaisesRegex(ContractInputError, "Colonnes absentes"):
                     build_empirical_contract(profiles, coverage, root / "out")
 
@@ -340,7 +348,7 @@ class ScenarioContractTests(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["source"]["filename"] = "autre.csv"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            with patch.dict(traffic_inputs.EXPECTED_INPUT_SHA256, input_hashes(profiles, coverage), clear=True):
+            with patch_input_hashes(input_hashes(profiles, coverage)):
                 with self.assertRaisesRegex(ContractInputError, "source pNEUMA"):
                     build_empirical_contract(profiles, coverage, root / "out")
 
