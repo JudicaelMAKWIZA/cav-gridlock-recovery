@@ -11,6 +11,8 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 
+from .sumo_process import close_sumo
+
 
 class SmokeInputError(ValueError):
     """Signale une fixture ou un horizon incompatible avec le contrôle."""
@@ -100,43 +102,6 @@ def _observe_trip(connection, mission: dict, result: dict) -> None:
     raise RuntimeError("Horizon atteint sans arrivée normale du véhicule attendu.")
 
 
-def _close_run(connection, process, result: dict) -> None:
-    """Ferme TraCI et attend SUMO ; arrête le processus si la fermeture échoue."""
-    if connection is not None:
-        try:
-            connection.close(False)
-            result["connection_closed"] = True
-        except Exception as error:
-            result["cleanup_errors"].append(f"Fermeture TraCI impossible : {error}")
-    if process is not None:
-        # Une erreur d'attente ne prouve pas que SUMO est arrêté. Chaque repli
-        # reste tenté si le précédent n'a pas permis d'attendre sa fin.
-        for action, phase in (
-            (None, "attente normale"),
-            (process.terminate, "terminate"),
-            (process.kill, "kill"),
-        ):
-            if action is not None:
-                result["forced_process_stop"] = True
-                try:
-                    action()
-                except Exception as error:
-                    result["cleanup_errors"].append(f"Arrêt SUMO par {phase} impossible : {error}")
-            try:
-                process.wait(timeout=5)
-                break
-            except Exception as error:
-                result["cleanup_errors"].append(f"Attente SUMO ({phase}) impossible : {error}")
-        try:
-            returncode = process.poll()
-            result["process_stopped"] = returncode is not None
-            result["process_returncode"] = returncode
-        except Exception as error:
-            result["cleanup_errors"].append(f"Vérification de l'arrêt SUMO impossible : {error}")
-        if not result["process_stopped"]:
-            result["cleanup_errors"].append("L'arrêt du processus SUMO n'a pas pu être confirmé.")
-
-
 def run_sumo_smoke(
     fixture_dir: str | Path,
     *,
@@ -195,7 +160,7 @@ def run_sumo_smoke(
             result["reason"] = str(error)
         finally:
             try:
-                _close_run(connection, process, result)
+                close_sumo(connection, process, result)
             except Exception as error:
                 result["cleanup_errors"].append(f"Arrêt du processus impossible : {error}")
         if result["cleanup_errors"] or result["forced_process_stop"] or (

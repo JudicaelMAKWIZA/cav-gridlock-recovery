@@ -14,6 +14,7 @@ from unittest.mock import Mock
 import pytest
 
 from cav_recovery.simulation import sumo_smoke
+from cav_recovery.simulation.sumo_process import close_sumo
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,8 +73,11 @@ def environment(monkeypatch):
     return SimpleNamespace(connection=connection, process=process, popen=popen, connect=connect)
 
 
-def test_normal_trip_and_cleanup(environment):
+def test_normal_trip_and_cleanup(environment, monkeypatch):
+    close = Mock(wraps=close_sumo)
+    monkeypatch.setattr(sumo_smoke, "close_sumo", close)
     result = sumo_smoke.run_sumo_smoke(FIXTURE, horizon_s=1.5)
+    close.assert_called_once_with(environment.connection, environment.process, result)
     assert result["status"] == "passed"
     assert result["steps"] == 3
     assert result["departures"] == [{"vehicle_id": VEHICLE, "time_s": 0.5}]

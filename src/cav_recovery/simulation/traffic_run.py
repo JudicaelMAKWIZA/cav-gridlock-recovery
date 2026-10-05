@@ -13,7 +13,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 
 from .road_network import CENTER_NODE, CENTER_PROGRAM_ID, CENTER_PHASES, check_environment
-from .sumo_smoke import _close_run
+from .sumo_process import close_sumo
 from .traffic_demand import Mission, STEP_S, TrafficInputError, file_hash
 from .traffic_scenario import SEED, TIME_TO_TELEPORT_S, new_output_directory, read_scenario, write_json
 
@@ -206,7 +206,7 @@ def verify_loaded_scenario(connection, missions: list[Mission]) -> None:
 def code_provenance() -> dict:
     """Identifie le code utilisé, y compris avant son éventuel commit de revue."""
     digest = hashlib.sha256()
-    for name in ("traffic_demand.py", "road_network.py", "traffic_scenario.py", "traffic_run.py", "sumo_smoke.py"):
+    for name in ("traffic_demand.py", "road_network.py", "traffic_scenario.py", "traffic_run.py", "sumo_process.py"):
         path = Path(__file__).with_name(name)
         digest.update(name.encode() + path.read_bytes())
     path = Path(__file__).parents[1] / "c3_reference.py"
@@ -315,7 +315,7 @@ def run_traffic(scenario_dir: str | Path, regime: str, output_dir: str | Path, *
         finally:
             # Le repli déjà éprouvé ferme aussi le processus après une erreur TraCI.
             try:
-                _close_run(connection, process, result)
+                close_sumo(connection, process, result)
             except Exception as error:
                 result["cleanup_errors"].append(f"Arrêt du processus non confirmé : {error}")
     if (result["cleanup_errors"] or result["forced_process_stop"] or not result["connection_closed"]
