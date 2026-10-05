@@ -11,16 +11,28 @@ import xml.etree.ElementTree as ET
 
 from ..c3_reference import CAV_POPULATION_ID, ENTRY_GATES, EXIT_GATES, LOAD_LEVELS
 
-from .road_network import (ROUTES, GATE_EDGES, ENTRY_CONNECTOR, check_environment,
-                           convert_network, inspect_network, build_scenery, write_xml)
-from .traffic_demand import (TrafficInputError, STEP_S, read_contract,
-                             allocate_counts, demand_plans, build_missions, mission_records, file_hash, CONTRACT_IDENTITY)
+from .road_network import (
+    ROUTES, GATE_EDGES, ENTRY_CONNECTOR, check_environment,
+    convert_network, inspect_network, build_scenery, write_xml,
+)
+from .traffic_demand import (
+    TrafficInputError, STEP_S, read_contract, allocate_counts, demand_plans,
+    build_missions, mission_records, file_hash, CONTRACT_IDENTITY,
+)
 
 
 VEHICLE_TYPE = {
-    "id": CAV_POPULATION_ID, "vClass": "passenger", "carFollowModel": "Krauss",
-    "length": "5.0", "minGap": "2.5", "accel": "2.6", "decel": "4.5",
-    "tau": "1.0", "sigma": "0", "speedFactor": "1.0", "guiShape": "passenger/sedan",
+    "id": CAV_POPULATION_ID,
+    "vClass": "passenger",
+    "carFollowModel": "Krauss",
+    "length": "5.0",
+    "minGap": "2.5",
+    "accel": "2.6",
+    "decel": "4.5",
+    "tau": "1.0",
+    "sigma": "0",
+    "speedFactor": "1.0",
+    "guiShape": "passenger/sedan",
 }
 SEED = 0
 TIME_TO_TELEPORT_S = -1
@@ -40,7 +52,7 @@ def write_json(path: Path, document: dict) -> None:
 
 
 def write_view(path: Path, center: dict) -> None:
-    """Le zoom et les formes automobiles n'agissent pas sur la dynamique."""
+    """Écrit une vue centrée sur le carrefour, sans modifier la dynamique."""
     root = ET.Element("viewsettings")
     scheme = ET.SubElement(root, "scheme", name="real world")
     ET.SubElement(scheme, "background", backgroundColor="238,240,235", showGrid="0")
@@ -113,14 +125,24 @@ def prepare_traffic(osm_path: str | Path, contract_path: str | Path, output_dir:
                 missions = build_missions(name, plan, inspection["routes"])
                 write_traffic_files(directory, missions, inspection["routes"], (stage / "scenery.add.xml").exists())
                 regimes[name] = {"plan": plan, "missions": mission_records(missions)}
-            manifest = {"schema_version": "traffic-scenario-1", "status": "prepared", "versions": versions,
-                        "contract": {"filename": Path(contract_path).name, "sha256": CONTRACT_IDENTITY[1]},
-                        "conversion": conversion, "network": inspection, "scenery": scenery,
-                        "vehicle_type": dict(VEHICLE_TYPE), "step_s": STEP_S,
-                        "seed": SEED, "regimes": regimes,
-                        "limits": contract["limitations"],
-                        "files_sha256": {p.relative_to(stage).as_posix(): file_hash(p)
-                                         for p in sorted(stage.rglob("*")) if p.is_file() and p.suffix != ".log"}}
+            manifest = {
+                "schema_version": "traffic-scenario-1",
+                "status": "prepared",
+                "versions": versions,
+                "contract": {"filename": Path(contract_path).name, "sha256": CONTRACT_IDENTITY[1]},
+                "conversion": conversion,
+                "network": inspection,
+                "scenery": scenery,
+                "vehicle_type": dict(VEHICLE_TYPE),
+                "step_s": STEP_S,
+                "seed": SEED,
+                "regimes": regimes,
+                "limits": contract["limitations"],
+                "files_sha256": {
+                    p.relative_to(stage).as_posix(): file_hash(p)
+                    for p in sorted(stage.rglob("*")) if p.is_file() and p.suffix != ".log"
+                },
+            }
             write_json(stage / "scenario.json", manifest)
             existed = destination.exists()
             if existed:
@@ -175,10 +197,15 @@ def validate_prepared_missions(directory: Path, manifest: dict) -> None:
                 or len(root.findall("route")) != len(routes_expected) or vehicles != expected_vehicles):
             raise TrafficInputError("Les routes XML ne correspondent pas aux missions.")
         simulation_config = ET.parse(directory / name / "simulation.sumocfg").getroot()
-        checks = {"input/net-file": "../network.net.xml", "input/route-files": "traffic.rou.xml",
-                  "time/step-length": str(STEP_S), "processing/time-to-teleport": str(TIME_TO_TELEPORT_S),
-                  "processing/max-depart-delay": str(MAX_DEPART_DELAY_S), "random_number/seed": str(SEED),
-                  "gui_only/gui-settings-file": "../view.xml"}
+        checks = {
+            "input/net-file": "../network.net.xml",
+            "input/route-files": "traffic.rou.xml",
+            "time/step-length": str(STEP_S),
+            "processing/time-to-teleport": str(TIME_TO_TELEPORT_S),
+            "processing/max-depart-delay": str(MAX_DEPART_DELAY_S),
+            "random_number/seed": str(SEED),
+            "gui_only/gui-settings-file": "../view.xml",
+        }
         for path, value in checks.items():
             row = simulation_config.find(path)
             if row is None or row.get("value") != value:

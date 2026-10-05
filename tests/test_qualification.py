@@ -116,6 +116,7 @@ class QualificationTests(unittest.TestCase):
             output = Path(directory) / "out"
             result = subprocess.run([sys.executable, "scripts/qualify_pneuma.py", "--input", str(FIXTURES / "known.csv"), "--output-dir", str(output)], cwd=ROOT, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Qualification complete", result.stdout)
             manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["status"], "complete")
 
@@ -124,6 +125,7 @@ class QualificationTests(unittest.TestCase):
             missing = Path(directory) / "missing.csv"
             refused = subprocess.run([sys.executable, "scripts/qualify_pneuma.py", "--input", str(missing), "--output-dir", str(Path(directory) / "out")], cwd=ROOT, text=True, capture_output=True)
             self.assertEqual(refused.returncode, 2)
+            self.assertIn("Qualification refusée", refused.stderr)
             unusable = subprocess.run([sys.executable, "scripts/qualify_pneuma.py", "--input", str(FIXTURES / "no_usable.csv"), "--output-dir", str(Path(directory) / "unusable")], cwd=ROOT, text=True, capture_output=True)
             self.assertEqual(unusable.returncode, 2)
 
@@ -133,3 +135,4 @@ class QualificationTests(unittest.TestCase):
             output_file.write_text("occupied", encoding="utf-8")
             result = subprocess.run([sys.executable, "scripts/qualify_pneuma.py", "--input", str(FIXTURES / "known.csv"), "--output-dir", str(output_file)], cwd=ROOT, text=True, capture_output=True)
             self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("Erreur technique de qualification", result.stderr)

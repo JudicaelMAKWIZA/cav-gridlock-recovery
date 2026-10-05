@@ -6,6 +6,7 @@ import csv
 import gzip
 import hashlib
 import importlib.metadata
+import io
 import json
 import os
 import platform
@@ -37,7 +38,7 @@ def _sha256(path: Path) -> str:
 
 
 class _RunningStats:
-    """Minimum, maximum and count without retaining individual values."""
+    """Compte les valeurs et relève leurs bornes sans les conserver."""
     def __init__(self) -> None:
         self.count = 0
         self.excluded = 0
@@ -53,12 +54,17 @@ class _RunningStats:
         self.excluded += 1
 
     def result(self, additional_exclusions: int = 0) -> dict[str, Any]:
-        return {"count": self.count, "excluded": self.excluded + additional_exclusions, "min": self.minimum, "max": self.maximum,
-                "reason": None if self.count else "aucune valeur finie"}
+        return {
+            "count": self.count,
+            "excluded": self.excluded + additional_exclusions,
+            "min": self.minimum,
+            "max": self.maximum,
+            "reason": None if self.count else "aucune valeur finie",
+        }
 
 
 class _StreamingCsvRows:
-    """CSV writer retaining only a row count."""
+    """Écrit les lignes CSV au fil de la lecture et compte les lignes exportées."""
     def __init__(self, path: Path, headers: list[str]) -> None:
         self._handle = path.open("w", encoding="utf-8", newline="")
         self._writer = csv.DictWriter(self._handle, fieldnames=headers)
@@ -77,7 +83,7 @@ class _StreamingCsvRows:
 
 
 class _StreamingIssues(_StreamingCsvRows):
-    """List-compatible sink used by the parser, with incremental diagnostics counts."""
+    """Écrit les anomalies du lecteur et compte leurs codes au fil de la lecture."""
     def __init__(self, path: Path, headers: list[str]) -> None:
         super().__init__(path, headers)
         self.by_code: Counter[str] = Counter()
@@ -90,11 +96,11 @@ class _StreamingIssues(_StreamingCsvRows):
 
 
 class _StreamingGzipRows:
-    """CSV writer which retains only a row count, never all observations."""
+    """Écrit le CSV compressé sans garder les observations en mémoire."""
     def __init__(self, path: Path, headers: list[str]) -> None:
         self._raw = path.open("wb")
         self._gzip = gzip.GzipFile(filename="", mode="wb", fileobj=self._raw, mtime=0)
-        self._text = __import__("io").TextIOWrapper(self._gzip, encoding="utf-8", newline="")
+        self._text = io.TextIOWrapper(self._gzip, encoding="utf-8", newline="")
         self._writer = csv.DictWriter(self._text, fieldnames=headers)
         self._writer.writeheader()
         self.count = 0
@@ -112,7 +118,7 @@ class _StreamingGzipRows:
 
 
 def _code_state() -> dict[str, str]:
-    """Identify executable code without recording local source paths."""
+    """Identifie le code de lecture sans enregistrer de chemin local."""
     module_paths = [Path(__file__), Path(__file__).with_name("pneuma.py")]
     digest = hashlib.sha256()
     for module_path in module_paths:
@@ -126,7 +132,7 @@ def _code_state() -> dict[str, str]:
 
 
 def _git_state() -> dict[str, str | None]:
-    """Return repository state when Git is available, without exposing a local path."""
+    """Relève le commit et l'état du dépôt lorsque Git est disponible."""
     repository = Path(__file__).resolve().parents[3]
     try:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, text=True, capture_output=True, check=True).stdout.strip()
@@ -137,16 +143,17 @@ def _git_state() -> dict[str, str | None]:
 
 
 def qualify_pneuma(input_path: str | Path, output_dir: str | Path) -> dict[str, Any]:
-    """Qualify one pNEUMA CSV, writing only a new/empty private output directory.
+    """Vérifie un fichier pNEUMA et écrit ses exports dans un dossier absent ou vide.
 
-    The source is opened read-only and observations are emitted as each source row is read.
+    La source reste inchangée. Les observations sont exportées au fil de la
+    lecture, sans charger toutes les trajectoires en mémoire.
     """
     source = Path(input_path).expanduser().resolve()
     destination = Path(output_dir).expanduser().resolve()
     if not source.is_file():
         raise ValueError(f"Entrée absente ou illisible : {source}")
     if destination == source or source in destination.parents:
-        raise ValueError("Le dossier de sortie ne peut pas contenir le fichier source.")
+        raise ValueError("Le chemin de sortie ne peut pas être le fichier source ni se situer sous ce fichier.")
     if destination.exists() and any(destination.iterdir()):
         raise ValueError(f"Le dossier de sortie existe déjà et n'est pas vide : {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -185,7 +192,17 @@ def qualify_pneuma(input_path: str | Path, output_dir: str | Path) -> dict[str, 
             if not candidate.decomposable:
                 excluded_structure += 1
                 issues.append(source_issue(candidate.line, None, "row", "STRUCTURE_ERROR", "error", ";".join(fields), "Nombre de champs incompatible avec 4 + 6 × n."))
-                trajectories.append({"source_line": candidate.line, "track_id": track_id, "type": category, "traveled_d_m": "", "avg_speed_kmh": "", "avg_speed_mps": "", "structural_status": "excluded_structure", "observation_count": 0, "diagnostic_count": 1})
+                trajectories.append({
+                    "source_line": candidate.line,
+                    "track_id": track_id,
+                    "type": category,
+                    "traveled_d_m": "",
+                    "avg_speed_kmh": "",
+                    "avg_speed_mps": "",
+                    "structural_status": "excluded_structure",
+                    "observation_count": 0,
+                    "diagnostic_count": 1,
+                })
                 continue
             decomposable += 1
             expected_group_count += candidate.groups
@@ -262,7 +279,17 @@ def qualify_pneuma(input_path: str | Path, output_dir: str | Path) -> dict[str, 
                     "lon_acc_mps2": _csv_value(lon_acc), "lat_acc_mps2": _csv_value(lat_acc), "time_s": _csv_value(time_s),
                     "all_numeric_finite": str(numeric_valid).lower(), "coordinate_in_range": str(coordinate_valid).lower(),
                 })
-            trajectories.append({"source_line": candidate.line, "track_id": track_id, "type": category, "traveled_d_m": _csv_value(traveled), "avg_speed_kmh": _csv_value(avg_speed), "avg_speed_mps": _csv_value(None if avg_speed is None else avg_speed / 3.6), "structural_status": "decomposable", "observation_count": candidate.groups, "diagnostic_count": len(issues) - metadata_issues_before})
+            trajectories.append({
+                "source_line": candidate.line,
+                "track_id": track_id,
+                "type": category,
+                "traveled_d_m": _csv_value(traveled),
+                "avg_speed_kmh": _csv_value(avg_speed),
+                "avg_speed_mps": _csv_value(None if avg_speed is None else avg_speed / 3.6),
+                "structural_status": "decomposable",
+                "observation_count": candidate.groups,
+                "diagnostic_count": len(issues) - metadata_issues_before,
+            })
 
         observations.close()
         trajectories.close()
@@ -271,22 +298,54 @@ def qualify_pneuma(input_path: str | Path, output_dir: str | Path) -> dict[str, 
         status = "complete" if not issues and usable else "complete_with_issues" if usable else "unusable"
         summary = {
             "schema_version": SCHEMA_VERSION, "status": status,
-            "counts": {"candidate_lines": candidates, "decomposable_lines": decomposable, "structure_excluded_lines": excluded_structure, "trajectory_export_rows": len(trajectories), "expected_groups_decomposable_lines": expected_group_count, "observation_export_rows": len(observations), "all_numeric_finite_groups": valid_complete_groups, "numeric_invalid_groups": invalid_numeric_groups, "distinct_nonempty_track_ids": len(seen_ids), "duplicate_track_ids": sorted(duplicate_ids)},
+            "counts": {
+                "candidate_lines": candidates,
+                "decomposable_lines": decomposable,
+                "structure_excluded_lines": excluded_structure,
+                "trajectory_export_rows": len(trajectories),
+                "expected_groups_decomposable_lines": expected_group_count,
+                "observation_export_rows": len(observations),
+                "all_numeric_finite_groups": valid_complete_groups,
+                "numeric_invalid_groups": invalid_numeric_groups,
+                "distinct_nonempty_track_ids": len(seen_ids),
+                "duplicate_track_ids": sorted(duplicate_ids),
+            },
             "categories": dict(sorted(category_counts.items())),
             "issues_by_code": dict(sorted(issues.by_code.items())),
             "time_seconds": {**time_stats.result(), "extent": None if time_stats.count == 0 else time_stats.maximum - time_stats.minimum},
-            "acceptable_geographic_bounds": {"latitude": latitude_stats.result(), "longitude": longitude_stats.result(), "acceptable_coordinate_groups": latitude_stats.count, "coordinate_group_exclusions": coordinate_exclusions},
-            "intervals_seconds": {"zero": interval_counts["zero"], "negative": interval_counts["negative"], "positive": interval_counts["positive"], "unavailable_missing_time": unavailable_intervals, "positive_bounds": positive_interval_stats.result(interval_counts["zero"] + interval_counts["negative"])},
-            "exclusions": {"invalid_time_values": time_stats.excluded, "coordinate_groups_unacceptable": coordinate_exclusions, "groups_with_invalid_numeric_values": invalid_numeric_groups, "structure_excluded_lines": excluded_structure, "intervals_unavailable_missing_time": unavailable_intervals},
+            "acceptable_geographic_bounds": {
+                "latitude": latitude_stats.result(),
+                "longitude": longitude_stats.result(),
+                "acceptable_coordinate_groups": latitude_stats.count,
+                "coordinate_group_exclusions": coordinate_exclusions,
+            },
+            "intervals_seconds": {
+                "zero": interval_counts["zero"],
+                "negative": interval_counts["negative"],
+                "positive": interval_counts["positive"],
+                "unavailable_missing_time": unavailable_intervals,
+                "positive_bounds": positive_interval_stats.result(interval_counts["zero"] + interval_counts["negative"]),
+            },
+            "exclusions": {
+                "invalid_time_values": time_stats.excluded,
+                "coordinate_groups_unacceptable": coordinate_exclusions,
+                "groups_with_invalid_numeric_values": invalid_numeric_groups,
+                "structure_excluded_lines": excluded_structure,
+                "intervals_unavailable_missing_time": unavailable_intervals,
+            },
             "limitations": ["Les lignes structurellement invalides ont un nombre d'observations original indéterminé.", "Cette qualification ne constitue ni une analyse de flux, ni une reconstruction de routes ou de réseau."],
         }
-        if candidates != decomposable + excluded_structure or len(trajectories) != candidates or len(observations) != summary["counts"]["expected_groups_decomposable_lines"]:
+        if (
+            candidates != decomposable + excluded_structure
+            or len(trajectories) != candidates
+            or len(observations) != summary["counts"]["expected_groups_decomposable_lines"]
+        ):
             raise RuntimeError("Bilan de qualification incohérent.")
         (stage / "quality_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         time_summary = summary["time_seconds"]
         geo_summary = summary["acceptable_geographic_bounds"]
         interval_summary = summary["intervals_seconds"]
-        report = "# Qualification pNEUMA — CGR-E01\n\n"
+        report = "# Qualification du fichier pNEUMA\n\n"
         report += f"Statut : **{status}**. {candidates} lignes candidates, {len(observations)} groupes exportés.\n\n"
         report += "## Couverture temporelle observée\n\n"
         report += f"- Bornes : {time_summary['min']} s à {time_summary['max']} s ; étendue : {time_summary['extent']} s.\n"
@@ -316,15 +375,44 @@ def qualify_pneuma(input_path: str | Path, output_dir: str | Path) -> dict[str, 
         else:
             report += "Aucun groupe minimalement utilisable n’a été observé ; le fichier est qualifié inutilisable selon le critère minimal défini.\n"
         (stage / "qualification_report.md").write_text(report, encoding="utf-8")
-        manifest = {"schema_version": SCHEMA_VERSION, "status": status, "source": {"filename": source.name, "sha256": _sha256(source), "size_bytes": source.stat().st_size}, "references": ["EPFL pNEUMA downloads/FAQ (S1)", "Zenodo pNEUMA dataset, record 10491409 (S2)"], "parameters": {"format": "pNEUMA CSV ;, quatre métadonnées puis groupes de six", "exports": EXPORTS}, "units": {"speed_source": "km/h", "speed_export": "m/s", "coordinates": "degrees", "acceleration": "m/s²", "time": "s"}, "software": {"python": sys.version.split()[0], "reader": "cav_recovery.empirical.pneuma", "platform": platform.platform(), "code_state": _code_state(), "git": _git_state()}, "exports": EXPORTS}
+        manifest = {
+            "schema_version": SCHEMA_VERSION,
+            "status": status,
+            "source": {
+                "filename": source.name,
+                "sha256": _sha256(source),
+                "size_bytes": source.stat().st_size,
+            },
+            "references": ["EPFL pNEUMA downloads/FAQ (S1)", "Zenodo pNEUMA dataset, record 10491409 (S2)"],
+            "parameters": {
+                "format": "pNEUMA CSV ;, quatre métadonnées puis groupes de six",
+                "exports": EXPORTS,
+            },
+            "units": {
+                "speed_source": "km/h",
+                "speed_export": "m/s",
+                "coordinates": "degrees",
+                "acceleration": "m/s²",
+                "time": "s",
+            },
+            "software": {
+                "python": sys.version.split()[0],
+                "reader": "cav_recovery.empirical.pneuma",
+                "platform": platform.platform(),
+                "code_state": _code_state(),
+                "git": _git_state(),
+            },
+            "exports": EXPORTS,
+        }
         (stage / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         destination.mkdir(exist_ok=True)
-        # The manifest is published last, so a write/move failure cannot look complete.
+        # Le manifeste n'est publié qu'une fois les autres exports en place.
         for name in [name for name in EXPORTS if name != "manifest.json"] + ["manifest.json"]:
             os.replace(stage / name, destination / name)
         return summary
     finally:
-        # Idempotent close calls also cover failures while parsing an empty/bad file.
+        # Fermer aussi les fichiers si la lecture a échoué ; une seconde fermeture
+        # est sans effet pour les fichiers déjà fermés.
         for writer in (observations, trajectories, issues):
             if writer is not None:
                 writer.close()

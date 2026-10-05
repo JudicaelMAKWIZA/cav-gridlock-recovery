@@ -175,7 +175,7 @@ def _validate_c3_identity(
 ) -> None:
     """Vérifie la source, le secteur et la couverture attendus pour C3."""
     if manifest.get("schema_version") != PROFILE_SCHEMA_VERSION:
-        raise ContractInputError("Le manifeste n'identifie pas une exécution réussie compatible.")
+        raise ContractInputError("Version de schéma du manifeste incompatible.")
     if summary.get("schema_version") != PROFILE_SCHEMA_VERSION:
         raise ContractInputError("Le bilan d'entrée est incompatible ou incomplet.")
     if summary.get("method") != EXTRACTION_METHOD:

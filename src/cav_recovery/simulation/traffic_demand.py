@@ -151,11 +151,14 @@ def demand_plans(contract: dict) -> dict:
         if (sum(row["passenger_movement_denominators"].values()) != row["classifiable_visits"]
                 or sum(entries.values()) != row["classifiable_visits"] + row["censored_exit"]):
             raise TrafficInputError("Les entrées ne se réconcilient pas avec les visites et censures.")
-        plans[name] = {"injection_s": row["exposure_s"], "entries": entries,
-                       "observed_movements": observed,
-                       "observed_denominators": row["passenger_movement_denominators"],
-                       "censored_exit": row["censored_exit"],
-                       "allocation": {gate: allocate_counts(entries[gate], observed[gate]) for gate in ENTRY_GATES}}
+        plans[name] = {
+            "injection_s": row["exposure_s"],
+            "entries": entries,
+            "observed_movements": observed,
+            "observed_denominators": row["passenger_movement_denominators"],
+            "censored_exit": row["censored_exit"],
+            "allocation": {gate: allocate_counts(entries[gate], observed[gate]) for gate in ENTRY_GATES},
+        }
     return plans
 
 
@@ -169,7 +172,10 @@ def departure_times(count: int, duration_s: float) -> list[float]:
 
 
 def interleave_movements(counts: dict[str, int]) -> list[str]:
-    """Choisit à chaque départ la sortie la plus en retard sur sa part cumulée."""
+    """Choisit à chaque départ la sortie la plus en retard sur sa part cumulée.
+
+    En cas d'égalité, l'ordre des identifiants de sortie départage les mouvements.
+    """
     total = sum(counts.values())
     used = dict.fromkeys(counts, 0)
     sequence = []

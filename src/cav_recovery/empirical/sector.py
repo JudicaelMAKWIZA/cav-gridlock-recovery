@@ -1,4 +1,4 @@
-"""Géométrie métrique et franchissements de portes virtuelles pour CGR-E02."""
+"""Géométrie métrique et franchissements de portes virtuelles."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ class Point:
 
 @dataclass(frozen=True)
 class TrackObservation:
-    """Observation CGR-E01 minimale nécessaire à la détection des portes."""
+    """Point horodaté d'une trajectoire, avec rupture éventuelle avant ce point."""
 
     source_line: int
     group_index: int
@@ -53,7 +53,7 @@ class Gate:
 
 @dataclass(frozen=True)
 class Sector:
-    """Secteur projeté et provenance géométrique suffisante pour CGR-E02."""
+    """Secteur et portes projetés dans le repère métrique local."""
 
     identifier: str
     center_lat: float
@@ -72,12 +72,12 @@ class CrossingParameters:
 
     def validate(self) -> None:
         if any(not math.isfinite(value) or value <= 0 for value in self.__dict__.values()):
-            raise SectorConfigurationError("Tous les seuils CGR-E02 doivent être finis et strictement positifs.")
+            raise SectorConfigurationError("Tous les seuils doivent être finis et strictement positifs.")
 
 
 @dataclass(frozen=True)
 class Crossing:
-    """Franchissement observé entre deux observations encadrantes."""
+    """Franchissement reconstruit entre deux observations, avec temps interpolé."""
 
     source_line: int
     track_id: str
@@ -126,13 +126,13 @@ def _mapping(value: object, label: str) -> dict:
 
 
 def load_sector(path: str | Path) -> Sector:
-    """Charge et valide le seed figé sans lui ajouter de seuil implicite."""
+    """Charge les portes et vérifie leur géométrie autour du centre du secteur."""
     document = json.loads(Path(path).read_text(encoding="utf-8"))
     if document.get("schema") != "CGR-E02-sector-seed-1":
-        raise SectorConfigurationError("Schéma de secteur CGR-E02 non pris en charge.")
+        raise SectorConfigurationError("Schéma de configuration du secteur non pris en charge.")
     geometry = _mapping(document.get("geometry"), "geometry")
     if geometry.get("crs_source") != "EPSG:4326":
-        raise SectorConfigurationError("Le seed doit déclarer les coordonnées source EPSG:4326.")
+        raise SectorConfigurationError("La configuration doit déclarer les coordonnées source EPSG:4326.")
     sector_data = _mapping(document.get("sector"), "sector")
     center_data = _mapping(sector_data.get("center"), "sector.center")
     try:

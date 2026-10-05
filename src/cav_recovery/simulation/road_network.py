@@ -152,9 +152,14 @@ def inspect_network(network_path: Path, osm_path: Path) -> dict:
                            "lane_count_origin": "OSM explicite" if "lanes" in tags else "typemap/règle SUMO",
                            "speed_origin": "OSM explicite" if "maxspeed" in tags else "typemap/règle SUMO",
                            "length_origin": "projection et découpage SUMO", "direction_origin": "ordre OSM et oneway=yes"})
-    return {"center": dict(center.attrib), "projection": dict(root.find("location").attrib),
-            "traffic_lights": lights, "edges": attributes, "routes": {name: list(route_edges) for name, route_edges in ROUTES.items()},
-            "gate_mapping": {**GATE_EDGES, "entry_connector": ENTRY_CONNECTOR}}
+    return {
+        "center": dict(center.attrib),
+        "projection": dict(root.find("location").attrib),
+        "traffic_lights": lights,
+        "edges": attributes,
+        "routes": {name: list(route_edges) for name, route_edges in ROUTES.items()},
+        "gate_mapping": {**GATE_EDGES, "entry_connector": ENTRY_CONNECTOR},
+    }
 
 
 def build_scenery(osm_path: Path, directory: Path) -> dict:

@@ -113,7 +113,8 @@ les profils temporels du secteur étudié.
 
 ### Construire le contrat de trafic
 
-Une fois les profils et leur couverture validés :
+Cette commande utilise les profils de référence et leur couverture validés.
+Elle contrôle leur identité et refuse d'autres profils :
 
 ```bash
 python scripts/build_empirical_contract.py \
@@ -266,6 +267,6 @@ vide. Consulter `--help` pour tous les arguments.
 ## Suite du projet
 
 Les prochaines étapes consisteront à représenter les conflits entre véhicules
-et zones routières, détecter les
-blocages, puis comparer des stratégies de récupération. L'apprentissage
-multi-agent sera étudié après la mise en place de cette base expérimentale.
+et zones routières, détecter les blocages, puis comparer des stratégies de
+récupération. L'apprentissage multi-agent sera étudié après la mise en place
+de cette base expérimentale.

@@ -75,6 +75,11 @@ class TrafficLedger:
         return self.snapshot()
 
     def _validate_observation(self, connection, observation: dict) -> None:
+        """Vérifie le pas en enregistrant progressivement les événements constatés.
+
+        Un départ déjà enregistré reste disponible si un contrôle suivant échoue.
+        L'ensemble actif validé n'est mis à jour qu'après tous les contrôles.
+        """
         time_s = self.time_s
         if self.teleport_starts or self.teleport_ends:
             raise RuntimeError("Téléportation détectée : aucune arrivée assistée n'est admise.")
@@ -134,17 +139,25 @@ class TrafficLedger:
         # SUMO traite [t - pas, t) lors du dernier pas : un départ à t reste futur.
         future = {item for item in pending if self.missions[item].scheduled_s >= self.time_s}
         delays = [time - self.missions[item].scheduled_s for item, time in self.departures.items()]
-        return {"simulation_time_s": self.time_s, "scheduled": len(self.missions),
-                "future": len(future), "delayed_not_inserted": len(pending - future),
-                "pending": len(pending), "departed": len(self.departures), "active": len(self.observed_active),
-                "observed_active": len(self.observed_active), "validated_active": len(self.validated_active),
-                "observed_time_s": self.observed_time_s,
-                "missing_without_arrival": len(set(self.departures) - set(self.arrivals) - self.observed_active),
-                "active_unvalidated": len(self.observed_active) if self.failure_observation is not None else 0,
-                "arrived": len(self.arrivals), "teleport_starts": len(self.teleport_starts),
-                "teleport_ends": len(self.teleport_ends),
-                "max_insertion_delay_s": max(delays, default=0),
-                "mean_insertion_delay_s": sum(delays) / len(delays) if delays else None}
+        return {
+            "simulation_time_s": self.time_s,
+            "scheduled": len(self.missions),
+            "future": len(future),
+            "delayed_not_inserted": len(pending - future),
+            "pending": len(pending),
+            "departed": len(self.departures),
+            "active": len(self.observed_active),
+            "observed_active": len(self.observed_active),
+            "validated_active": len(self.validated_active),
+            "observed_time_s": self.observed_time_s,
+            "missing_without_arrival": len(set(self.departures) - set(self.arrivals) - self.observed_active),
+            "active_unvalidated": len(self.observed_active) if self.failure_observation is not None else 0,
+            "arrived": len(self.arrivals),
+            "teleport_starts": len(self.teleport_starts),
+            "teleport_ends": len(self.teleport_ends),
+            "max_insertion_delay_s": max(delays, default=0),
+            "mean_insertion_delay_s": sum(delays) / len(delays) if delays else None,
+        }
 
     def vehicle_records(self, trips: dict[str, dict]) -> list[dict]:
         records = []
@@ -204,7 +217,7 @@ def verify_loaded_scenario(connection, missions: list[Mission]) -> None:
 
 
 def code_provenance() -> dict:
-    """Identifie le code utilisé, y compris avant son éventuel commit de revue."""
+    """Calcule l'empreinte des modules producteurs et relève l'état Git."""
     digest = hashlib.sha256()
     for name in ("traffic_demand.py", "road_network.py", "traffic_scenario.py", "traffic_run.py", "sumo_process.py"):
         path = Path(__file__).with_name(name)
@@ -271,14 +284,29 @@ def run_traffic(scenario_dir: str | Path, regime: str, output_dir: str | Path, *
     versions = check_environment(binary)
     horizon = manifest["regimes"][regime]["plan"]["injection_s"] + drain_horizon_s
     output.mkdir(parents=True, exist_ok=True)
-    result = {"status": "failed", "reason": None, "regime": regime, "versions": versions,
-              "scenario_sha256": file_hash(scenario_dir / "scenario.json"), "code": code_provenance(),
-              "gui": gui, "gui_delay_ms": gui_delay_ms if gui else None, "step_s": STEP_S,
-              "seed": SEED,
-              "time_to_teleport_s": TIME_TO_TELEPORT_S, "drain_horizon_s": drain_horizon_s,
-              "horizon_s": horizon, "steps": 0, "connection_closed": False, "process_stopped": False,
-              "process_returncode": None, "cleanup_errors": [], "forced_process_stop": False,
-              "tls_states": [], "assistance_commands": []}
+    result = {
+        "status": "failed",
+        "reason": None,
+        "regime": regime,
+        "versions": versions,
+        "scenario_sha256": file_hash(scenario_dir / "scenario.json"),
+        "code": code_provenance(),
+        "gui": gui,
+        "gui_delay_ms": gui_delay_ms if gui else None,
+        "step_s": STEP_S,
+        "seed": SEED,
+        "time_to_teleport_s": TIME_TO_TELEPORT_S,
+        "drain_horizon_s": drain_horizon_s,
+        "horizon_s": horizon,
+        "steps": 0,
+        "connection_closed": False,
+        "process_stopped": False,
+        "process_returncode": None,
+        "cleanup_errors": [],
+        "forced_process_stop": False,
+        "tls_states": [],
+        "assistance_commands": [],
+    }
     result["prepared_scenario"] = {"file": str(scenario_dir / "scenario.json"),
                                     "sha256": result["scenario_sha256"]}
     result["input_identities"] = {"contract": manifest.get("contract"),
@@ -313,7 +341,7 @@ def run_traffic(scenario_dir: str | Path, regime: str, output_dir: str | Path, *
             result["status"] = "failed"
             result["reason"] = str(error)
         finally:
-            # Le repli déjà éprouvé ferme aussi le processus après une erreur TraCI.
+            # Fermer aussi le processus après une erreur TraCI.
             try:
                 close_sumo(connection, process, result)
             except Exception as error:

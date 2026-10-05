@@ -132,6 +132,8 @@ def _build_load_levels(
             key=lambda row: float(row["window_start_s"]),
         )
         starts = {float(row["window_start_s"]) for row in members}
+        # Les deux entrées sont observées simultanément : leur taux combiné
+        # utilise une seule durée d'exposition, pas la somme des deux durées.
         exposure = sum(float(row["duration_s"]) for row in members)
         entry_counts = {
             ENTRY_GATES[0]: sum(int(row["passenger_in_w23183369"]) for row in members),
