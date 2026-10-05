@@ -4,20 +4,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ..c3_reference import (
+    C3_NODE_ID, C3_SECTOR_ID, ENTRY_GATES, EXIT_GATES, CONTRACT_SCHEMA,
+    SOURCE_CATEGORIES, CAV_POPULATION_ID, LOAD_LEVELS, OBSERVATION_INTERVAL_S,
+)
+
 from .contract_files import validate_output_directory, write_contract_files
 from .traffic_inputs import (
     ALL_CATEGORIES,
-    ENTRY_GATES,
-    EXIT_GATES,
+    EXTRACTION_METHOD,
+    INTERVAL_CONVENTION,
+    WINDOW_S,
     ContractInputError,
     load_traffic_inputs,
     same_number,
 )
 
 
-SCHEMA_VERSION = "CGR-E03-1"
-SOURCE_CATEGORIES = ("Car", "Taxi")
-LOAD_LEVEL_ORDER = ("LOW", "MID", "HIGH")
 GROUP_SIZES = (4, 5, 4)
 PROVENANCE_LIMITATIONS = (
     "La référence TEST utilisée pour valider l'extraction a été révisée après une première évaluation ; "
@@ -50,7 +53,7 @@ def _build_window_rows(
             "window_start_s": start,
             "window_end_s": end,
             "duration_s": duration,
-            "eligible_for_stratification": same_number(duration, 60.0),
+            "eligible_for_stratification": same_number(duration, WINDOW_S),
             "passenger_in_w23183369": by_gate[ENTRY_GATES[0]],
             "passenger_in_w284241336": by_gate[ENTRY_GATES[1]],
             "passenger_in_total": sum(by_gate.values()),
@@ -74,7 +77,7 @@ def _assign_load_levels(window_rows: list[dict[str, object]]) -> None:
         key=lambda row: (int(row["passenger_in_total"]), float(row["window_start_s"])),
     )
     offset = 0
-    for load_level, size in zip(LOAD_LEVEL_ORDER, GROUP_SIZES):
+    for load_level, size in zip(LOAD_LEVELS, GROUP_SIZES):
         for row in ranked[offset:offset + size]:
             row["regime_id"] = load_level
         offset += size
@@ -123,7 +126,7 @@ def _build_load_levels(
     """Construit les comptes, taux et mouvements de chaque niveau de charge."""
 
     load_levels = []
-    for load_level in LOAD_LEVEL_ORDER:
+    for load_level in LOAD_LEVELS:
         members = sorted(
             (row for row in window_rows if row["regime_id"] == load_level),
             key=lambda row: float(row["window_start_s"]),
@@ -179,7 +182,7 @@ def _build_composition(
 ) -> dict[str, object]:
     """Résume les six catégories sans convertir les véhicules non retenus."""
 
-    complete_starts = [start for start, end in windows if same_number(end - start, 60.0)]
+    complete_starts = [start for start, end in windows if same_number(end - start, WINDOW_S)]
     categories: dict[str, dict[str, object]] = {}
     for category in ALL_CATEGORIES:
         by_gate = {
@@ -247,7 +250,7 @@ def _contract_document(
     complete = [row for row in window_rows if row["eligible_for_stratification"]]
     partial = [row for row in window_rows if not row["eligible_for_stratification"]]
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": CONTRACT_SCHEMA,
         "status": "complete",
         "inputs": {
             "input_artifacts_sha256": dict(sorted(hashes.items())),
@@ -256,25 +259,25 @@ def _contract_document(
         },
         "method": {
             "source_categories": list(SOURCE_CATEGORIES),
-            "complete_window_s": 60,
+            "complete_window_s": WINDOW_S,
             "eligible_window_count": len(complete),
             "partial_window_count": len(partial),
-            "regime_order": list(LOAD_LEVEL_ORDER),
+            "regime_order": list(LOAD_LEVELS),
             "group_sizes": list(GROUP_SIZES),
             "primary_variable": "N_passenger_in",
             "tie_break": "window_start_s_ascending",
-            "upstream_method": "oriented_finite_virtual_gates",
+            "upstream_method": EXTRACTION_METHOD,
         },
         "empirical_context": {
             "source": manifest["source"],
             "sector": {
-                "id": "C3",
-                "osm_node_id": 250691665,
+                "id": C3_SECTOR_ID,
+                "osm_node_id": C3_NODE_ID,
                 "entry_gates": list(ENTRY_GATES),
                 "exit_gates": list(EXIT_GATES),
             },
-            "observation_interval_s": [0.0, 802.8],
-            "interval_convention": "[a,b)",
+            "observation_interval_s": list(OBSERVATION_INTERVAL_S),
+            "interval_convention": INTERVAL_CONVENTION,
             "coverage": {"status": coverage["status"], "intervals": coverage["intervals"]},
             "categories": list(ALL_CATEGORIES),
             "composition_observed": composition,
@@ -285,7 +288,7 @@ def _contract_document(
             },
         },
         "passenger_cav_contract": {
-            "population_id": "passenger_CAV",
+            "population_id": CAV_POPULATION_ID,
             "source_categories": list(SOURCE_CATEGORIES),
             "epistemic_status": "DÉRIVÉ / ESTIMÉ",
             "regimes": load_levels,
@@ -328,14 +331,14 @@ def _quality_document(
     complete = [row for row in window_rows if row["eligible_for_stratification"]]
     partial = [row for row in window_rows if not row["eligible_for_stratification"]]
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": CONTRACT_SCHEMA,
         "status": "complete",
         "inputs_sha256": dict(sorted(hashes.items())),
         "windows": {
             "total": len(window_rows),
             "complete": len(complete),
             "partial": len(partial),
-            "group_sizes": {level: size for level, size in zip(LOAD_LEVEL_ORDER, GROUP_SIZES)},
+            "group_sizes": {level: size for level, size in zip(LOAD_LEVELS, GROUP_SIZES)},
         },
         "passenger_entries": {
             "complete_windows": sum(int(row["passenger_in_total"]) for row in complete),

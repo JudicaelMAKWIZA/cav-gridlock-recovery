@@ -180,7 +180,7 @@ def test_vehicle_and_gui_settings_do_not_change_dynamics(tmp_path, contract):
     scenario.write_traffic_files(tmp_path, missions, network.ROUTES, False)
     scenario.write_view(tmp_path / "view.xml", {"x": "0", "y": "0"})
     root = ET.parse(tmp_path / "traffic.rou.xml").getroot()
-    assert root.find("vType").attrib == demand.VEHICLE_TYPE
+    assert root.find("vType").attrib == scenario.VEHICLE_TYPE
     assert root.find("vType").get("guiShape") == "passenger/sedan"
     config = ET.parse(tmp_path / "simulation.sumocfg").getroot()
     assert config.find("time/step-length").get("value") == "0.5"
@@ -523,7 +523,7 @@ def test_network_mapping_routes_and_provenance(monkeypatch, tmp_path, change):
         result = network.inspect_network(path, FIXTURE.with_name("road.osm"))
         assert result["gate_mapping"]["W23183369_IN"] == "23183369#1"
         assert result["gate_mapping"]["entry_connector"] == ":2725672310_0"
-        assert result["routes"] == network.ROUTES
+        assert result["routes"] == {name: list(edges) for name, edges in network.ROUTES.items()}
         assert result["traffic_lights"][0]["cycle_s"] == 90
         assert all(e["speed_origin"] == "typemap/règle SUMO" for e in result["edges"])
 
@@ -554,7 +554,7 @@ def test_preparation_publishes_complete_directory_and_is_deterministic(monkeypat
         return {"source": {"sha256": "synthetic"}}
     monkeypatch.setattr(scenario, "convert_network", convert)
     monkeypatch.setattr(scenario, "inspect_network", lambda *args: {
-        "center": {"x": "50", "y": "50"}, "routes": network.ROUTES,
+        "center": {"x": "50", "y": "50"}, "routes": {name: list(edges) for name, edges in network.ROUTES.items()},
         "gate_mapping": {**network.GATE_EDGES, "entry_connector": ":2725672310_0"}})
     monkeypatch.setattr(scenario, "build_scenery", lambda *args: {"polygons": 0})
     results = []
@@ -628,7 +628,7 @@ def test_generation_error_never_publishes_network_only(monkeypatch, tmp_path, co
         return {}
     monkeypatch.setattr(scenario, "convert_network", convert)
     monkeypatch.setattr(scenario, "inspect_network", lambda *args: {
-        "center": {"x": "50", "y": "50"}, "routes": network.ROUTES})
+        "center": {"x": "50", "y": "50"}, "routes": {name: list(edges) for name, edges in network.ROUTES.items()}})
     monkeypatch.setattr(scenario, "build_scenery", lambda *args: {})
     monkeypatch.setattr(scenario, "write_traffic_files", Mock(side_effect=OSError("écriture interrompue")))
     output = tmp_path / "scenario"

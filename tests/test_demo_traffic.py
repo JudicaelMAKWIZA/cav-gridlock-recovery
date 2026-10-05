@@ -322,7 +322,7 @@ def test_success_keeps_atomic_publication_without_creating_diagnostics(preparati
 
     monkeypatch.setattr(preparation, "convert_network", convert)
     monkeypatch.setattr(preparation, "inspect_network", lambda *args: {
-        "center": {"x": "0", "y": "0"}, "routes": preparation.ROUTES,
+        "center": {"x": "0", "y": "0"}, "routes": {name: list(edges) for name, edges in preparation.ROUTES.items()},
         "gate_mapping": {**preparation.GATE_EDGES, "entry_connector": ":2725672310_0"}})
     monkeypatch.setattr(preparation, "build_scenery", lambda *args: {})
     diagnostics = tmp_path / "diagnostics"

@@ -1,0 +1,11 @@
+"""Valeurs C3 communes aux profils de trafic et à la simulation."""
+
+C3_NODE_ID = 250691665
+C3_SECTOR_ID = "C3"
+ENTRY_GATES = ("W23183369_IN", "W284241336_IN")
+EXIT_GATES = ("W23183369_OUT", "W284241336_OUT")
+CONTRACT_SCHEMA = "CGR-E03-1"
+SOURCE_CATEGORIES = ("Car", "Taxi")
+CAV_POPULATION_ID = "passenger_CAV"
+LOAD_LEVELS = ("LOW", "MID", "HIGH")
+OBSERVATION_INTERVAL_S = (0.0, 802.8)

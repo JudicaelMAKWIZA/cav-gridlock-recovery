@@ -40,6 +40,10 @@ def input_hashes(directory, coverage):
     return {**{name: digest(directory / name) for name in names}, "coverage.json": digest(coverage)}
 
 
+def patch_input_hashes(hashes):
+    return patch.object(traffic_inputs, "EXPECTED_INPUT_SHA256", hashes)
+
+
 def load_cli_module():
     spec = importlib.util.spec_from_file_location("build_empirical_contract_cli", ROOT / "scripts" / "build_empirical_contract.py")
     module = importlib.util.module_from_spec(spec)
@@ -232,7 +236,7 @@ def prepare_inputs(root):
 
 class ScenarioContractTests(unittest.TestCase):
     def run_builder(self, profiles, coverage, output):
-        with patch.dict(traffic_inputs.EXPECTED_INPUT_SHA256, input_hashes(profiles, coverage), clear=True):
+        with patch_input_hashes(input_hashes(profiles, coverage)):
             return build_empirical_contract(profiles, coverage, output)
 
     def test_builds_four_deterministic_artifacts_and_applies_4_5_4(self):
@@ -306,7 +310,7 @@ class ScenarioContractTests(unittest.TestCase):
             profiles, coverage = prepare_inputs(root)
             expected = input_hashes(profiles, coverage)
             (profiles / "flow_profile.csv").unlink()
-            with patch.dict(traffic_inputs.EXPECTED_INPUT_SHA256, expected, clear=True):
+            with patch_input_hashes(expected):
                 with self.assertRaisesRegex(ContractInputError, "obligatoire absent"):
                     build_empirical_contract(profiles, coverage, root / "out")
 
@@ -316,7 +320,7 @@ class ScenarioContractTests(unittest.TestCase):
             profiles, coverage = prepare_inputs(root)
             expected = input_hashes(profiles, coverage)
             (profiles / "flow_profile.csv").write_text("altéré\n", encoding="utf-8")
-            with patch.dict(traffic_inputs.EXPECTED_INPUT_SHA256, expected, clear=True):
+            with patch_input_hashes(expected):
                 with self.assertRaisesRegex(ContractInputError, "Empreinte SHA-256"):
                     build_empirical_contract(profiles, coverage, root / "out")
 
@@ -328,7 +332,7 @@ class ScenarioContractTests(unittest.TestCase):
             rows = list(csv.DictReader(path.open(encoding="utf-8", newline="")))
             fields = [field for field in rows[0] if field != "passages_in_exposure"]
             write_csv(path, fields, ({key: value for key, value in row.items() if key in fields} for row in rows))
-            with patch.dict(traffic_inputs.EXPECTED_INPUT_SHA256, input_hashes(profiles, coverage), clear=True):
+            with patch_input_hashes(input_hashes(profiles, coverage)):
                 with self.assertRaisesRegex(ContractInputError, "Colonnes absentes"):
                     build_empirical_contract(profiles, coverage, root / "out")
 
@@ -340,7 +344,7 @@ class ScenarioContractTests(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["source"]["filename"] = "autre.csv"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            with patch.dict(traffic_inputs.EXPECTED_INPUT_SHA256, input_hashes(profiles, coverage), clear=True):
+            with patch_input_hashes(input_hashes(profiles, coverage)):
                 with self.assertRaisesRegex(ContractInputError, "source pNEUMA"):
                     build_empirical_contract(profiles, coverage, root / "out")
 

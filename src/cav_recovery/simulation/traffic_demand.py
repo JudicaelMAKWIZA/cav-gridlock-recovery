@@ -8,20 +8,45 @@ import json
 import math
 from pathlib import Path
 
+from ..c3_reference import (
+    C3_NODE_ID, C3_SECTOR_ID, ENTRY_GATES, EXIT_GATES, CONTRACT_SCHEMA,
+    SOURCE_CATEGORIES, CAV_POPULATION_ID, LOAD_LEVELS, OBSERVATION_INTERVAL_S,
+)
+
 
 class TrafficInputError(ValueError):
     """Signale une entrée incompatible avec le scénario nominal."""
 
 
 CONTRACT_IDENTITY = (13055, "409564667c1ea1466bc41b70e4bdff3ef4922dbb648308fc526dabeb5c7f980a")
-OSM_IDENTITY = (76486, "c5c2105c28807e8bcb2743ca53079bacef23ccca0bdf18d7314d218f51b1f2bf")
-ENTRY_GATES = ("W23183369_IN", "W284241336_IN")
-EXIT_GATES = ("W23183369_OUT", "W284241336_OUT")
 STEP_S = 0.5
-VEHICLE_TYPE = {
-    "id": "passenger_CAV", "vClass": "passenger", "carFollowModel": "Krauss",
-    "length": "5.0", "minGap": "2.5", "accel": "2.6", "decel": "4.5",
-    "tau": "1.0", "sigma": "0", "speedFactor": "1.0", "guiShape": "passenger/sedan",
+EXPECTED_DEMAND = {
+    "LOW": {
+        "injection_s": 240,
+        "entries": {"W23183369_IN": 23, "W284241336_IN": 72},
+        "allocation": {
+            "W23183369_IN": {"W23183369_OUT": 18, "W284241336_OUT": 5},
+            "W284241336_IN": {"W23183369_OUT": 3, "W284241336_OUT": 69},
+        },
+    },
+    "MID": {
+        "injection_s": 300,
+        "entries": {"W23183369_IN": 22, "W284241336_IN": 144},
+        "allocation": {
+            "W23183369_IN": {"W23183369_OUT": 16, "W284241336_OUT": 6},
+            "W284241336_IN": {"W23183369_OUT": 3, "W284241336_OUT": 141},
+        },
+    },
+    "HIGH": {
+        "injection_s": 240,
+        "entries": {"W23183369_IN": 15, "W284241336_IN": 141},
+        "allocation": {
+            "W23183369_IN": {"W23183369_OUT": 7, "W284241336_OUT": 8},
+            "W284241336_IN": {"W23183369_OUT": 8, "W284241336_OUT": 133},
+        },
+        "classifiable_visits": 154,
+        "censored_exit": 2,
+    },
 }
 
 
@@ -49,33 +74,39 @@ def read_contract(path: str | Path) -> dict:
     verify_identity(path, CONTRACT_IDENTITY)
     try:
         contract = json.loads(Path(path).read_text(encoding="utf-8"))
+        plans = demand_plans(contract)
+        _validate_c3_contract(contract, plans)
+        return contract
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise TrafficInputError(f"Structure du contrat invalide : {error}") from error
+
+
+def _validate_c3_contract(contract: dict, plans: dict) -> None:
+    """Vérifie l'identité C3 et les effectifs attendus."""
+    try:
         context = contract["empirical_context"]
         sector = context["sector"]
         passenger = contract["passenger_cav_contract"]
-        if (contract["schema_version"] != "CGR-E03-1" or contract["status"] != "complete"
-                or sector["id"] != "C3" or sector["osm_node_id"] != 250691665
+        if (contract["schema_version"] != CONTRACT_SCHEMA or contract["status"] != "complete"
+                or sector["id"] != C3_SECTOR_ID or sector["osm_node_id"] != C3_NODE_ID
                 or sector["entry_gates"] != list(ENTRY_GATES)
                 or sector["exit_gates"] != list(EXIT_GATES)
-                or context["coverage"] != {"status": "known", "intervals": [[0.0, 802.8]]}
-                or passenger["source_categories"] != ["Car", "Taxi"]
-                or passenger["population_id"] != "passenger_CAV"):
+                or context["coverage"] != {"status": "known", "intervals": [list(OBSERVATION_INTERVAL_S)]}
+                or passenger["source_categories"] != list(SOURCE_CATEGORIES)
+                or passenger["population_id"] != CAV_POPULATION_ID):
             raise TrafficInputError("Identité du secteur, couverture ou population incompatible.")
-        plans = demand_plans(contract)
-        expected = {"LOW": (240, [23, 72], [18, 5, 3, 69]),
-                    "MID": (300, [22, 144], [16, 6, 3, 141]),
-                    "HIGH": (240, [15, 141], [7, 8, 8, 133])}
-        if set(plans) != set(expected):
+        if set(plans) != set(LOAD_LEVELS):
             raise TrafficInputError("Les trois niveaux de charge sont requis.")
-        for name, (duration, entries, movements) in expected.items():
+        for name, expected in EXPECTED_DEMAND.items():
             plan = plans[name]
-            if (plan["injection_s"] != duration or list(plan["entries"].values()) != entries
-                    or [n for counts in plan["allocation"].values() for n in counts.values()] != movements):
+            if (plan["injection_s"] != expected["injection_s"] or plan["entries"] != expected["entries"]
+                    or plan["allocation"] != expected["allocation"]):
                 raise TrafficInputError(f"Effectifs ou durée incompatibles pour {name}.")
+        expected_high = EXPECTED_DEMAND["HIGH"]
         high = next(r for r in passenger["regimes"] if r["regime_id"] == "HIGH")
-        if high["classifiable_visits"] != 154 or high["censored_exit"] != 2:
+        if high["classifiable_visits"] != expected_high["classifiable_visits"] or high["censored_exit"] != expected_high["censored_exit"]:
             raise TrafficInputError("La censure du niveau HIGH doit rester distincte des missions.")
-        return contract
-    except (KeyError, TypeError, json.JSONDecodeError) as error:
+    except (KeyError, TypeError) as error:
         raise TrafficInputError(f"Structure du contrat invalide : {error}") from error
 
 
@@ -100,7 +131,11 @@ def allocate_counts(total: int, observed: dict[str, int]) -> dict[str, int]:
 
 
 def demand_plans(contract: dict) -> dict:
-    """Conserve la distribution observée à côté de l'allocation simulée."""
+    """Alloue de nouvelles missions selon les mouvements complets observés.
+
+    Les effectifs observés et les censures restent dans le plan, séparément de
+    l'allocation simulée. Une censure ne devient pas un mouvement observé.
+    """
     plans = {}
     for row in contract["passenger_cav_contract"]["regimes"]:
         name = row["regime_id"]
@@ -161,6 +196,12 @@ class Mission:
 
 
 def build_missions(regime: str, plan: dict, routes: dict[str, list[str]]) -> list[Mission]:
+    """Construit les missions SUMO à partir du plan de trafic.
+
+    Les sorties sont entrelacées et les départs régulièrement espacés. Chaque
+    destination est la dernière arête de la route assignée ; les missions sont
+    triées par horaire puis identifiant pour garder un ordre déterministe.
+    """
     missions = []
     for gate in ENTRY_GATES:
         times = departure_times(plan["entries"][gate], plan["injection_s"])
