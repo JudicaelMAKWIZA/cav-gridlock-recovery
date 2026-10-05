@@ -8,19 +8,46 @@ import json
 import math
 from pathlib import Path
 
-from ..canonical_scenario import CANONICAL_SCENARIO, CanonicalScenario
+from ..c3_reference import (
+    C3_NODE_ID, C3_SECTOR_ID, ENTRY_GATES, EXIT_GATES, CONTRACT_SCHEMA,
+    SOURCE_CATEGORIES, CAV_POPULATION_ID, LOAD_LEVELS, OBSERVATION_INTERVAL_S,
+)
 
 
 class TrafficInputError(ValueError):
     """Signale une entrée incompatible avec le scénario nominal."""
 
 
-CONTRACT_IDENTITY = (CANONICAL_SCENARIO.contract.identity.size_bytes, CANONICAL_SCENARIO.contract.identity.sha256)
-OSM_IDENTITY = (CANONICAL_SCENARIO.network.source.size_bytes, CANONICAL_SCENARIO.network.source.sha256)
-ENTRY_GATES = CANONICAL_SCENARIO.sector.entry_gates
-EXIT_GATES = CANONICAL_SCENARIO.sector.exit_gates
-STEP_S = CANONICAL_SCENARIO.simulation.step_s
-VEHICLE_TYPE = CANONICAL_SCENARIO.simulation.vehicle_type
+CONTRACT_IDENTITY = (13055, "409564667c1ea1466bc41b70e4bdff3ef4922dbb648308fc526dabeb5c7f980a")
+STEP_S = 0.5
+EXPECTED_DEMAND = {
+    "LOW": {
+        "injection_s": 240,
+        "entries": {"W23183369_IN": 23, "W284241336_IN": 72},
+        "allocation": {
+            "W23183369_IN": {"W23183369_OUT": 18, "W284241336_OUT": 5},
+            "W284241336_IN": {"W23183369_OUT": 3, "W284241336_OUT": 69},
+        },
+    },
+    "MID": {
+        "injection_s": 300,
+        "entries": {"W23183369_IN": 22, "W284241336_IN": 144},
+        "allocation": {
+            "W23183369_IN": {"W23183369_OUT": 16, "W284241336_OUT": 6},
+            "W284241336_IN": {"W23183369_OUT": 3, "W284241336_OUT": 141},
+        },
+    },
+    "HIGH": {
+        "injection_s": 240,
+        "entries": {"W23183369_IN": 15, "W284241336_IN": 141},
+        "allocation": {
+            "W23183369_IN": {"W23183369_OUT": 7, "W284241336_OUT": 8},
+            "W284241336_IN": {"W23183369_OUT": 8, "W284241336_OUT": 133},
+        },
+        "classifiable_visits": 154,
+        "censored_exit": 2,
+    },
+}
 
 
 def file_hash(path: str | Path) -> str:
@@ -44,45 +71,40 @@ def verify_identity(path: str | Path, identity: tuple[int, str]) -> dict:
 
 def read_contract(path: str | Path) -> dict:
     """Vérifie la sortie validée avant de réutiliser ses comptes et censures."""
-    return _read_contract(Path(path), CANONICAL_SCENARIO)
-
-
-def _read_contract(path: Path, config: CanonicalScenario) -> dict:
-    identity = config.contract.identity
-    verify_identity(path, (identity.size_bytes, identity.sha256))
+    verify_identity(path, CONTRACT_IDENTITY)
     try:
         contract = json.loads(Path(path).read_text(encoding="utf-8"))
-        plans = _demand_plans(contract, config)
-        _validate_canonical_contract(contract, plans, config)
+        plans = demand_plans(contract)
+        _validate_c3_contract(contract, plans)
         return contract
     except (KeyError, TypeError, json.JSONDecodeError) as error:
         raise TrafficInputError(f"Structure du contrat invalide : {error}") from error
 
 
-def _validate_canonical_contract(contract: dict, plans: dict, config: CanonicalScenario) -> None:
-    """Ne confond pas des comptes cohérents avec ceux de l'expérience figée."""
+def _validate_c3_contract(contract: dict, plans: dict) -> None:
+    """Vérifie l'identité C3 et les effectifs attendus."""
     try:
         context = contract["empirical_context"]
         sector = context["sector"]
         passenger = contract["passenger_cav_contract"]
-        if (contract["schema_version"] != config.contract.schema_version or contract["status"] != "complete"
-                or sector["id"] != config.sector.name or sector["osm_node_id"] != config.sector.node_id
-                or sector["entry_gates"] != list(config.sector.entry_gates)
-                or sector["exit_gates"] != list(config.sector.exit_gates)
-                or context["coverage"] != {"status": "known", "intervals": [list(config.sector.observation_interval_s)]}
-                or passenger["source_categories"] != list(config.contract.source_categories)
-                or passenger["population_id"] != config.simulation.vehicle_type["id"]):
+        if (contract["schema_version"] != CONTRACT_SCHEMA or contract["status"] != "complete"
+                or sector["id"] != C3_SECTOR_ID or sector["osm_node_id"] != C3_NODE_ID
+                or sector["entry_gates"] != list(ENTRY_GATES)
+                or sector["exit_gates"] != list(EXIT_GATES)
+                or context["coverage"] != {"status": "known", "intervals": [list(OBSERVATION_INTERVAL_S)]}
+                or passenger["source_categories"] != list(SOURCE_CATEGORIES)
+                or passenger["population_id"] != CAV_POPULATION_ID):
             raise TrafficInputError("Identité du secteur, couverture ou population incompatible.")
-        if set(plans) != set(config.contract.load_levels):
+        if set(plans) != set(LOAD_LEVELS):
             raise TrafficInputError("Les trois niveaux de charge sont requis.")
-        for expected in config.contract.loads:
-            plan = plans[expected.name]
-            if (plan["injection_s"] != expected.injection_s or tuple(plan["entries"].values()) != expected.entry_counts
-                    or tuple(n for counts in plan["allocation"].values() for n in counts.values()) != expected.mission_counts):
-                raise TrafficInputError(f"Effectifs ou durée incompatibles pour {expected.name}.")
-        expected_high = next(row for row in config.contract.loads if row.name == "HIGH")
-        high = next(r for r in passenger["regimes"] if r["regime_id"] == expected_high.name)
-        if high["classifiable_visits"] != expected_high.classifiable_visits or high["censored_exit"] != expected_high.censored_exit:
+        for name, expected in EXPECTED_DEMAND.items():
+            plan = plans[name]
+            if (plan["injection_s"] != expected["injection_s"] or plan["entries"] != expected["entries"]
+                    or plan["allocation"] != expected["allocation"]):
+                raise TrafficInputError(f"Effectifs ou durée incompatibles pour {name}.")
+        expected_high = EXPECTED_DEMAND["HIGH"]
+        high = next(r for r in passenger["regimes"] if r["regime_id"] == "HIGH")
+        if high["classifiable_visits"] != expected_high["classifiable_visits"] or high["censored_exit"] != expected_high["censored_exit"]:
             raise TrafficInputError("La censure du niveau HIGH doit rester distincte des missions.")
     except (KeyError, TypeError) as error:
         raise TrafficInputError(f"Structure du contrat invalide : {error}") from error
@@ -109,21 +131,20 @@ def allocate_counts(total: int, observed: dict[str, int]) -> dict[str, int]:
 
 
 def demand_plans(contract: dict) -> dict:
-    """Conserve la distribution observée à côté de l'allocation simulée."""
-    return _demand_plans(contract, CANONICAL_SCENARIO)
+    """Alloue de nouvelles missions selon les mouvements complets observés.
 
-
-def _demand_plans(contract: dict, config: CanonicalScenario) -> dict:
-    entry_gates, exit_gates = config.sector.entry_gates, config.sector.exit_gates
+    Les effectifs observés et les censures restent dans le plan, séparément de
+    l'allocation simulée. Une censure ne devient pas un mouvement observé.
+    """
     plans = {}
     for row in contract["passenger_cav_contract"]["regimes"]:
         name = row["regime_id"]
         if name in plans:
             raise TrafficInputError("Niveau de charge répété.")
-        entries = {gate: row["passenger_entry_counts"][gate] for gate in entry_gates}
+        entries = {gate: row["passenger_entry_counts"][gate] for gate in ENTRY_GATES}
         observed = row["passenger_movement_counts"]
-        for gate in entry_gates:
-            if set(observed[gate]) != set(exit_gates):
+        for gate in ENTRY_GATES:
+            if set(observed[gate]) != set(EXIT_GATES):
                 raise TrafficInputError("La grille des mouvements est incomplète.")
             if sum(observed[gate].values()) != row["passenger_movement_denominators"][gate]:
                 raise TrafficInputError("Le dénominateur des mouvements est incohérent.")
@@ -134,7 +155,7 @@ def _demand_plans(contract: dict, config: CanonicalScenario) -> dict:
                        "observed_movements": observed,
                        "observed_denominators": row["passenger_movement_denominators"],
                        "censored_exit": row["censored_exit"],
-                       "allocation": {gate: allocate_counts(entries[gate], observed[gate]) for gate in entry_gates}}
+                       "allocation": {gate: allocate_counts(entries[gate], observed[gate]) for gate in ENTRY_GATES}}
     return plans
 
 
@@ -175,6 +196,12 @@ class Mission:
 
 
 def build_missions(regime: str, plan: dict, routes: dict[str, list[str]]) -> list[Mission]:
+    """Construit les missions SUMO à partir du plan de trafic.
+
+    Les sorties sont entrelacées et les départs régulièrement espacés. Chaque
+    destination est la dernière arête de la route assignée ; les missions sont
+    triées par horaire puis identifiant pour garder un ordre déterministe.
+    """
     missions = []
     for gate in ENTRY_GATES:
         times = departure_times(plan["entries"][gate], plan["injection_s"])

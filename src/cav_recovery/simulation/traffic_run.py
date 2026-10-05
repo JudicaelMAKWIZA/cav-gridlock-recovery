@@ -12,16 +12,18 @@ import socket
 import subprocess
 import xml.etree.ElementTree as ET
 
-from ..canonical_scenario import CANONICAL_SCENARIO, CanonicalScenario
-
-from .road_network import CENTER_NODE, check_environment
+from .road_network import CENTER_NODE, CENTER_PROGRAM_ID, CENTER_PHASES, check_environment
 from .sumo_smoke import _close_run
 from .traffic_demand import Mission, STEP_S, TrafficInputError, file_hash
-from .traffic_scenario import new_output_directory, read_scenario, write_json
+from .traffic_scenario import SEED, TIME_TO_TELEPORT_S, new_output_directory, read_scenario, write_json
 
 
 class TrafficLedger:
-    """Suit des missions immuables ; aucun événement ne corrige une destination."""
+    """Suit les départs et arrivées de missions aux destinations fixes.
+
+    L'état actif observé reste distinct du dernier état entièrement validé,
+    afin de décrire le pas fautif sans perdre le diagnostic précédent.
+    """
 
     def __init__(self, missions: list[Mission]):
         self.missions = {mission.vehicle_id: mission for mission in missions}
@@ -122,6 +124,12 @@ class TrafficLedger:
             raise RuntimeError("Disparition sans arrivée ou bilan des véhicules incohérent.")
 
     def snapshot(self) -> dict:
+        """Résume l'état courant et les diagnostics de validation.
+
+        Les actifs validés décrivent le dernier pas accepté, pas une seconde
+        population à ajouter aux comptes observés. Un départ sans arrivée ni
+        présence active est signalé comme disparition, jamais comme attente.
+        """
         pending = set(self.missions) - set(self.departures) - self.observed_active
         # SUMO traite [t - pas, t) lors du dernier pas : un départ à t reste futur.
         future = {item for item in pending if self.missions[item].scheduled_s >= self.time_s}
@@ -182,20 +190,16 @@ def verify_trips(path: Path, ledger: TrafficLedger) -> dict[str, dict]:
 
 def verify_loaded_scenario(connection, missions: list[Mission]) -> None:
     """Contrôle les routes et le feu avant le premier pas, sans les modifier."""
-    _verify_loaded_scenario(connection, missions, CANONICAL_SCENARIO)
-
-
-def _verify_loaded_scenario(connection, missions: list[Mission], config: CanonicalScenario) -> None:
-    if abs(connection.simulation.getDeltaT() - config.simulation.step_s) > 1e-9:
+    if abs(connection.simulation.getDeltaT() - STEP_S) > 1e-9:
         raise RuntimeError("Le pas de simulation chargé n'est pas de 0,5 s.")
     for mission in missions:
         if tuple(connection.route.getEdges(mission.route_id)) != mission.route:
             raise RuntimeError("La route chargée diffère de la mission assignée.")
-    logics = connection.trafficlight.getAllProgramLogics(config.network.controller_id)
-    current = connection.trafficlight.getProgram(config.network.controller_id)
+    logics = connection.trafficlight.getAllProgramLogics(CENTER_NODE)
+    current = connection.trafficlight.getProgram(CENTER_NODE)
     program = next((row for row in logics if row.programID == current), None)
-    if (current != config.network.program_id or program is None or program.type != 0
-            or tuple((p.duration, p.state) for p in program.phases) != config.network.phases):
+    if (current != CENTER_PROGRAM_ID or program is None or program.type != 0
+            or tuple((p.duration, p.state) for p in program.phases) != CENTER_PHASES):
         raise RuntimeError("Le programme de feux chargé à C3 diffère du programme prévu.")
 
 
@@ -205,7 +209,7 @@ def code_provenance() -> dict:
     for name in ("traffic_demand.py", "road_network.py", "traffic_scenario.py", "traffic_run.py", "sumo_smoke.py"):
         path = Path(__file__).with_name(name)
         digest.update(name.encode() + path.read_bytes())
-    path = Path(__file__).parents[1] / "canonical_scenario.py"
+    path = Path(__file__).parents[1] / "c3_reference.py"
     digest.update(path.name.encode() + path.read_bytes())
     root = Path(__file__).resolve().parents[3]
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True)
@@ -246,7 +250,7 @@ def group_counts(records: list[dict], ledger: TrafficLedger) -> dict:
 
 def run_traffic(scenario_dir: str | Path, regime: str, output_dir: str | Path, *,
                 gui: bool = False, gui_delay_ms: int = 100,
-                drain_horizon_s: float = CANONICAL_SCENARIO.simulation.drain_horizon_s) -> dict:
+                drain_horizon_s: float = 600) -> dict:
     """Exécute la demande sans assistance et conserve aussi les bilans d'échec.
 
     L'affichage ne change pas le pas simulé. Après l'injection, l'horizon borne
@@ -270,8 +274,8 @@ def run_traffic(scenario_dir: str | Path, regime: str, output_dir: str | Path, *
     result = {"status": "failed", "reason": None, "regime": regime, "versions": versions,
               "scenario_sha256": file_hash(scenario_dir / "scenario.json"), "code": code_provenance(),
               "gui": gui, "gui_delay_ms": gui_delay_ms if gui else None, "step_s": STEP_S,
-              "seed": CANONICAL_SCENARIO.simulation.seed,
-              "time_to_teleport_s": CANONICAL_SCENARIO.simulation.time_to_teleport_s, "drain_horizon_s": drain_horizon_s,
+              "seed": SEED,
+              "time_to_teleport_s": TIME_TO_TELEPORT_S, "drain_horizon_s": drain_horizon_s,
               "horizon_s": horizon, "steps": 0, "connection_closed": False, "process_stopped": False,
               "process_returncode": None, "cleanup_errors": [], "forced_process_stop": False,
               "tls_states": [], "assistance_commands": []}

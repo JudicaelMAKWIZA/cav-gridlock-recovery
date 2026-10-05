@@ -2,7 +2,6 @@
 
 from collections import Counter
 from copy import deepcopy
-from dataclasses import replace
 import importlib.util
 import json
 from pathlib import Path
@@ -16,7 +15,6 @@ from cav_recovery.simulation import traffic_demand as demand
 from cav_recovery.simulation import traffic_run as run
 from cav_recovery.simulation import traffic_scenario as scenario
 from cav_recovery.simulation import road_network as network
-from cav_recovery.canonical_scenario import CANONICAL_SCENARIO
 
 FIXTURE = Path(__file__).parent / "fixtures/traffic/demand.json"
 
@@ -182,7 +180,7 @@ def test_vehicle_and_gui_settings_do_not_change_dynamics(tmp_path, contract):
     scenario.write_traffic_files(tmp_path, missions, network.ROUTES, False)
     scenario.write_view(tmp_path / "view.xml", {"x": "0", "y": "0"})
     root = ET.parse(tmp_path / "traffic.rou.xml").getroot()
-    assert root.find("vType").attrib == demand.VEHICLE_TYPE
+    assert root.find("vType").attrib == scenario.VEHICLE_TYPE
     assert root.find("vType").get("guiShape") == "passenger/sedan"
     config = ET.parse(tmp_path / "simulation.sumocfg").getroot()
     assert config.find("time/step-length").get("value") == "0.5"
@@ -556,7 +554,7 @@ def test_preparation_publishes_complete_directory_and_is_deterministic(monkeypat
         return {"source": {"sha256": "synthetic"}}
     monkeypatch.setattr(scenario, "convert_network", convert)
     monkeypatch.setattr(scenario, "inspect_network", lambda *args: {
-        "center": {"x": "50", "y": "50"}, "routes": network.ROUTES,
+        "center": {"x": "50", "y": "50"}, "routes": {name: list(edges) for name, edges in network.ROUTES.items()},
         "gate_mapping": {**network.GATE_EDGES, "entry_connector": ":2725672310_0"}})
     monkeypatch.setattr(scenario, "build_scenery", lambda *args: {"polygons": 0})
     results = []
@@ -616,9 +614,7 @@ def test_contract_identity_fields_checked_after_hash(monkeypatch, tmp_path, cont
         contract["empirical_context"]["coverage"]["status"] = "unknown"
     path = tmp_path / "contract.json"
     scenario.write_json(path, contract)
-    identity = replace(CANONICAL_SCENARIO.contract.identity, size_bytes=path.stat().st_size, sha256=demand.file_hash(path))
-    config = replace(CANONICAL_SCENARIO, contract=replace(CANONICAL_SCENARIO.contract, identity=identity))
-    monkeypatch.setattr(demand, "CANONICAL_SCENARIO", config)
+    monkeypatch.setattr(demand, "CONTRACT_IDENTITY", (path.stat().st_size, demand.file_hash(path)))
     with pytest.raises(demand.TrafficInputError, match="Effectifs" if field == "counts" else "Identité"):
         demand.read_contract(path)
 
@@ -632,7 +628,7 @@ def test_generation_error_never_publishes_network_only(monkeypatch, tmp_path, co
         return {}
     monkeypatch.setattr(scenario, "convert_network", convert)
     monkeypatch.setattr(scenario, "inspect_network", lambda *args: {
-        "center": {"x": "50", "y": "50"}, "routes": network.ROUTES})
+        "center": {"x": "50", "y": "50"}, "routes": {name: list(edges) for name, edges in network.ROUTES.items()}})
     monkeypatch.setattr(scenario, "build_scenery", lambda *args: {})
     monkeypatch.setattr(scenario, "write_traffic_files", Mock(side_effect=OSError("écriture interrompue")))
     output = tmp_path / "scenario"

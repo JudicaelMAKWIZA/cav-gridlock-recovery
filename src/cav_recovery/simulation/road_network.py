@@ -10,16 +10,30 @@ import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 
-from ..canonical_scenario import CANONICAL_SCENARIO, CanonicalScenario
+from ..c3_reference import C3_NODE_ID, ENTRY_GATES, EXIT_GATES
 
 from .traffic_demand import TrafficInputError, file_hash, verify_identity
 
 
-VERSION = CANONICAL_SCENARIO.simulation.version
-CENTER_NODE = CANONICAL_SCENARIO.network.center_node
-GATE_EDGES = CANONICAL_SCENARIO.network.gate_edges
-ROUTES = CANONICAL_SCENARIO.network.routes
-CENTER_PHASES = CANONICAL_SCENARIO.network.phases
+VERSION = "1.27.1"
+OSM_IDENTITY = (76486, "c5c2105c28807e8bcb2743ca53079bacef23ccca0bdf18d7314d218f51b1f2bf")
+CENTER_NODE = str(C3_NODE_ID)
+GATE_EDGES = {
+    ENTRY_GATES[0]: "23183369#1", ENTRY_GATES[1]: "284241336#1",
+    EXIT_GATES[0]: "23183369#5", EXIT_GATES[1]: "284241336#3",
+}
+ROUTES = {
+    f"{ENTRY_GATES[0]}__{EXIT_GATES[0]}": ("23183369#1", "23183369#2", "23183369#3", "23183369#4", "23183369#5"),
+    f"{ENTRY_GATES[0]}__{EXIT_GATES[1]}": ("23183369#1", "23183369#2", "23183369#3", "284241336#3"),
+    f"{ENTRY_GATES[1]}__{EXIT_GATES[0]}": ("284241336#1", "284241336#2", "23183369#4", "23183369#5"),
+    f"{ENTRY_GATES[1]}__{EXIT_GATES[1]}": ("284241336#1", "284241336#2", "284241336#3"),
+}
+ENTRY_CONNECTOR = ":2725672310_0"
+TLS_TYPE = "static"
+TLS_CYCLE_S = 90
+CENTER_PROGRAM_ID = "0"
+CENTER_OFFSET_S = 0
+CENTER_PHASES = ((39, "GGrrr"), (6, "yyrrr"), (39, "rrGGG"), (6, "rryyy"))
 
 
 def check_environment(*tools: str) -> dict:
@@ -52,15 +66,10 @@ def write_xml(path: Path, root: ET.Element) -> None:
 
 def convert_network(osm_path: Path, directory: Path) -> dict:
     """Convertit la source sans joindre les feux ni ajuster leur cycle au trafic."""
-    return _convert_network(osm_path, directory, CANONICAL_SCENARIO)
-
-
-def _convert_network(osm_path: Path, directory: Path, config: CanonicalScenario) -> dict:
-    source = config.network.source
-    identity = verify_identity(osm_path, (source.size_bytes, source.sha256))
+    identity = verify_identity(osm_path, OSM_IDENTITY)
     command = [shutil.which("netconvert"), "--osm-files", str(osm_path.resolve()),
                "--output-file", str(directory / "network.net.xml"),
-               "--tls.default-type", config.network.tls_type, "--tls.cycle.time", str(config.network.cycle_s), "--tls.join", "false",
+               "--tls.default-type", TLS_TYPE, "--tls.cycle.time", str(TLS_CYCLE_S), "--tls.join", "false",
                "--junctions.join", "false", "--output.original-names", "true",
                "--osm.annotate-defaults", "true", "--log", str(directory / "conversion.log")]
     completed = subprocess.run(command, capture_output=True, text=True, timeout=120)
@@ -75,21 +84,14 @@ def _convert_network(osm_path: Path, directory: Path, config: CanonicalScenario)
 
 def inspect_network(network_path: Path, osm_path: Path) -> dict:
     """Revérifie les routes, les permissions et les programmes réellement générés."""
-    return _inspect_network(network_path, osm_path, CANONICAL_SCENARIO)
-
-
-def _inspect_network(network_path: Path, osm_path: Path, config: CanonicalScenario) -> dict:
     import sumolib
 
-    settings = config.network
-    center_node = settings.center_node
-    routes = settings.routes
-    vehicle_class = config.simulation.vehicle_type["vClass"]
+    vehicle_class = "passenger"
     root = ET.parse(network_path).getroot()
     net = sumolib.net.readNet(str(network_path), withInternal=True, withPrograms=True)
     junctions = {j.get("id"): j for j in root.findall("junction")}
     edges = {e.get("id"): e for e in root.findall("edge")}
-    center = junctions.get(center_node)
+    center = junctions.get(CENTER_NODE)
     if center is None or center.get("type") != "traffic_light":
         raise TrafficInputError("Le carrefour attendu n'est pas une jonction contrôlée.")
     lights = []
@@ -97,19 +99,19 @@ def _inspect_network(network_path: Path, osm_path: Path, config: CanonicalScenar
         connections = [dict(c.attrib) for c in root.findall("connection") if c.get("tl") == tls.get("id")]
         nodes = sorted({edges[c["from"]].get("to") for c in connections})
         phases = [(Decimal(p.get("duration")), p.get("state")) for p in tls.findall("phase")]
-        if tls.get("type") != settings.tls_type or sum(p[0] for p in phases) != settings.cycle_s:
+        if tls.get("type") != TLS_TYPE or sum(p[0] for p in phases) != TLS_CYCLE_S:
             raise TrafficInputError(f"Programme statique de 90 s non établi : {tls.get('id')}")
         if len(nodes) != 1:
             raise TrafficInputError("Plusieurs jonctions partagent un contrôleur non prévu.")
-        lights.append({**tls.attrib, "junctions": nodes, "cycle_s": settings.cycle_s,
+        lights.append({**tls.attrib, "junctions": nodes, "cycle_s": TLS_CYCLE_S,
                        "phases": [{"duration_s": float(d), "state": s} for d, s in phases],
                        "connections": connections, "provenance": "hypothèse de simulation issue de netconvert"})
-    c3 = [light for light in lights if light["junctions"] == [center_node]]
-    if (len(c3) != 1 or c3[0]["id"] != settings.controller_id or c3[0]["programID"] != settings.program_id
-            or float(c3[0]["offset"]) != settings.offset_s
-            or tuple((p["duration_s"], p["state"]) for p in c3[0]["phases"]) != settings.phases):
+    c3 = [light for light in lights if light["junctions"] == [CENTER_NODE]]
+    if (len(c3) != 1 or c3[0]["id"] != CENTER_NODE or c3[0]["programID"] != CENTER_PROGRAM_ID
+            or float(c3[0]["offset"]) != CENTER_OFFSET_S
+            or tuple((p["duration_s"], p["state"]) for p in c3[0]["phases"]) != CENTER_PHASES):
         raise TrafficInputError("Le contrôleur du carrefour diffère du programme vérifié.")
-    for route_id, expected in routes.items():
+    for route_id, expected in ROUTES.items():
         if any(edge not in edges for edge in expected):
             raise TrafficInputError(f"Edge de mission absent : {route_id}")
         route, _ = net.getShortestPath(net.getEdge(expected[0]), net.getEdge(expected[-1]),
@@ -123,15 +125,15 @@ def _inspect_network(network_path: Path, osm_path: Path, config: CanonicalScenar
             first, second = net.getEdge(a), net.getEdge(b)
             if second not in first.getAllowedOutgoing(vehicle_class) or first.getToNode() != second.getFromNode():
                 raise TrafficInputError("Connexion ou sens de mission incompatible.")
-            crossings += first.getToNode().getID() == center_node
+            crossings += first.getToNode().getID() == CENTER_NODE
         if crossings != 1:
             raise TrafficInputError("La route ne traverse pas exactement une fois le carrefour.")
-        if route_id.startswith(settings.connector_entry_gate) and settings.entry_connector not in [e.getID() for e in route]:
+        if route_id.startswith(ENTRY_GATES[0]) and ENTRY_CONNECTOR not in [e.getID() for e in route]:
             raise TrafficInputError("Le raccord de la porte d'entrée n'est plus sur la route.")
     source = ET.parse(osm_path).getroot()
     ways = {w.get("id"): {t.get("k"): t.get("v") for t in w.findall("tag")} for w in source.findall("way")}
     attributes = []
-    for edge_id in sorted({e for route in routes.values() for e in route}):
+    for edge_id in sorted({e for route in ROUTES.values() for e in route}):
         edge = edges[edge_id]
         lanes = edge.findall("lane")
         origins = {p.get("value") for lane in lanes for p in lane.findall("param") if p.get("key") == "origId"}
@@ -151,8 +153,8 @@ def _inspect_network(network_path: Path, osm_path: Path, config: CanonicalScenar
                            "speed_origin": "OSM explicite" if "maxspeed" in tags else "typemap/règle SUMO",
                            "length_origin": "projection et découpage SUMO", "direction_origin": "ordre OSM et oneway=yes"})
     return {"center": dict(center.attrib), "projection": dict(root.find("location").attrib),
-            "traffic_lights": lights, "edges": attributes, "routes": {name: list(edges) for name, edges in routes.items()},
-            "gate_mapping": {**settings.gate_edges, "entry_connector": settings.entry_connector}}
+            "traffic_lights": lights, "edges": attributes, "routes": {name: list(route_edges) for name, route_edges in ROUTES.items()},
+            "gate_mapping": {**GATE_EDGES, "entry_connector": ENTRY_CONNECTOR}}
 
 
 def build_scenery(osm_path: Path, directory: Path) -> dict:

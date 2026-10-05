@@ -1,6 +1,5 @@
 import csv
 from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import replace
 import hashlib
 import importlib.util
 import io
@@ -16,7 +15,6 @@ from unittest.mock import patch
 from cav_recovery.empirical import contract_files
 from cav_recovery.empirical import scenario_contract
 from cav_recovery.empirical import traffic_inputs
-from cav_recovery.canonical_scenario import CANONICAL_SCENARIO
 from cav_recovery.empirical.scenario_contract import (
     ContractInputError,
     _aggregate_movements,
@@ -43,9 +41,7 @@ def input_hashes(directory, coverage):
 
 
 def patch_input_hashes(hashes):
-    profiles = tuple(replace(item, sha256=hashes[item.filename]) for item in CANONICAL_SCENARIO.empirical.profiles)
-    config = replace(CANONICAL_SCENARIO, empirical=replace(CANONICAL_SCENARIO.empirical, profiles=profiles))
-    return patch.object(traffic_inputs, "CANONICAL_SCENARIO", config)
+    return patch.object(traffic_inputs, "EXPECTED_INPUT_SHA256", hashes)
 
 
 def load_cli_module():
@@ -302,7 +298,7 @@ class ScenarioContractTests(unittest.TestCase):
                     denominator = 3 if entry == ENTRIES[1] and category == "Car" else 0
                     count = denominator if exit_gate == EXITS[0] else 0
                     rows[(entry, exit_gate, category, 0.0)] = {"count": count, "denominator": denominator}
-        counts, denominators, probabilities = _aggregate_movements({0.0}, rows, CANONICAL_SCENARIO)
+        counts, denominators, probabilities = _aggregate_movements({0.0}, rows)
         self.assertEqual(denominators[ENTRIES[0]], 0)
         self.assertEqual(probabilities[ENTRIES[0]], {EXITS[0]: None, EXITS[1]: None})
         self.assertEqual(denominators[ENTRIES[1]], 3)
