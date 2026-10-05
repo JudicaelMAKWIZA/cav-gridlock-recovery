@@ -68,7 +68,7 @@ def write_identity_documents(root):
     coverage_by_gate = {gate: [[0.0, 802.8]] for gate in GATES}
     branches = [{"id": gate, "role": "entry" if gate in ENTRIES else "exit"} for gate in GATES]
     config = {
-        "schema": PROFILE_SCHEMA_VERSION.replace("-1", "-runtime-used-1"),
+        "schema": "CGR-E02-runtime-used-1",
         "aggregation": {"origin_s": 0.0, "terminal_s": 802.8, "window_s": 60.0, "interval_convention": "[a,b)"},
         "coverage": coverage_by_gate,
         "sector_seed": {
@@ -382,7 +382,7 @@ class ScenarioContractTests(unittest.TestCase):
             output = root / "out"
             self.run_builder(profiles, coverage, output)
             contents = "\n".join(path.read_text(encoding="utf-8") for path in output.iterdir())
-            forbidden_term = "censor" + "ship"
+            forbidden_term = "censorship"
             self.assertNotIn(forbidden_term, contents.lower())
             contract = json.loads((output / "empirical_contract.json").read_text(encoding="utf-8"))
             statuses = contract["empirical_context"]["epistemic_status"]

@@ -142,7 +142,7 @@ def run_sumo_smoke(
                 raise RuntimeError("TraCI introuvable dans cet environnement Python.") from error
             result["traci_version"] = getattr(traci, "__version__", "non déclarée")
             # La réservation est relâchée avant le lancement ; un conflit de port
-            # reste un échec explicite et ne doit pas laissé SUMO seul.
+            # reste un échec explicite et ne doit pas laisser SUMO seul.
             with socket.socket() as reservation:
                 reservation.bind(("127.0.0.1", 0))
                 port = reservation.getsockname()[1]

@@ -187,7 +187,7 @@ class DemandProfileTests(unittest.TestCase):
             root = Path(directory)
             source, geometry, seed, runtime, e01 = prepare_inputs(root)
             (e01 / "trajectories.csv").write_text("source_line,track_id,type\n2,t,Car\n", encoding="utf-8")
-            with self.assertRaisesRegex(ProfileInputError, "En-tête CGR-E01 incompatible"):
+            with self.assertRaisesRegex(ProfileInputError, "En-tête d'export incompatible"):
                 profile_pneuma(source, e01, seed, geometry, runtime, root / "out")
 
     def test_admissibility_is_distinct_from_scientific_validation(self):
@@ -251,4 +251,5 @@ class DemandProfileTests(unittest.TestCase):
                 "--output-dir", str(output),
             ], cwd=ROOT, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Profil : exécution succeeded", result.stdout)
             self.assertTrue((output / "manifest.json").is_file())

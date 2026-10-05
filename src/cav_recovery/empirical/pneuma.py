@@ -29,6 +29,11 @@ class Issue:
 
 @dataclass
 class Candidate:
+    """Ligne source décomposable en quatre métadonnées et groupes de six champs.
+
+    ``decomposable`` décrit la structure, pas la validité des observations.
+    """
+
     line: int
     fields: list[str]
     decomposable: bool
@@ -36,7 +41,7 @@ class Candidate:
 
 
 def read_candidates(source: Path) -> Iterator[Candidate]:
-    """Yield non-empty data rows, retaining source line numbers and source order."""
+    """Lit les lignes non vides en conservant leur numéro et leur ordre source."""
     with source.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.reader(handle, delimiter=";")
         try:
@@ -51,7 +56,8 @@ def read_candidates(source: Path) -> Iterator[Candidate]:
             if not row or not any(item.strip() for item in row):
                 continue
             fields = [item.strip() for item in row]
-            # Only remove an optional terminal separator when the remaining shape is exact.
+            # Retirer le séparateur terminal seulement si la structure reste exacte :
+            # un dernier champ vide peut aussi être un temps manquant.
             if fields[-1] == "" and len(fields) > 1 and len(fields) - 1 >= 10 and (len(fields) - 1 - 4) % 6 == 0:
                 fields.pop()
             decomposable = len(fields) >= 10 and (len(fields) - 4) % 6 == 0
@@ -59,6 +65,7 @@ def read_candidates(source: Path) -> Iterator[Candidate]:
 
 
 def parse_number(token: str, *, line: int, group: int | None, field: str, issues: list[Issue]) -> float | None:
+    """Lit un nombre fini ; sinon, enregistre une anomalie et renvoie None."""
     if token == "":
         issues.append(Issue(line, group, field, "INVALID_NUMBER", "error", token, "Valeur numérique manquante."))
         return None

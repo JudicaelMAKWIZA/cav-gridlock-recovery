@@ -82,7 +82,7 @@ def _report(
     lines.extend([
         "",
         "Les mouvements sont calculés sur les seuls mouvements Car+Taxi complets, avec les "
-        "dénominateurs poolés. Les censures ne deviennent jamais des mouvements.",
+        "dénominateurs regroupés. Les censures ne deviennent jamais des mouvements.",
         "",
         "## Mouvements passenger_CAV",
         "",

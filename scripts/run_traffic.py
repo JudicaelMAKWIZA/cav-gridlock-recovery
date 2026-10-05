@@ -16,8 +16,8 @@ def main() -> int:
     parser.add_argument("--regime", required=True, choices=("LOW", "MID", "HIGH"))
     parser.add_argument("--output-dir", required=True, help="Nouveau dossier du bilan.")
     parser.add_argument("--gui", action="store_true", help="Utiliser sumo-gui avec démarrage automatique.")
-    parser.add_argument("--gui-delay-ms", type=int, default=100, help="Délai d'affichage, sans changer le pas simulé.")
-    parser.add_argument("--drain-horizon-s", type=float, default=600, help="Attente maximale après injection.")
+    parser.add_argument("--gui-delay-ms", type=int, default=100, help="Délai d'affichage en millisecondes, sans changer le pas simulé.")
+    parser.add_argument("--drain-horizon-s", type=float, default=600, help="Attente maximale après injection, en secondes simulées.")
     args = parser.parse_args()
     try:
         result = run_traffic(args.scenario_dir, args.regime, args.output_dir, gui=args.gui,

@@ -242,7 +242,7 @@ def write_trip(path, **attributes):
 
 
 @pytest.mark.parametrize("attributes", [{}, {"arrivalLane": "wrong_0"}, {"vaporized": "true"}, {"arrival": "nan"}])
-def test_tripinfo_corrobates_destination(tmp_path, attributes):
+def test_tripinfo_corroborates_destination(tmp_path, attributes):
     ledger = run.TrafficLedger([mission()])
     connection = Connection(normal_frames())
     for _ in range(3):

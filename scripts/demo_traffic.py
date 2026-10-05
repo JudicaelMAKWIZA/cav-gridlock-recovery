@@ -20,7 +20,7 @@ def main() -> int:
     parser.add_argument("--contract", required=True, help="Contrat de trafic validé.")
     parser.add_argument("--regime", required=True, choices=("LOW", "MID", "HIGH"))
     parser.add_argument("--gui-delay-ms", type=int, default=100, help="Délai d'affichage en millisecondes.")
-    parser.add_argument("--drain-horizon-s", type=float, default=600, help="Attente maximale après injection.")
+    parser.add_argument("--drain-horizon-s", type=float, default=600, help="Attente maximale après injection, en secondes simulées.")
     parser.add_argument("--keep-artifacts", help="Conserver les fichiers dans ce dossier absent ou vide.")
     args = parser.parse_args()
     workspace = None

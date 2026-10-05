@@ -1,4 +1,4 @@
-"""Qualification descriptive de sources empiriques, sans analyse de trafic."""
+"""Lecture, qualification et préparation des profils de trafic."""
 
 from .qualification import qualify_pneuma
 

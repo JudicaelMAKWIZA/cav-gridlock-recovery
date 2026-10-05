@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cav-gridlock-recovery"
 version = "0.1.0"
-description = "Systeme autonome de detection et de resolution active des conflits routiers dans un reseau de vehicules connectes et automatises."
+description = "Système autonome de détection et de résolution active des conflits routiers dans un réseau de véhicules connectés et automatisés."
 requires-python = ">=3.12"
 dependencies = [
     "eclipse-sumo==1.27.1",
