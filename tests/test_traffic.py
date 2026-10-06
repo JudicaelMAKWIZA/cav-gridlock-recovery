@@ -1,4 +1,4 @@
-"""Demande Poisson, réseau publié, intégrité et exécution du trafic."""
+"""Tests du trafic Poisson, du réseau et du suivi des véhicules."""
 
 from collections import Counter
 import gzip
@@ -46,7 +46,7 @@ def test_poisson_seed_and_order_are_reproducible():
 
 def test_poisson_rate_and_weights_over_large_sample():
     missions = poisson_missions(ROUTES, WEIGHTS, RATES, 36000, 2, "LOW")
-    # Tolérances statistiques sur un tirage fixe, pas des effectifs imposés.
+    # On accepte une marge autour des comptes et proportions attendus.
     assert abs(len(missions) - 3600) < 4 * math.sqrt(3600)
     counts = Counter(m.exit_gate for m in missions)
     assert abs(counts["b"] / len(missions) - 0.75) < 0.03
@@ -337,7 +337,7 @@ def test_physical_samples_keep_units_and_do_not_diagnose_gridlock():
     assert lanes[0]["upstream_free_m"] == 2
     assert lanes[0]["queue_extent_m"] == 98
     assert lanes[0]["queue_reaches_upstream"] is True
-    assert "gridlock" not in lanes[0]  # Le rouge et une file ne suffisent pas.
+    assert "gridlock" not in lanes[0]  # Une file au rouge ne prouve pas un gridlock.
     ledger.time_s = 10
     vehicles, _ = run.sample_physics(connection, ledger, {"lane": 100}, previous, readings)
     assert all(v["progress_m"] == 0 for v in vehicles)
@@ -398,10 +398,10 @@ def test_short_connectors_and_intersections_forbid_passenger_lane_changes(actual
         if edge.get("id") in short or edge.get("function") == "internal":
             lanes = edge.findall("lane")
             for index, lane in enumerate(lanes):
-                # Une frontière de chaussée n'a pas de voie voisine à interdire.
+                # SUMO peut omettre l'interdiction quand il n'y a pas de voie voisine.
                 if index + 1 < len(lanes):
                     if lane.get("changeLeft") != "emergency":
-                        # netconvert conserve une issue aux voies sans raccord aval.
+                        # netconvert laisse changer de voie pour éviter une impasse.
                         assert not root.findall(
                             f"connection[@from='{edge.get('id')}'][@fromLane='{index}']")
                         assert "Ignoring changeLeft prohibition" in (
@@ -429,7 +429,7 @@ def test_real_medium_collision_regression(tmp_path):
     if not shutil.which("sumo") or not shutil.which("netconvert"):
         pytest.skip("SUMO absent ; intégration non validée.")
     result = run.run_traffic(tmp_path / "medium", demand="MEDIUM", seed=1)
-    # Le découpage rapproche les portes et conserve le débit total attendu.
+    # Les entrées sont plus proches, mais le débit total attendu ne change pas.
     assert result["counts"]["scheduled"] == 606
     assert result["counts"]["simulation_time_s"] > 189
     assert result["status"] in ("completed", "horizon_reached"), result["reason"]

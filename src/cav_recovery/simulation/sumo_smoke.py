@@ -1,4 +1,4 @@
-"""Vérification d'un trajet synthétique avec SUMO et TraCI."""
+"""Vérifie un trajet de test avec SUMO et TraCI."""
 
 from __future__ import annotations
 
@@ -15,11 +15,11 @@ from .sumo_process import close_sumo
 
 
 class SmokeInputError(ValueError):
-    """Signale une fixture ou un horizon incompatible avec le contrôle."""
+    """Signale un trajet de test ou un horizon invalide."""
 
 
 def _read_mission(fixture_dir: Path) -> dict:
-    """Conserve la mission assignée avant le démarrage de la simulation."""
+    """Lit la route et la destination prévues avant le départ."""
     try:
         config = ET.parse(fixture_dir / "simulation.sumocfg").getroot()
         routes = ET.parse(fixture_dir / "traffic.rou.xml").getroot()
@@ -86,8 +86,8 @@ def _observe_trip(connection, mission: dict, result: dict) -> None:
             if len(departed) != 1 or len(arrived) != 1 or departed[0]["time_s"] >= arrived[0]["time_s"]:
                 raise RuntimeError("Arrivée sans départ unique observé auparavant.")
             last = result["last_observation"]
-            # SUMO retire le véhicule à l'arrivée : la destination doit avoir
-            # été constatée pendant sa présence, avant l'événement d'arrivée.
+            # On vérifie la destination pendant que le véhicule est encore présent,
+            # car SUMO le retire à l'arrivée.
             if (
                 last is None or last["road_id"] != mission["destination"]
                 or last["route_index"] != len(mission["route"]) - 1
@@ -108,11 +108,11 @@ def run_sumo_smoke(
     sumo_binary: str = "sumo",
     horizon_s: float = 60.0,
 ) -> dict:
-    """Exécute un trajet sans assistance et retourne un bilan, même après échec.
+    """Vérifie un trajet sans assistance, dans une limite en secondes simulées.
 
-    L'horizon est exprimé en secondes simulées. L'arrivée exige un départ,
-    des lectures de position et de route, une présence sur la destination et
-    l'événement d'arrivée SUMO. Le processus lancé reste sous notre contrôle.
+    L'arrivée exige un départ, des positions et une route vérifiés jusqu'à la
+    destination, puis l'événement d'arrivée SUMO. On rend aussi un bilan
+    en cas d'erreur et on tente toujours de fermer le processus.
     """
     fixture = Path(fixture_dir).resolve()
     mission = _read_mission(fixture)
@@ -141,8 +141,8 @@ def run_sumo_smoke(
             except ImportError as error:
                 raise RuntimeError("TraCI introuvable dans cet environnement Python.") from error
             result["traci_version"] = getattr(traci, "__version__", "non déclarée")
-            # La réservation est relâchée avant le lancement ; un conflit de port
-            # reste un échec explicite et ne doit pas laisser SUMO seul.
+            # Le port peut être repris avant le lancement. Même sans connexion,
+            # on tente d'arrêter SUMO.
             with socket.socket() as reservation:
                 reservation.bind(("127.0.0.1", 0))
                 port = reservation.getsockname()[1]

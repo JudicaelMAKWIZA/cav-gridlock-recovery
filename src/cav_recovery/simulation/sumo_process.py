@@ -1,4 +1,4 @@
-"""Fermeture de TraCI et du processus SUMO."""
+"""Ferme TraCI et le processus SUMO."""
 
 
 def close_sumo(connection, process, result: dict) -> None:
@@ -10,8 +10,8 @@ def close_sumo(connection, process, result: dict) -> None:
         except Exception as error:
             result["cleanup_errors"].append(f"Fermeture TraCI impossible : {error}")
     if process is not None:
-        # Une erreur d'attente ne prouve pas que SUMO est arrêté. Chaque repli
-        # reste tenté si le précédent n'a pas permis d'attendre sa fin.
+        # Une erreur d'attente ne signifie pas que SUMO est arrêté.
+        # On essaie alors terminate, puis kill si nécessaire.
         for action, phase in (
             (None, "attente normale"),
             (process.terminate, "terminate"),

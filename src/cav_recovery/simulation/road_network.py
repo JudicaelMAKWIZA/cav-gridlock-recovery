@@ -1,4 +1,4 @@
-"""Conversion reproductible de la topologie OSM en réseau expérimental."""
+"""Prépare le réseau SUMO à partir des routes OSM."""
 
 import gzip
 import hashlib
@@ -57,7 +57,7 @@ def require_binary(name: str) -> str:
 
 
 def adapt_roads(config: dict, target: Path) -> None:
-    """Conserve les positions et sens OSM, mais déclare des voies synthétiques."""
+    """Garde les positions et sens OSM, avec les voies prévues pour la simulation."""
     compressed = (SCENARIO_DIR / "roads.osm.gz").read_bytes()
     data = gzip.decompress(compressed)
     if (hashlib.sha256(compressed).hexdigest() != config["source"]["roads_sha256"]
@@ -70,7 +70,7 @@ def adapt_roads(config: dict, target: Path) -> None:
         group = ("major" if highway in ("motorway", "trunk", "primary", "secondary")
                  else "intermediate" if highway in ("tertiary", "unclassified") else "minor")
         lanes = config["network"]["lanes_per_direction"][group]
-        # Les marquages par voie de l'OSM ne décrivent plus les voies adaptées.
+        # Les indications OSM par voie ne correspondent plus aux voies simulées.
         for tag in list(way.findall("tag")):
             key = tag.get("k")
             if key.startswith(("lanes", "turn:lanes", "maxspeed", "width", "change:lanes")):
@@ -85,7 +85,10 @@ def adapt_roads(config: dict, target: Path) -> None:
 
 
 def build_network(config: dict, directory: Path, *, vehicle_space_m: float = 7.5) -> tuple[dict, dict]:
-    """Regroupe les raccords décrits et ajoute des feux fixes, avec keepClear."""
+    """Construit le réseau actif avec les regroupements prévus et des feux fixes.
+
+    keepClear reste actif.
+    """
     import sumolib
 
     source = directory / "adapted.osm"
@@ -138,7 +141,7 @@ def build_network(config: dict, directory: Path, *, vehicle_space_m: float = 7.5
         completed = subprocess.run(command, stdout=log, stderr=log)
     if completed.returncode:
         raise RuntimeError("Conversion échouée ; consulter conversion.log.")
-    # Les commentaires contiennent les chemins de sortie et une date variable.
+    # On retire les commentaires XML contenant des chemins et dates variables.
     write_xml(directory / "network.net.xml", ET.parse(directory / "network.net.xml").getroot())
     corrections = _correct_connections(config, directory, vehicle_space_m)
     net = sumolib.net.readNet(str(directory / "network.net.xml"), withPrograms=True)
@@ -172,7 +175,7 @@ def build_network(config: dict, directory: Path, *, vehicle_space_m: float = 7.5
 
 
 def select_active_edges(net, groups: dict) -> list[str]:
-    """Conserve les routes reliant les jonctions retenues pour leur rôle local."""
+    """Garde les routes entre les jonctions choisies."""
     selected = {node for nodes in groups.values() for node in nodes}
     missing = selected - {node.getID() for node in net.getNodes()}
     if missing:
@@ -189,11 +192,10 @@ def select_active_edges(net, groups: dict) -> list[str]:
 
 
 def _connection_patches(root: ET.Element, vehicle_space_m: float, anchors: set[str]) -> tuple:
-    """Prépare les voies avant les raccords où un changement latéral ne tient pas.
+    """Prépare les voies avant les portions de route trop courtes.
 
-    On ne crée aucun nouveau mouvement entre routes : seules les voies d'un
-    mouvement déjà permis sont raccordées aux voies nécessaires en aval.
-    Le CAV choisit sa voie avant la traversée, sans saut latéral dans le conflit.
+    Le véhicule choisit sa voie avant le carrefour. On raccorde seulement
+    des voies de mouvements déjà autorisés entre routes.
     """
     edges = {e.get("id"): e for e in root.findall("edge") if e.get("function") != "internal"}
     connections = [c for c in root.findall("connection")
@@ -201,15 +203,15 @@ def _connection_patches(root: ET.Element, vehicle_space_m: float, anchors: set[s
     edge_rules, connection_rules = ET.Element("edges"), ET.Element("connections")
     existing = {(c.get("from"), c.get("to"), int(c.get("fromLane")), int(c.get("toLane")))
                 for c in connections}
-    # SUMO recommande de conserver l'exception emergency. Nos CAV sont passenger.
+    # On interdit ici le changement de voie aux CAV, pas aux véhicules emergency.
     for connection in connections:
         ET.SubElement(connection_rules, "connection",
                       **{k: connection.get(k) for k in ("from", "to", "fromLane", "toLane")},
                       changeLeft="emergency", changeRight="emergency", contPos="0")
     short, added = [], []
     for target, edge in edges.items():
-        # Le raccord doit offrir deux emplacements nominaux complets : entrée
-        # et réception du véhicule. Sinon, sa voie est préparée avant le virage.
+        # On prévoit deux places (longueur du véhicule + minGap pour chacune).
+        # Sinon, on prépare la voie avant le virage.
         if float(edge.find("lane").get("length")) >= 2 * vehicle_space_m or len(edge.findall("lane")) < 2:
             continue
         short.append(target)
@@ -273,7 +275,7 @@ def _connection_patches(root: ET.Element, vehicle_space_m: float, anchors: set[s
 
 
 def _correct_connections(config: dict, directory: Path, vehicle_space_m: float) -> dict:
-    """Reconstruit géométrie, priorités et feux avec netconvert, jamais à la main."""
+    """Recalcule la géométrie, les priorités et les feux avec netconvert."""
     if not math.isfinite(vehicle_space_m) or vehicle_space_m <= 0:
         raise ValueError("L'espace nominal du véhicule doit être positif.")
     path = directory / "network.net.xml"
@@ -302,10 +304,10 @@ def _correct_connections(config: dict, directory: Path, vehicle_space_m: float) 
 
 
 def build_routes(net, config: dict) -> dict:
-    """Relie chaque OD par un itinéraire passenger passant dans le noyau central.
+    """Cherche une route passenger entre chaque entrée et sortie, via le noyau.
 
-    Un passage par une edge centrale est imposé, pas une connexion inventée.
-    Parmi ces chemins, on retient le plus court sans répétition ni demi-tour.
+    On garde le chemin légal le plus court, sans répétition ni demi-tour.
+    Aucune connexion n'est ajoutée.
     """
     center = net.convertLonLat2XY(*config["center_lon_lat"])
     core = sorted((e for e in net.getEdges() if e.allows("passenger")

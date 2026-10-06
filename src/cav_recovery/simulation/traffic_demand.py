@@ -1,4 +1,4 @@
-"""Missions synthétiques avec arrivées de Poisson explicites et reproductibles."""
+"""Prépare des missions avec des arrivées de Poisson reproductibles."""
 
 from dataclasses import dataclass
 import math
@@ -7,7 +7,7 @@ import random
 
 @dataclass(frozen=True)
 class Mission:
-    """Route et destination assignées avant l'insertion du véhicule."""
+    """Route et destination fixées avant l'insertion du véhicule."""
 
     vehicle_id: str
     regime: str
@@ -22,13 +22,12 @@ class Mission:
 
 def poisson_missions(routes: dict, weights: dict, rates: dict, duration_s: float,
                      seed: int, demand: str) -> list[Mission]:
-    """Tire les intervalles exponentiels puis la destination de chaque mission.
+    """Tire les intervalles exponentiels et les destinations avec une seed.
 
-    Les intensités sont en véhicules/heure/entrée. Un seul RNG local consomme
-    les entrées et destinations dans un ordre trié. Les temps continus sont
-    conservés dans sampled_s. La programmation scheduled_s est arrondie vers
-    le haut à la milliseconde, résolution interne de SUMO, afin de ne jamais
-    insérer avant le tirage. L'insertion réelle reste mesurée séparément.
+    Les intensités sont en véhicules/heure/entrée ; un seul générateur local
+    suit l'ordre trié des entrées et sorties. sampled_s garde le temps tiré ;
+    scheduled_s l'arrondit vers le haut à la milliseconde pour SUMO, sans
+    départ anticipé ; l'insertion réelle est mesurée à part.
     """
     if not math.isfinite(duration_s) or duration_s <= 0 or type(seed) is not int or seed < 0:
         raise ValueError("Durée ou seed invalide.")

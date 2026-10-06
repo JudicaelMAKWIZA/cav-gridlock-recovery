@@ -1,4 +1,4 @@
-"""Commande de vérification du trajet synthétique SUMO/TraCI."""
+"""Vérifie un trajet de test avec SUMO et TraCI."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import sys
 
-# Le contrôle doit aussi fonctionner depuis un checkout sans installation.
+# On peut lancer ce contrôle depuis le dépôt, sans installer le package.
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -15,7 +15,7 @@ from cav_recovery.simulation.sumo_smoke import SmokeInputError, run_sumo_smoke
 
 
 def main() -> int:
-    """Affiche le bilan et signale les échecs au shell."""
+    """Affiche le bilan et renvoie le code de sortie."""
     parser = argparse.ArgumentParser(description="Vérifier un trajet synthétique avec SUMO et TraCI.")
     parser.add_argument("--sumo-binary", default="sumo", help="Binaire SUMO, disponible dans PATH par défaut")
     parser.add_argument("--horizon", type=float, default=60.0, help="Horizon maximal en secondes simulées")

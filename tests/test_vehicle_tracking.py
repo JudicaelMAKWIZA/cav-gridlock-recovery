@@ -1,4 +1,4 @@
-"""Régressions du suivi générique : présence, missions et arrivées."""
+"""Tests du suivi des missions et des arrivées."""
 
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
@@ -16,7 +16,7 @@ def mission(item="car", scheduled=0):
 
 
 class Connection:
-    """Double limité aux lectures nécessaires, sans commande de déplacement."""
+    """Simule les lectures TraCI, sans commande de déplacement."""
 
     def __init__(self, frames):
         self.frames = iter(frames)

@@ -1,4 +1,4 @@
-"""Contrôle du trajet et des erreurs, sans données de trafic réelles."""
+"""Tests du trajet SUMO et de ses erreurs, sans données de trafic réelles."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ ROUTE = ["approach", "destination"]
 
 
 class TripConnection:
-    """Présente trois pas : départ, présence à destination puis arrivée."""
+    """Simule un départ, un passage à destination puis une arrivée."""
 
     def __init__(self):
         self.frames = [
@@ -322,7 +322,7 @@ def test_cli_failure_codes(arguments, code, message):
 
 
 def test_real_sumo_traci_integration():
-    """Doit s'exécuter dans l'environnement équipé ; ailleurs, le motif est explicite."""
+    """Vérifie le trajet réel si SUMO et TraCI sont disponibles."""
     if shutil.which("sumo") is None or importlib.util.find_spec("traci") is None:
         pytest.skip("Intégration réelle : SUMO dans PATH et TraCI importable sont nécessaires.")
     completed = subprocess.run([sys.executable, str(ROOT / "scripts/check_sumo.py")],

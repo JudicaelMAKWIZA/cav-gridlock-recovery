@@ -1,1 +1,1 @@
-"""Contrôles techniques de simulation du trafic."""
+"""Simulation du trafic avec SUMO et TraCI."""

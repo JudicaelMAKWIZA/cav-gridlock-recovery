@@ -1,4 +1,4 @@
-"""Suivi des missions, conservation et preuve des arrivées normales."""
+"""Suit les missions et vérifie les arrivées à destination."""
 
 import math
 from pathlib import Path
@@ -11,10 +11,10 @@ STEP_S = 0.5
 
 
 class TrafficLedger:
-    """Suit les départs et arrivées de missions aux destinations fixes.
+    """Suit les départs et arrivées sans changer les destinations.
 
-    L'état actif observé reste distinct du dernier état entièrement validé,
-    afin de décrire le pas fautif sans perdre le diagnostic précédent.
+    On distingue le dernier état observé du dernier état validé,
+    pour expliquer une erreur sans perdre le dernier pas accepté.
     """
 
     def __init__(self, missions: list[Mission]):
@@ -35,7 +35,7 @@ class TrafficLedger:
         self.readings: dict | None = None
 
     def observe(self, connection, vehicle_readings: dict | Callable | None = None) -> dict:
-        """Conserve ce qui a été lu, même si le pas ne peut pas être validé."""
+        """Garde ce qui a été lu, même si un contrôle échoue."""
         observation = {"time_s": None, "active_ids": None, "departed_ids": None, "arrived_ids": None,
                        "vehicles": {}}
         try:
@@ -60,7 +60,7 @@ class TrafficLedger:
         except Exception as error:
             self.failure_observation = {**observation, "reason": str(error)}
             raise
-        # La présence observée n'est pas une preuve de validation du pas entier.
+        # On ne valide la présence des véhicules qu'après tous les contrôles.
         self.validated_active = self.observed_active.copy()
         self.last_validated_state = {"time_s": time_s, "active_ids": sorted(self.validated_active),
                                      "departed_ids": sorted(self.departures), "arrived_ids": sorted(self.arrivals)}
@@ -68,10 +68,10 @@ class TrafficLedger:
         return self.snapshot()
 
     def _validate_observation(self, connection, observation: dict, vehicle_readings: dict | Callable | None) -> None:
-        """Vérifie le pas en enregistrant progressivement les événements constatés.
+        """Vérifie le pas sans effacer les événements déjà lus.
 
-        Un départ déjà enregistré reste disponible si un contrôle suivant échoue.
-        L'ensemble actif validé n'est mis à jour qu'après tous les contrôles.
+        Un départ enregistré reste visible si un contrôle échoue ; le nouvel
+        état actif n'est validé qu'une fois tous les contrôles passés.
         """
         time_s = self.time_s
         if self.teleport_starts or self.teleport_ends:
@@ -92,8 +92,8 @@ class TrafficLedger:
             if not math.isfinite(actual) or actual < self.missions[vehicle_id].scheduled_s or actual >= time_s:
                 raise RuntimeError("Temps réel d'insertion incompatible avec la mission.")
             self.departures[vehicle_id] = actual
-        # Les lectures groupées sont faites après conservation des événements :
-        # leur échec ne doit pas transformer un départ observé en attente.
+        # On enregistre d'abord les départs : une erreur de lecture ensuite
+        # ne doit pas les faire passer pour des véhicules encore en attente.
         self.readings = vehicle_readings(connection) if callable(vehicle_readings) else vehicle_readings
         for vehicle_id in sorted(active):
             mission = self.missions[vehicle_id]
@@ -114,8 +114,8 @@ class TrafficLedger:
         for vehicle_id in arrived:
             mission = self.missions[vehicle_id]
             last = self.last.get(vehicle_id)
-            # L'événement retire le véhicule : la destination doit déjà avoir
-            # été constatée, puis être corroborée par la sortie tripinfo.
+            # On doit voir le véhicule à destination avant que SUMO le retire ;
+            # tripinfo confirme ensuite son arrivée.
             if (vehicle_id not in self.departures or vehicle_id in self.arrivals or vehicle_id in active
                     or last is None or last["road_id"] != mission.destination
                     or last["route_index"] != len(mission.route) - 1 or last["time_s"] >= time_s):
@@ -126,11 +126,11 @@ class TrafficLedger:
             raise RuntimeError("Disparition sans arrivée ou bilan des véhicules incohérent.")
 
     def snapshot(self) -> dict:
-        """Résume l'état courant et les diagnostics de validation.
+        """Résume les véhicules observés et les erreurs de suivi.
 
-        Les actifs validés décrivent le dernier pas accepté, pas une seconde
-        population à ajouter aux comptes observés. Un départ sans arrivée ni
-        présence active est signalé comme disparition, jamais comme attente.
+        Le dernier état validé ne s'ajoute pas aux comptes courants.
+        Un véhicule parti, sans arrivée ni présence, est signalé comme disparu,
+        jamais comme encore en attente de départ.
         """
         pending = set(self.missions) - set(self.departures) - self.observed_active
         # SUMO traite [t - pas, t) lors du dernier pas : un départ à t reste futur.
@@ -175,7 +175,7 @@ class TrafficLedger:
 
 
 def verify_trips(path: Path, ledger: TrafficLedger) -> dict[str, dict]:
-    """La sortie SUMO confirme une arrivée normale en fin d'arête, sans suppression."""
+    """Vérifie dans tripinfo les arrivées à destination, sans véhicule supprimé."""
     trips = {}
     for row in ET.parse(path).getroot().findall("tripinfo"):
         item = row.attrib["id"]

@@ -1,4 +1,4 @@
-"""Préparation et exécution d'une expérience sans intervention sur les véhicules."""
+"""Prépare et lance le trafic sans intervention sur les véhicules."""
 
 import csv
 from dataclasses import asdict
@@ -30,6 +30,7 @@ def write_json(path: Path, data) -> None:
 
 
 def code_provenance() -> dict:
+    """Identifie le code utilisé pour produire les résultats."""
     digest = hashlib.sha256()
     for name in ("road_network.py", "traffic_demand.py", "traffic_run.py",
                  "vehicle_tracking.py", "sumo_process.py"):
@@ -44,6 +45,7 @@ def code_provenance() -> dict:
 
 def prepare_traffic(config: dict, output: Path, demand: str, seed: int,
                        duration_s: float | None, rate: float | None, *, street_names: bool = False) -> tuple[dict, list]:
+    """Prépare le réseau, les missions et les fichiers SUMO."""
     vehicle_space = float(VEHICLE_TYPE["length"]) + float(VEHICLE_TYPE["minGap"])
     inspection, routes = build_network(config, output, vehicle_space_m=vehicle_space)
     duration = config["demand"]["duration_s"] if duration_s is None else duration_s
@@ -95,12 +97,11 @@ def prepare_traffic(config: dict, output: Path, demand: str, seed: int,
 
 def sample_physics(connection, ledger: TrafficLedger, lanes: dict, previous: dict,
                    readings: dict) -> tuple[list, list]:
-    """Mesure les files, pas une capacité ni un diagnostic de gridlock.
+    """Observe les files sans en déduire une capacité ni un gridlock.
 
-    L'arrêt suit la définition SUMO (< 0,1 m/s). Une file atteignant l'amont
-    est signalée quand au moins deux véhicules sont arrêtés et que l'arrière
-    du dernier laisse moins d'un gabarit nominal (5 + 2,5 m) au début de voie.
-    Ce signal géométrique seul reste un candidat de spillback.
+    Un véhicule est arrêté en dessous de 0,1 m/s, comme dans SUMO.
+    Une file atteint le début de voie si au moins deux véhicules sont arrêtés
+    et si l'arrière du dernier est à 7,5 m ou moins (longueur + minGap).
     """
     vehicles = []
     by_lane = {}
@@ -130,7 +131,7 @@ def sample_physics(connection, ledger: TrafficLedger, lanes: dict, previous: dic
         nearest_rear = min((r["lane_position_m"] - 5 for r in present), default=length)
         rows.append({"time_s": ledger.time_s, "lane": lane, "length_m": length,
                      "vehicles": len(present), "halting": len(halted),
-                     # SUMO 1.27.1 renvoie un ratio, malgré la docstring Python « % ».
+                     # SUMO 1.27.1 renvoie un ratio, même si sa docstring indique « % ».
                      "occupancy_ratio": connection.lane.getLastStepOccupancy(lane),
                      "upstream_free_m": max(0, nearest_rear),
                      "queue_extent_m": max(0, length - rear) if rear is not None else 0,
@@ -139,7 +140,7 @@ def sample_physics(connection, ledger: TrafficLedger, lanes: dict, previous: dic
 
 
 def subscribed_readings(connection) -> dict:
-    """Lit le même pas en une réponse groupée plutôt qu'un appel par attribut."""
+    """Lit les données du pas courant ensemble pour limiter les appels TraCI."""
     import traci.constants as tc
 
     variables = {"route": tc.VAR_EDGES, "position": tc.VAR_POSITION,
@@ -158,11 +159,11 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                    gui: bool = False, gui_delay_ms: int = 100, street_names: bool = False, config_path=None,
                    duration_s: float | None = None, rate: float | None = None,
                    drain_horizon_s: float | None = None) -> dict:
-    """Prépare puis observe une demande sans stop, reroutage ni assistance.
+    """Prépare et suit le trafic sans arrêt imposé, changement de route ni assistance.
 
-    Un horizon atteint est un résultat incomplet, pas un gridlock confirmé.
-    Les erreurs d'intégrité ou de fermeture ont un statut distinct.
-    Aucun fichier existant n'est écrasé.
+    À la limite de temps, un trafic non vidé reste incomplet, pas un gridlock
+    confirmé. Les erreurs de circulation ou de fermeture restent des échecs,
+    et les fichiers existants ne sont jamais écrasés.
     """
     if type(gui_delay_ms) is not int or gui_delay_ms < 0:
         raise ValueError("Le délai graphique doit être un entier positif ou nul.")
