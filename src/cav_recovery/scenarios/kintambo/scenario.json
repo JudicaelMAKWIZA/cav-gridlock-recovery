@@ -13,6 +13,13 @@
   },
   "center_lon_lat": [15.25822, -4.33404],
   "network": {
+    "active_junctions": {
+      "magasin": ["magasin_west", "magasin_east", "magasin_nguma", "magasin_oua", "3675784999"],
+      "nguma_yoseki_transversale": ["435500469", "435841023", "3675785000"],
+      "mondjiba_fleuve_parc": ["3758947002", "12724674179", "12724674185", "cluster_3758947004_3758947006", "4220498913", "617025350"],
+      "approach_links": ["4220498922", "435895041", "29533194", "29533200", "4220498932", "435615873", "29533340"],
+      "approach_limits": ["617025374", "9207462512", "7452907974", "cluster_29532718_4118547992", "436033212", "cluster_3676537176_3758947000_4220509321_4220509322"]
+    },
     "lanes_per_direction": {"major": 4, "intermediate": 2, "minor": 1},
     "speed_kmh": {"major": 50, "intermediate": 40, "minor": 30},
     "signal_radius_m": 800,
@@ -29,26 +36,25 @@
   },
   "demand": {
     "duration_s": 600,
-    "rates_veh_per_hour_per_entry": {"LOW": 90, "MEDIUM": 450, "HIGH": 1200, "STRESS": 2400},
+    "rate_basis": "Sept entrées : intensité totale attendue conservée (720/3600/9600/19200 véhicules par heure).",
+    "rates_veh_per_hour_per_entry": {"LOW": 102.85714285714286, "MEDIUM": 514.2857142857143, "HIGH": 1371.4285714285713, "STRESS": 2742.8571428571427},
     "entries": {
-      "mondjiba": {"edge": "427630649#1", "exit": "427630648#7"},
-      "nguma": {"edge": "957109393#5", "exit": "-957109393#5"},
-      "kasa_vubu": {"edge": "956535985#6", "exit": "-956535985#6"},
-      "oua": {"edge": "37366221#1", "exit": "-37366221#1"},
+      "mondjiba": {"edge": "427630649#4", "exit": "427630648#3"},
+      "nguma": {"edge": "680630199#5", "exit": "-680630199#5"},
+      "kasa_vubu": {"edge": "422304669#0", "exit": "-422304669#0"},
+      "oua": {"edge": "37366221#8", "exit": "-37366221#8"},
       "fleuve": {"edge": "4642209#0", "exit": "-4642209#0"},
-      "montagne": {"edge": "4642208#2", "exit": "-4642208#2"},
-      "ecuries": {"edge": "4421977#0", "exit": "-4421977#0"},
-      "boboliko": {"edge": "37358116#4", "exit": "-37358116#4"}
+      "montagne": {"edge": "1053620741#1", "exit": "-1053620741#1"},
+      "ecuries": {"edge": "580281996#0", "exit": "-580281996#0"}
     },
     "destination_weights": {
-      "mondjiba": {"nguma": 1, "kasa_vubu": 1, "oua": 1, "fleuve": 1, "montagne": 1, "ecuries": 1, "boboliko": 1},
-      "nguma": {"mondjiba": 1, "kasa_vubu": 1, "oua": 1, "fleuve": 1, "montagne": 1, "ecuries": 1, "boboliko": 1},
-      "kasa_vubu": {"mondjiba": 1, "nguma": 1, "oua": 1, "fleuve": 1, "montagne": 1, "ecuries": 1, "boboliko": 1},
-      "oua": {"mondjiba": 1, "nguma": 1, "kasa_vubu": 1, "fleuve": 1, "montagne": 1, "ecuries": 1, "boboliko": 1},
-      "fleuve": {"mondjiba": 1, "nguma": 1, "kasa_vubu": 1, "oua": 1, "montagne": 1, "ecuries": 1, "boboliko": 1},
-      "montagne": {"mondjiba": 1, "nguma": 1, "kasa_vubu": 1, "oua": 1, "fleuve": 1, "ecuries": 1, "boboliko": 1},
-      "ecuries": {"mondjiba": 1, "nguma": 1, "kasa_vubu": 1, "oua": 1, "fleuve": 1, "montagne": 1, "boboliko": 1},
-      "boboliko": {"mondjiba": 1, "nguma": 1, "kasa_vubu": 1, "oua": 1, "fleuve": 1, "montagne": 1, "ecuries": 1}
+      "mondjiba": {"nguma": 1, "kasa_vubu": 1, "oua": 1, "fleuve": 1, "montagne": 1, "ecuries": 1},
+      "nguma": {"mondjiba": 1, "kasa_vubu": 1, "oua": 1, "fleuve": 1, "montagne": 1, "ecuries": 1},
+      "kasa_vubu": {"mondjiba": 1, "nguma": 1, "oua": 1, "fleuve": 1, "montagne": 1, "ecuries": 1},
+      "oua": {"mondjiba": 1, "nguma": 1, "kasa_vubu": 1, "fleuve": 1, "montagne": 1, "ecuries": 1},
+      "fleuve": {"mondjiba": 1, "nguma": 1, "kasa_vubu": 1, "oua": 1, "montagne": 1, "ecuries": 1},
+      "montagne": {"mondjiba": 1, "nguma": 1, "kasa_vubu": 1, "oua": 1, "fleuve": 1, "ecuries": 1},
+      "ecuries": {"mondjiba": 1, "nguma": 1, "kasa_vubu": 1, "oua": 1, "fleuve": 1, "montagne": 1}
     }
   },
   "simulation": {"step_s": 0.5, "drain_horizon_s": 600}

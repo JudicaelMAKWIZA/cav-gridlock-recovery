@@ -15,6 +15,7 @@ def main() -> int:
     parser.add_argument("--demand", choices=["LOW", "MEDIUM", "HIGH", "STRESS"], default="LOW")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--gui", action="store_true", help="Utiliser sumo-gui avec démarrage automatique.")
+    parser.add_argument("--street-names", action="store_true", help="Afficher les noms OSM dans la vue graphique.")
     parser.add_argument("--gui-delay-ms", type=int, default=100, help="Délai visuel, sans effet sur le pas simulé.")
     parser.add_argument("--config", help="Configuration JSON de réseau et de demande.")
     parser.add_argument("--rate", type=float, help="Intensité en véhicules/heure/entrée.")
@@ -26,6 +27,7 @@ def main() -> int:
                                    datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
     try:
         result = run_traffic(output, demand=args.demand, seed=args.seed, gui=args.gui,
+                                street_names=args.street_names,
                                 gui_delay_ms=args.gui_delay_ms, config_path=args.config,
                                 duration_s=args.duration_s, rate=args.rate,
                                 drain_horizon_s=args.drain_horizon_s)

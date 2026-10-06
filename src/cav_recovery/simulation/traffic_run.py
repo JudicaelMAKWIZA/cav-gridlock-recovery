@@ -43,7 +43,7 @@ def code_provenance() -> dict:
 
 
 def prepare_traffic(config: dict, output: Path, demand: str, seed: int,
-                       duration_s: float | None, rate: float | None) -> tuple[dict, list]:
+                       duration_s: float | None, rate: float | None, *, street_names: bool = False) -> tuple[dict, list]:
     vehicle_space = float(VEHICLE_TYPE["length"]) + float(VEHICLE_TYPE["minGap"])
     inspection, routes = build_network(config, output, vehicle_space_m=vehicle_space)
     duration = config["demand"]["duration_s"] if duration_s is None else duration_s
@@ -61,13 +61,14 @@ def prepare_traffic(config: dict, output: Path, demand: str, seed: int,
     write_xml(output / "traffic.rou.xml", root)
     view = ET.Element("viewsettings")
     scheme = ET.SubElement(view, "scheme", name="kintambo")
-    ET.SubElement(scheme, "edges", streetName_show="true", streetName_size="30",
+    ET.SubElement(scheme, "edges", streetName_show=str(street_names).lower(), streetName_size="24",
                   streetName_constantSize="true", streetName_onlySelected="false",
                   streetName_color="0,0,160", streetName_bgColor="255,255,255")
     ET.SubElement(scheme, "vehicles", vehicleQuality="2", vehicleExaggeration="1.5", vehicleMinSize="1")
     ET.SubElement(scheme, "background", backgroundColor="238,240,235")
-    ET.SubElement(view, "viewport", x=str(inspection["center_xy_m"][0]),
-                  y=str(inspection["center_xy_m"][1]), zoom="1500")
+    left, bottom, right, top = inspection["view_boundary_m"]
+    ET.SubElement(view, "viewport", x=str((left + right) / 2),
+                  y=str((bottom + top) / 2), zoom="100")
     write_xml(output / "view.xml", view)
     root = ET.Element("configuration")
     for group, options in {
@@ -154,7 +155,7 @@ def subscribed_readings(connection) -> dict:
 
 
 def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
-                   gui: bool = False, gui_delay_ms: int = 100, config_path=None,
+                   gui: bool = False, gui_delay_ms: int = 100, street_names: bool = False, config_path=None,
                    duration_s: float | None = None, rate: float | None = None,
                    drain_horizon_s: float | None = None) -> dict:
     """Prépare puis observe une demande sans stop, reroutage ni assistance.
@@ -176,7 +177,8 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
         raise ValueError("Le dossier de résultats doit être absent ou vide.")
     output.mkdir(parents=True, exist_ok=True)
     try:
-        prepared, missions = prepare_traffic(config, output, demand, seed, duration_s, rate)
+        prepared, missions = prepare_traffic(config, output, demand, seed, duration_s, rate,
+                                            street_names=street_names)
     except Exception as error:
         write_json(output / "preparation_error.json", {"status": "failed", "reason": str(error)})
         raise
@@ -224,8 +226,8 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
             connection = traci.connect(port=port, proc=process, numRetries=300, waitBetweenRetries=0.1)
             if gui:
                 connection.gui.setSchema("View #0", "kintambo")
-                connection.gui.setOffset("View #0", *prepared["network"]["center_xy_m"])
-                connection.gui.setZoom("View #0", 1500)
+                left, bottom, right, top = prepared["network"]["view_boundary_m"]
+                connection.gui.setBoundary("View #0", left, bottom, right, top)
             result["sumo_version"] = connection.getVersion()[1]
             if abs(connection.simulation.getDeltaT() - STEP_S) > 1e-9:
                 raise RuntimeError("Pas de simulation chargé incorrect.")

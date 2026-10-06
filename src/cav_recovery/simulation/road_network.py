@@ -36,6 +36,9 @@ def read_config(path: str | Path | None = None) -> dict:
             raise ValueError("Durée ou rayon invalide.")
     if config["simulation"]["step_s"] != 0.5:
         raise ValueError("Le suivi utilise un pas de 0,5 s.")
+    groups = config["network"]["active_junctions"]
+    if not groups or any(not isinstance(nodes, list) or not nodes for nodes in groups.values()):
+        raise ValueError("La sélection des jonctions actives doit être explicite et non vide.")
     return config
 
 
@@ -106,13 +109,28 @@ def build_network(config: dict, directory: Path, *, vehicle_space_m: float = 7.5
     if completed.returncode:
         raise RuntimeError("Conversion initiale échouée ; consulter preliminary.log.")
     net = sumolib.net.readNet(str(preliminary))
+    active = select_active_edges(net, config["network"]["active_junctions"])
+    focused = directory / "focused.net.xml"
+    focus_command = [binary, "--sumo-net-file", str(preliminary),
+                     "--keep-edges.explicit", ",".join(active),
+                     "--offset.disable-normalization", "true", "--no-turnarounds", "true",
+                     "--output-file", str(focused)]
+    with (directory / "focus.log").open("w", encoding="utf-8") as log:
+        completed = subprocess.run(focus_command, stdout=log, stderr=log)
+    if completed.returncode:
+        raise RuntimeError("Découpe du réseau échouée ; consulter focus.log.")
+    net = sumolib.net.readNet(str(focused))
     center = net.convertLonLat2XY(*config["center_lon_lat"])
     signals = sorted(node.getID() for node in net.getNodes()
                      if math.dist(node.getCoord(), center) < config["network"]["signal_radius_m"]
                      and len(node.getIncoming()) >= 3 and len(node.getOutgoing()) >= 2)
     if not signals:
         raise ValueError("Aucun carrefour à plusieurs approches dans la zone.")
-    command = base + ["--tls.set", ",".join(signals), "--tls.allred.time", str(config["network"]["all_red_s"]),
+    command = [binary, "--sumo-net-file", str(focused), "--tls.rebuild", "true",
+                      "--offset.disable-normalization", "true", "--tls.default-type", "static",
+                      "--tls.cycle.time", str(config["network"]["cycle_s"]), "--tls.join", "false",
+                      "--no-turnarounds", "true", "--seed", "0",
+                      "--tls.set", ",".join(signals), "--tls.allred.time", str(config["network"]["all_red_s"]),
                       "--tls.layout", config["network"]["signal_layout"],
                       "--tls.minor-left.max-speed", "0",
                       "--output-file", str(directory / "network.net.xml")]
@@ -124,6 +142,7 @@ def build_network(config: dict, directory: Path, *, vehicle_space_m: float = 7.5
     write_xml(directory / "network.net.xml", ET.parse(directory / "network.net.xml").getroot())
     corrections = _correct_connections(config, directory, vehicle_space_m)
     net = sumolib.net.readNet(str(directory / "network.net.xml"), withPrograms=True)
+    center = net.convertLonLat2XY(*config["center_lon_lat"])
     routes = build_routes(net, config)
     controllers = [{"id": row.getID(), "programs": [
         {"id": program_id, "type": p.getType(), "offset": p.getOffset(),
@@ -131,6 +150,7 @@ def build_network(config: dict, directory: Path, *, vehicle_space_m: float = 7.5
         for program_id, p in row.getPrograms().items()]} for row in net.getTrafficLights()]
     inspection = {
         "source": config["source"], "conversion_command": command,
+        "focus_command": focus_command, "active_edges": active,
         "connection_rules": corrections,
         "nodes": len(net.getNodes()), "edges": len(net.getEdges()),
         "lanes": sum(e.getLaneNumber() for e in net.getEdges()),
@@ -141,8 +161,31 @@ def build_network(config: dict, directory: Path, *, vehicle_space_m: float = 7.5
                           "length_m": e.getLength(), "speed_m_per_s": e.getSpeed(),
                           "name": e.getName()} for e in net.getEdges()],
     }
+    corners = [net.getNode(node).getCoord() for node in config["network"]["active_junctions"]["magasin"]]
+    inspection["view_boundary_m"] = [min(p[0] for p in corners) - 150, min(p[1] for p in corners) - 150,
+                                     max(p[0] for p in corners) + 150, max(p[1] for p in corners) + 150]
+    points = [node.getCoord() for node in net.getNodes()]
+    inspection["extent_m"] = [max(p[0] for p in points) - min(p[0] for p in points),
+                              max(p[1] for p in points) - min(p[1] for p in points)]
     inspection["volatile_xml_comments_removed"] = True
     return inspection, routes
+
+
+def select_active_edges(net, groups: dict) -> list[str]:
+    """Conserve les routes reliant les jonctions retenues pour leur rôle local."""
+    selected = {node for nodes in groups.values() for node in nodes}
+    missing = selected - {node.getID() for node in net.getNodes()}
+    if missing:
+        raise ValueError(f"Jonctions actives absentes de la source convertie : {sorted(missing)}")
+    edges = sorted(e.getID() for e in net.getEdges()
+                   if e.getFromNode().getID() in selected and e.getToNode().getID() in selected)
+    if not edges:
+        raise ValueError("La sélection active ne contient aucune route.")
+    connected = {node.getID() for e in net.getEdges() if e.getID() in edges
+                 for node in (e.getFromNode(), e.getToNode())}
+    if connected != selected:
+        raise ValueError(f"Jonctions sélectionnées sans route active : {sorted(selected - connected)}")
+    return edges
 
 
 def _connection_patches(root: ET.Element, vehicle_space_m: float, anchors: set[str]) -> tuple:
@@ -240,6 +283,7 @@ def _correct_connections(config: dict, directory: Path, vehicle_space_m: float) 
         write_xml(directory / name, root)
     output = directory / "connected.net.xml"
     command = [require_binary("netconvert"), "--sumo-net-file", str(path),
+               "--offset.disable-normalization", "true",
                "--edge-files", str(directory / "continuity.edg.xml"),
                "--connection-files", str(directory / "continuity.con.xml"),
                "--node-files", str(directory / "control.nod.xml"),

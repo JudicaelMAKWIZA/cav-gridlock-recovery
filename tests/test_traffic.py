@@ -99,8 +99,8 @@ def test_real_network_and_routes(actual_network):
     import sumolib
     directory, config, inspection, routes = actual_network
     net = sumolib.net.readNet(str(directory / "network.net.xml"), withPrograms=True)
-    assert inspection["branching_junctions"] > 20
-    assert len(routes) == 56
+    assert inspection["branching_junctions"] > 4
+    assert len(routes) == sum(len(destinations) for destinations in config["demand"]["destination_weights"].values())
     for route_id, ids in routes.items():
         origin, destination = route_id.split("__")
         assert ids[0] == config["demand"]["entries"][origin]["edge"]
@@ -133,7 +133,7 @@ def test_preparation_xml_and_deterministic_missions(actual_network, monkeypatch,
     assert config_xml.find("processing/time-to-teleport").get("value") == "-1"
     assert config_xml.find("processing/collision.check-junctions").get("value") == "true"
     street_view = ET.parse(tmp_path / "view.xml").find("scheme/edges")
-    assert street_view.get("streetName_show") == "true"
+    assert street_view.get("streetName_show") == "false"
     assert street_view.get("streetName_constantSize") == "true"
     assert street_view.get("streetName_onlySelected") == "false"
     assert ET.parse(tmp_path / "view.xml").find("scheme").get("name") == "kintambo"
@@ -175,6 +175,55 @@ def test_cli_reports_result(monkeypatch, tmp_path, status, code):
     assert invoke.call_args.kwargs["seed"] == 2
 
 
+def test_cli_street_names_are_opt_in(monkeypatch, tmp_path):
+    spec = importlib.util.spec_from_file_location("cli", Path(__file__).parents[1] / "scripts/run_traffic.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    invoke = Mock(return_value={"status": "completed", "counts": {}})
+    monkeypatch.setattr(cli, "run_traffic", invoke)
+    for flag, expected in (([], False), (["--street-names"], True)):
+        monkeypatch.setattr(sys, "argv", ["traffic", "--gui", "--output-dir", str(tmp_path)] + flag)
+        assert cli.main() == 0
+        assert invoke.call_args.kwargs["street_names"] is expected
+
+
+def test_street_names_only_change_view(actual_network, monkeypatch, tmp_path):
+    _, config, inspection, routes = actual_network
+    monkeypatch.setattr(run, "build_network", lambda *args, **kwargs: (inspection, routes))
+    first, missions = run.prepare_traffic(config, tmp_path, "LOW", 1, 60, None)
+    scientific_files = {name: (tmp_path / name).read_bytes() for name in ("traffic.rou.xml", "simulation.sumocfg")}
+    second, labeled = run.prepare_traffic(config, tmp_path, "LOW", 1, 60, None, street_names=True)
+    assert ET.parse(tmp_path / "view.xml").find("scheme/edges").get("streetName_show") == "true"
+    assert missions == labeled and first["routes"] == second["routes"]
+    assert all((tmp_path / name).read_bytes() == data for name, data in scientific_files.items())
+
+
+def test_focus_keeps_local_links_ports_and_rejects_unknown_junctions(actual_network):
+    import sumolib
+    directory, config, inspection, routes = actual_network
+    net = sumolib.net.readNet(str(directory / "network.net.xml"))
+    selected = {node for nodes in config["network"]["active_junctions"].values() for node in nodes}
+    assert {node.getID() for node in net.getNodes()} == selected
+    assert set(inspection["active_edges"]) == {edge.getID() for edge in net.getEdges()}
+    assert {edge.getName() for edge in net.getEdges()} >= {
+        "Avenue Colonel Mondjiba", "Avenue Nguma", "Avenue Kasa-Vubu",
+        "Avenue de l’OUA", "Avenue des Ecuries", "Avenue Transversale", "Avenue Yoseki", "Avenue du Parc"}
+    for loop in (["956500885#0", "363410577", "-23386395#0", "680630199#6", "1053620734"],
+                 ["427630648#1", "427630648#2", "-57358917#1", "4642209#0", "4642209#1"]):
+        edges = [net.getEdge(item) for item in loop]
+        assert all(any(c.getDirection() != "t" and c.getFromLane().allows("passenger")
+                       and c.getToLane().allows("passenger") for c in first.getOutgoing().get(second, []))
+                   for first, second in zip(edges, edges[1:] + edges[:1]))
+    for entry, port in config["demand"]["entries"].items():
+        assert net.getEdge(port["edge"]).getLength() >= 15
+        assert net.getEdge(port["exit"]).getLength() >= 15
+        assert len([key for key in routes if key.startswith(entry + "__")]) >= 2
+    with pytest.raises(ValueError, match="absentes"):
+        network.select_active_edges(net, {"absent": ["unknown"]})
+    with pytest.raises(ValueError, match="aucune route"):
+        network.select_active_edges(net, {})
+
+
 def test_real_light_traffic_drains(tmp_path):
     if not shutil.which("sumo") or not shutil.which("netconvert"):
         pytest.skip("SUMO indisponible ; intégration non validée.")
@@ -191,11 +240,11 @@ def test_real_light_traffic_drains(tmp_path):
 def fake_run(monkeypatch, tmp_path, frames, gui=False, cleanup_error=False):
     connection = Connection(frames)
     connection.lane = SimpleNamespace(getIDList=lambda: [])
-    connection.gui = SimpleNamespace(setOffset=Mock(), setZoom=Mock(), setSchema=Mock())
+    connection.gui = SimpleNamespace(setBoundary=Mock(), setSchema=Mock())
     config = network.read_config()
     prepared = {"duration_s": 0.5, "rates_veh_per_hour_per_entry": {"entry": 90},
-                "routes": {"straight": ["start", "end"]}, "network": {"center_xy_m": [0, 0]}}
-    def prepare(config, directory, *args):
+                "routes": {"straight": ["start", "end"]}, "network": {"view_boundary_m": [-1, -1, 1, 1]}}
+    def prepare(config, directory, *args, **kwargs):
         for name in ("scenario.json", "network.net.xml"):
             (directory / name).write_text("synthetic")
         return prepared, [mission()]
@@ -260,6 +309,7 @@ def test_gui_only_changes_display(monkeypatch, tmp_path):
     assert command[command.index("--start") + 1] == "true"
     assert result["step_s"] == 0.5 and result["seed"] == 1
     connection.gui.setSchema.assert_called_once_with("View #0", "kintambo")
+    connection.gui.setBoundary.assert_called_once_with("View #0", -1, -1, 1, 1)
 
 
 def test_preparation_failure_retains_diagnostic(monkeypatch, tmp_path):
@@ -379,7 +429,8 @@ def test_real_medium_collision_regression(tmp_path):
     if not shutil.which("sumo") or not shutil.which("netconvert"):
         pytest.skip("SUMO absent ; intégration non validée.")
     result = run.run_traffic(tmp_path / "medium", demand="MEDIUM", seed=1)
-    assert result["counts"]["scheduled"] == 579
+    # Le découpage rapproche les portes et conserve le débit total attendu.
+    assert result["counts"]["scheduled"] == 606
     assert result["counts"]["simulation_time_s"] > 189
     assert result["status"] in ("completed", "horizon_reached"), result["reason"]
     assert result["collision_ids"] == []

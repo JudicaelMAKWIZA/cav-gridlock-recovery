@@ -8,7 +8,9 @@ la prévention reste secondaire.
 
 La topologie vient d'OpenStreetMap autour de Kintambo Magasin, à Kinshasa.
 Elle conserve plusieurs avenues, des chaussées séparées et de nombreuses
-intersections voisines. Les voies, vitesses et feux sont des hypothèses de simulation.
+intersections proches. Le réseau actif se limite au noyau, à ses approches et
+aux liaisons locales utiles ; l'extrait source reste complet. Les voies,
+vitesses et feux sont des hypothèses de simulation.
 
 © [OpenStreetMap contributors — ODbL 1.0](https://www.openstreetmap.org/copyright).
 La petite géométrie nécessaire est fournie avec le projet ; la préparation
@@ -46,6 +48,7 @@ Depuis le dépôt, dans l'environnement activé :
 ```bash
 python scripts/run_traffic.py --demand LOW --seed 1
 python scripts/run_traffic.py --demand HIGH --seed 1 --gui --gui-delay-ms 100
+python scripts/run_traffic.py --demand HIGH --seed 1 --gui --street-names
 ```
 
 Une seule commande prépare le réseau, génère les missions et lance SUMO.
@@ -58,8 +61,9 @@ un dossier non vide est refusé.
 l'attente après injection. `--config <configuration.json>` fournit d'autres
 paramètres de simulation. Consulter `--help` pour les options.
 
-La GUI utilise réellement `sumo-gui`, démarre automatiquement et montre les
-noms de rues OSM. Une interface compatible est nécessaire, par exemple WSLg.
+La GUI utilise réellement `sumo-gui`, démarre automatiquement et se centre sur
+le noyau. Les noms OSM sont masqués par défaut ; `--street-names` les affiche.
+Une interface compatible est nécessaire, par exemple WSLg.
 Les voitures utilisent une forme native de SUMO. Le délai graphique ne change
 pas le pas simulé de 0,5 s. Dans un terminal interactif, appuyer sur Entrée
 après observation pour fermer la vue à la fin.
