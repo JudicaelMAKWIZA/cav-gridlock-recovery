@@ -1,0 +1,61 @@
+{
+  "scenario": "kintambo",
+  "source": {
+    "name": "OpenStreetMap",
+    "licence": "ODbL 1.0",
+    "licence_url": "https://opendatacommons.org/licenses/odbl/1-0/",
+    "attribution": "© OpenStreetMap contributors",
+    "attribution_url": "https://www.openstreetmap.org/copyright",
+    "retrieved_on": "2026-10-06",
+    "bbox_west_south_east_north": [15.244, -4.348, 15.274, -4.322],
+    "roads_sha256": "37ed914f0764e66b2900695695c63280af322921197c12d337a0b02e6e63e4b9",
+    "roads_sha256_uncompressed": "93a31d50a909221924ef820747d87035bbea5451a3bdd339f689d3783e40c45b"
+  },
+  "center_lon_lat": [15.25822, -4.33404],
+  "network": {
+    "active_junctions": {
+      "magasin": ["magasin_west", "magasin_east", "magasin_nguma", "magasin_oua", "3675784999"],
+      "nguma_yoseki_transversale": ["435500469", "435841023", "3675785000"],
+      "mondjiba_fleuve_parc": ["3758947002", "12724674179", "12724674185", "cluster_3758947004_3758947006", "4220498913", "617025350"],
+      "approach_links": ["4220498922", "435895041", "29533194", "29533200", "4220498932", "435615873", "29533340"],
+      "approach_limits": ["617025374", "9207462512", "7452907974", "cluster_29532718_4118547992", "436033212", "cluster_3676537176_3758947000_4220509321_4220509322"]
+    },
+    "lanes_per_direction": {"major": 4, "intermediate": 2, "minor": 1},
+    "speed_kmh": {"major": 50, "intermediate": 40, "minor": 30},
+    "signal_radius_m": 800,
+    "junction_join_distance_m": 30,
+    "junction_groups": {
+      "magasin_west": ["3758947008", "5544232899"],
+      "magasin_east": ["4220498920", "435283316"],
+      "magasin_nguma": ["435307742", "9682712790"],
+      "magasin_oua": ["29533341", "4220498925"]
+    },
+    "cycle_s": 90,
+    "signal_layout": "opposites",
+    "all_red_s": 2
+  },
+  "demand": {
+    "duration_s": 600,
+    "rate_basis": "Sept entrées : intensité totale attendue conservée (720/3600/9600/19200 véhicules par heure).",
+    "rates_veh_per_hour_per_entry": {"LOW": 102.85714285714286, "MEDIUM": 514.2857142857143, "HIGH": 1371.4285714285713, "STRESS": 2742.8571428571427},
+    "entries": {
+      "mondjiba": {"edge": "427630649#4", "exit": "427630648#3"},
+      "nguma": {"edge": "680630199#5", "exit": "-680630199#5"},
+      "kasa_vubu": {"edge": "422304669#0", "exit": "-422304669#0"},
+      "oua": {"edge": "37366221#8", "exit": "-37366221#8"},
+      "fleuve": {"edge": "4642209#0", "exit": "-4642209#0"},
+      "montagne": {"edge": "1053620741#1", "exit": "-1053620741#1"},
+      "ecuries": {"edge": "580281996#0", "exit": "-580281996#0"}
+    },
+    "destination_weights": {
+      "mondjiba": {"nguma": 1, "kasa_vubu": 1, "oua": 1, "fleuve": 1, "montagne": 1, "ecuries": 1},
+      "nguma": {"mondjiba": 1, "kasa_vubu": 1, "oua": 1, "fleuve": 1, "montagne": 1, "ecuries": 1},
+      "kasa_vubu": {"mondjiba": 1, "nguma": 1, "oua": 1, "fleuve": 1, "montagne": 1, "ecuries": 1},
+      "oua": {"mondjiba": 1, "nguma": 1, "kasa_vubu": 1, "fleuve": 1, "montagne": 1, "ecuries": 1},
+      "fleuve": {"mondjiba": 1, "nguma": 1, "kasa_vubu": 1, "oua": 1, "montagne": 1, "ecuries": 1},
+      "montagne": {"mondjiba": 1, "nguma": 1, "kasa_vubu": 1, "oua": 1, "fleuve": 1, "ecuries": 1},
+      "ecuries": {"mondjiba": 1, "nguma": 1, "kasa_vubu": 1, "oua": 1, "fleuve": 1, "montagne": 1}
+    }
+  },
+  "simulation": {"step_s": 0.5, "drain_horizon_s": 600}
+}

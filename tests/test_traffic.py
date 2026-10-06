@@ -1,677 +1,439 @@
-"""Contrôles synthétiques des demandes, missions et bilans de simulation."""
+"""Demande Poisson, réseau publié, intégrité et exécution du trafic."""
 
 from collections import Counter
-from copy import deepcopy
+import gzip
+import hashlib
 import importlib.util
 import json
+import math
 from pathlib import Path
+import random
+import shutil
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 import xml.etree.ElementTree as ET
 
 import pytest
 
-from cav_recovery.simulation import traffic_demand as demand
-from cav_recovery.simulation import traffic_run as run
-from cav_recovery.simulation import traffic_scenario as scenario
 from cav_recovery.simulation import road_network as network
+from cav_recovery.simulation import traffic_run as run
+from cav_recovery.simulation.traffic_demand import poisson_missions
 from cav_recovery.simulation.sumo_process import close_sumo
-
-FIXTURE = Path(__file__).parent / "fixtures/traffic/demand.json"
-
-
-@pytest.fixture
-def contract():
-    return json.loads(FIXTURE.read_text(encoding="utf-8"))
+from test_vehicle_tracking import Connection, normal_frames, mission
 
 
-def mission(item="car", scheduled=0):
-    return demand.Mission(item, "LOW", demand.ENTRY_GATES[0], demand.EXIT_GATES[0],
-                          "straight", ("start", "end"), "end", scheduled)
+ROUTES = {"entry__a": ["start", "a"], "entry__b": ["start", "b"]}
+WEIGHTS = {"entry": {"a": 1, "b": 3}}
+RATES = {"entry": 360}
 
 
-class Connection:
-    """Double limité aux lectures nécessaires, sans commande de déplacement."""
-
-    def __init__(self, frames):
-        self.frames = iter(frames)
-        self.frame = {}
-        self.time_s = 0
-        self.closed = False
-        self.simulation = SimpleNamespace(
-            getTime=lambda: self.time_s,
-            getDepartedIDList=lambda: self.frame.get("departed", []),
-            getArrivedIDList=lambda: self.frame.get("arrived", []),
-            getStartingTeleportIDList=lambda: self.frame.get("teleport_starts", []),
-            getEndingTeleportIDList=lambda: self.frame.get("teleport_ends", []),
-            getCollidingVehiclesIDList=lambda: self.frame.get("collisions", []),
-            getDeltaT=lambda: 0.5,
-        )
-        self.vehicle = SimpleNamespace(
-            getIDList=lambda: list(self.frame.get("active", {})),
-            getDeparture=lambda item: self.frame["active"][item].get("departure", 0),
-            getRoute=lambda item: self.frame["active"][item].get("route", ("start", "end")),
-            getRoadID=lambda item: self.frame["active"][item].get("road", "start"),
-            getRouteIndex=lambda item: self.frame["active"][item].get("index", 0),
-            getPosition=lambda item: self.frame["active"][item].get("position", (0, 0)),
-            getShapeClass=lambda item: "passenger/sedan",
-        )
-        self.route = SimpleNamespace(getEdges=lambda item: ("start", "end"))
-        logic = SimpleNamespace(programID="0", type=0,
-                                phases=[SimpleNamespace(duration=d, state=s) for d, s in network.CENTER_PHASES])
-        self.trafficlight = SimpleNamespace(getAllProgramLogics=lambda item: [logic],
-                                           getProgram=lambda item: "0",
-                                           getRedYellowGreenState=lambda item: "GGrrr")
-
-    def simulationStep(self):
-        self.time_s += 0.5
-        self.frame = next(self.frames)
-
-    def getVersion(self):
-        return (22, "SUMO 1.27.1")
-
-    def close(self, wait):
-        self.closed = True
+def test_poisson_seed_and_order_are_reproducible():
+    first = poisson_missions(ROUTES, WEIGHTS, RATES, 100, 1, "LOW")
+    random.seed(345)
+    assert first == poisson_missions(dict(reversed(list(ROUTES.items()))),
+                                    {"entry": {"b": 3, "a": 1}}, RATES, 100, 1, "LOW")
+    assert first != poisson_missions(ROUTES, WEIGHTS, RATES, 100, 2, "LOW")
+    expected = random.Random(1).expovariate(0.1)
+    assert first[0].sampled_s == expected
+    assert first[0].scheduled_s == math.ceil(expected * 1000) / 1000
+    assert all(0 <= m.scheduled_s - m.sampled_s < 0.001 for m in first)
+    assert len({m.vehicle_id for m in first}) == len(first)
+    assert all(0 <= m.scheduled_s < 100 and m.destination == m.route[-1] for m in first)
+    assert any(m.scheduled_s % 0.5 for m in first)
+    assert first == sorted(first, key=lambda m: (m.scheduled_s, m.vehicle_id))
 
 
-def normal_frames():
-    return [{"departed": ["car"], "active": {"car": {}}},
-            {"active": {"car": {"road": "end", "index": 1}}},
-            {"arrived": ["car"]}]
+def test_poisson_rate_and_weights_over_large_sample():
+    missions = poisson_missions(ROUTES, WEIGHTS, RATES, 36000, 2, "LOW")
+    # Tolérances statistiques sur un tirage fixe, pas des effectifs imposés.
+    assert abs(len(missions) - 3600) < 4 * math.sqrt(3600)
+    counts = Counter(m.exit_gate for m in missions)
+    assert abs(counts["b"] / len(missions) - 0.75) < 0.03
 
 
-def observe(ledger, connection):
-    connection.simulationStep()
-    return ledger.observe(connection)
-
-
-@pytest.mark.parametrize("name,total", [("LOW", 5), ("MID", 7), ("HIGH", 8)])
-def test_plans_conserve_entries_and_movements(contract, name, total):
-    plan = demand.demand_plans(contract)[name]
-    assert sum(plan["entries"].values()) == total
-    assert sum(sum(counts.values()) for counts in plan["allocation"].values()) == total
-    for gate in demand.ENTRY_GATES:
-        assert sum(plan["allocation"][gate].values()) == plan["entries"][gate]
-    assert plan["censored_exit"] == (2 if name == "HIGH" else 0)
-
-
-def test_high_allocation_preserves_observed_distribution():
-    observed = {"east": 131, "west": 8}
-    assert demand.allocate_counts(141, observed) == {"east": 133, "west": 8}
-    assert observed == {"east": 131, "west": 8}
-
-
-@pytest.mark.parametrize("total,counts", [(1, {"a": 0}), (-1, {"a": 1}), (2, {"a": -1}), (2.0, {"a": 1})])
-def test_invalid_allocation(total, counts):
-    with pytest.raises(demand.TrafficInputError):
-        demand.allocate_counts(total, counts)
-
-
-def test_remainder_tie_and_zero():
-    assert demand.allocate_counts(3, {"b": 1, "a": 1}) == {"a": 2, "b": 1}
-    assert demand.allocate_counts(0, {"b": 0, "a": 0}) == {"a": 0, "b": 0}
-
-
-def test_departure_grid_regular_distinct_and_half_open():
-    times = demand.departure_times(7, 10)
-    assert times == [0, 1, 2.5, 4, 5.5, 7, 8.5]
-    assert len(set(times)) == 7
-    assert all(t % 0.5 == 0 and 0 <= t < 10 for t in times)
-    assert demand.departure_times(0, 10) == []
-
-
-@pytest.mark.parametrize("count,duration", [(21, 10), (2, 0), (2, 1.2), (-1, 10), (2, float("nan")), (1.5, 2)])
-def test_invalid_departure_grid(count, duration):
-    with pytest.raises(demand.TrafficInputError):
-        demand.departure_times(count, duration)
-
-
-def test_interleaving_is_deterministic_and_not_destination_blocks():
-    assert demand.interleave_movements({"a": 2, "b": 4}) == ["b", "a", "b", "b", "a", "b"]
-    assert demand.interleave_movements({"b": 4, "a": 2}) == demand.interleave_movements({"a": 2, "b": 4})
-
-
-def test_missions_deterministic_assign_routes_and_destination(contract):
-    plan = demand.demand_plans(contract)["HIGH"]
-    first = demand.build_missions("HIGH", plan, network.ROUTES)
-    assert first == demand.build_missions("HIGH", deepcopy(plan), network.ROUTES)
-    assert len({m.vehicle_id for m in first}) == 8
-    assert all(m.destination == m.route[-1] and m.route == tuple(network.ROUTES[m.route_id]) for m in first)
-    for gate in demand.ENTRY_GATES:
-        selected = [m for m in first if m.entry_gate == gate]
-        assert len({m.scheduled_s for m in selected}) == len(selected)
-        assert dict(Counter(m.exit_gate for m in selected)) == plan["allocation"][gate]
-
-
-@pytest.mark.parametrize("change", ["denominator", "censoring", "duplicate", "exit"])
-def test_inconsistent_profiles_refused(contract, change):
-    row = contract["passenger_cav_contract"]["regimes"][0]
-    if change == "denominator":
-        row["passenger_movement_denominators"][demand.ENTRY_GATES[0]] += 1
-    elif change == "censoring":
-        row["censored_exit"] = 1
-    elif change == "duplicate":
-        contract["passenger_cav_contract"]["regimes"].append(deepcopy(row))
-    else:
-        row["passenger_movement_counts"][demand.ENTRY_GATES[0]].pop(demand.EXIT_GATES[0])
-    with pytest.raises(demand.TrafficInputError):
-        demand.demand_plans(contract)
-
-
-def test_input_hash_and_missing_file(tmp_path):
-    path = tmp_path / "input.json"
-    with pytest.raises(demand.TrafficInputError, match="absent"):
-        demand.verify_identity(path, (3, "bad"))
-    path.write_bytes(b"abc")
-    identity = (3, demand.file_hash(path))
-    assert demand.verify_identity(path, identity)["sha256"] == identity[1]
-    path.write_bytes(b"abd")
-    with pytest.raises(demand.TrafficInputError, match="SHA"):
-        demand.verify_identity(path, identity)
-
-
-def test_canonical_contract_cannot_be_replaced_by_synthetic_fixture():
-    with pytest.raises(demand.TrafficInputError, match="SHA"):
-        demand.read_contract(FIXTURE)
-
-
-def test_vehicle_and_gui_settings_do_not_change_dynamics(tmp_path, contract):
-    plan = demand.demand_plans(contract)["LOW"]
-    missions = demand.build_missions("LOW", plan, network.ROUTES)
-    scenario.write_traffic_files(tmp_path, missions, network.ROUTES, False)
-    scenario.write_view(tmp_path / "view.xml", {"x": "0", "y": "0"})
-    root = ET.parse(tmp_path / "traffic.rou.xml").getroot()
-    assert root.find("vType").attrib == scenario.VEHICLE_TYPE
-    assert root.find("vType").get("guiShape") == "passenger/sedan"
-    config = ET.parse(tmp_path / "simulation.sumocfg").getroot()
-    assert config.find("time/step-length").get("value") == "0.5"
-    assert config.find("processing/time-to-teleport").get("value") == "-1"
-    assert config.find("processing/max-depart-delay").get("value") == "-1"
-    assert ET.parse(tmp_path / "view.xml").find("scheme/vehicles").get("vehicleQuality") == "2"
-    assert len(root.findall("vehicle")) == 5
-
-
-def test_normal_arrival_and_conservation():
-    ledger = run.TrafficLedger([mission()])
-    connection = Connection(normal_frames())
-    for _ in range(3):
-        counts = observe(ledger, connection)
-        assert ledger.observed_active == ledger.validated_active
-        assert counts["active"] == counts["observed_active"] == counts["validated_active"]
-        assert counts["missing_without_arrival"] == counts["active_unvalidated"] == 0
-        assert ledger.failure_observation is None
-        assert counts["scheduled"] == counts["pending"] + counts["active"] + counts["arrived"]
-        assert counts["departed"] == counts["active"] + counts["arrived"]
-    assert counts["arrived"] == 1 and counts["pending"] == counts["active"] == 0
-
-
-def test_future_and_delayed_insertion_are_distinct():
-    ledger = run.TrafficLedger([mission(), mission("later", 2)])
-    connection = Connection([{}, {"departed": ["car"], "active": {"car": {"departure": 0.5}}}])
-    counts = observe(ledger, connection)
-    assert counts["future"] == counts["delayed_not_inserted"] == 1
-    counts = observe(ledger, connection)
-    assert counts["departed"] == 1 and counts["future"] == 1 and counts["delayed_not_inserted"] == 0
-    assert counts["max_insertion_delay_s"] == 0.5
-
-
-@pytest.mark.parametrize("bad_frame,message", [
-    ({"teleport_starts": ["car"]}, "Téléportation"),
-    ({"teleport_ends": ["car"]}, "Téléportation"),
-    ({"collisions": ["car"]}, "Collision"),
-    ({"active": {"unknown": {}}}, "inconnu"),
-    ({"departed": ["car"], "active": {"car": {}}}, "répété"),
-    ({"active": {"car": {"route": ("start", "wrong")}}}, "Route"),
-    ({"active": {"car": {"position": (float("nan"), 0)}}}, "Position"),
-    ({"arrived": ["car"]}, "destination"),
-    ({}, "Disparition"),
+@pytest.mark.parametrize("rate,duration,seed", [
+    (-1, 100, 1), (float("nan"), 100, 1), (360, 0, 1), (360, 100, -1),
 ])
-def test_abnormal_events_never_validate_arrival(bad_frame, message):
-    ledger = run.TrafficLedger([mission()])
-    connection = Connection([normal_frames()[0], bad_frame])
-    observe(ledger, connection)
-    with pytest.raises(RuntimeError, match=message):
-        observe(ledger, connection)
-    assert not ledger.arrivals
+def test_bad_poisson_parameters_rejected(rate, duration, seed):
+    with pytest.raises(ValueError):
+        poisson_missions(ROUTES, WEIGHTS, {"entry": rate}, duration, seed, "LOW")
 
 
-def write_trip(path, **attributes):
-    root = ET.Element("tripinfos")
-    ET.SubElement(root, "tripinfo", {"id": "car", "depart": "0", "arrival": "1", "arrivalLane": "end_0", **attributes})
-    network.write_xml(path, root)
+def test_missing_route_not_silently_replaced():
+    with pytest.raises(ValueError, match="route"):
+        poisson_missions({}, WEIGHTS, RATES, 100, 1, "LOW")
 
 
-@pytest.mark.parametrize("attributes", [{}, {"arrivalLane": "wrong_0"}, {"vaporized": "true"}, {"arrival": "nan"}])
-def test_tripinfo_corroborates_destination(tmp_path, attributes):
-    ledger = run.TrafficLedger([mission()])
-    connection = Connection(normal_frames())
-    for _ in range(3):
-        observe(ledger, connection)
-    path = tmp_path / "tripinfo.xml"
-    write_trip(path, **attributes)
-    if attributes:
-        with pytest.raises(RuntimeError):
-            run.verify_trips(path, ledger)
-    else:
-        assert run.verify_trips(path, ledger)["car"]["arrival_s"] == 1
+def test_source_identity_and_synthetic_adaptations(tmp_path):
+    data = gzip.decompress((network.SCENARIO_DIR / "roads.osm.gz").read_bytes())
+    config = network.read_config()
+    assert hashlib.sha256(data).hexdigest() == config["source"]["roads_sha256_uncompressed"]
+    target = tmp_path / "adapted.osm"
+    network.adapt_roads(config, target)
+    original = ET.fromstring(data)
+    adapted = ET.parse(target).getroot()
+    assert [n.attrib for n in original.findall("node")] == [n.attrib for n in adapted.findall("node")]
+    before = {w.get("id"): w for w in original.findall("way")}
+    for way in adapted.findall("way"):
+        old = before[way.get("id")]
+        assert [n.attrib for n in old.findall("nd")] == [n.attrib for n in way.findall("nd")]
+        tags = {t.get("k"): t.get("v") for t in way.findall("tag")}
+        old_tags = {t.get("k"): t.get("v") for t in old.findall("tag")}
+        assert tags.get("oneway") == old_tags.get("oneway")
+        if tags["highway"] == "primary":
+            assert tags["lanes"] == ("4" if tags.get("oneway") == "yes" else "8")
+
+
+@pytest.fixture(scope="module")
+def actual_network(tmp_path_factory):
+    if not shutil.which("netconvert"):
+        pytest.skip("netconvert indisponible ; intégration non validée.")
+    directory = tmp_path_factory.mktemp("kintambo")
+    config = network.read_config()
+    inspection, routes = network.build_network(config, directory)
+    return directory, config, inspection, routes
+
+
+def test_real_network_and_routes(actual_network):
+    import sumolib
+    directory, config, inspection, routes = actual_network
+    net = sumolib.net.readNet(str(directory / "network.net.xml"), withPrograms=True)
+    assert inspection["branching_junctions"] > 4
+    assert len(routes) == sum(len(destinations) for destinations in config["demand"]["destination_weights"].values())
+    for route_id, ids in routes.items():
+        origin, destination = route_id.split("__")
+        assert ids[0] == config["demand"]["entries"][origin]["edge"]
+        assert ids[-1] == config["demand"]["entries"][destination]["exit"]
+        assert len(ids) == len(set(ids))
+        for first, second in zip(ids, ids[1:]):
+            connections = net.getEdge(first).getOutgoing().get(net.getEdge(second), [])
+            assert any(c.getFromLane().allows("passenger") and c.getToLane().allows("passenger")
+                       and c.getDirection() != "t" for c in connections)
+    root = ET.parse(directory / "network.net.xml").getroot()
+    assert len(root.findall("tlLogic")) > 1
+    for tls in root.findall("tlLogic"):
+        assert tls.get("type") == "static"
+        phases = tls.findall("phase")
+        assert sum(float(p.get("duration")) for p in phases) == 90
+        assert any(p.get("state").count("G") > 1 for p in phases)
+    assert all(c.get("keepClear", "1") not in ("0", "false") for c in root.findall("connection"))
+
+
+def test_preparation_xml_and_deterministic_missions(actual_network, monkeypatch, tmp_path):
+    _, config, inspection, routes = actual_network
+    monkeypatch.setattr(run, "build_network", lambda *args, **kwargs: (inspection, routes))
+    prepared, first = run.prepare_traffic(config, tmp_path, "LOW", 1, 60, None)
+    _, second = run.prepare_traffic(config, tmp_path, "LOW", 1, 60, None)
+    assert first == second
+    root = ET.parse(tmp_path / "traffic.rou.xml").getroot()
+    assert root.find("vType").get("guiShape") == "passenger/sedan"
+    assert [v.get("id") for v in root.findall("vehicle")] == [m.vehicle_id for m in first]
+    config_xml = ET.parse(tmp_path / "simulation.sumocfg").getroot()
+    assert config_xml.find("processing/time-to-teleport").get("value") == "-1"
+    assert config_xml.find("processing/collision.check-junctions").get("value") == "true"
+    street_view = ET.parse(tmp_path / "view.xml").find("scheme/edges")
+    assert street_view.get("streetName_show") == "false"
+    assert street_view.get("streetName_constantSize") == "true"
+    assert street_view.get("streetName_onlySelected") == "false"
+    assert ET.parse(tmp_path / "view.xml").find("scheme").get("name") == "kintambo"
+    assert ET.parse(tmp_path / "view.xml").find("scheme/vehicles").get("vehicleQuality") == "2"
+    assert prepared["seed"] == 1
+
+
+def test_nonempty_results_preserved(tmp_path):
+    path = tmp_path / "keep.txt"
+    path.write_text("important")
+    with pytest.raises(ValueError, match="absent ou vide"):
+        run.run_traffic(tmp_path)
+    assert path.read_text() == "important"
+
+
+@pytest.mark.parametrize("name,included", [
+    ("road_network.py", True), ("traffic_demand.py", True), ("traffic_run.py", True),
+    ("sumo_process.py", True), ("vehicle_tracking.py", True), ("sumo_smoke.py", False),
+])
+def test_code_digest_covers_actual_execution(monkeypatch, name, included):
+    original = Path.read_bytes
+    before = run.code_provenance()["sha256"]
+    monkeypatch.setattr(Path, "read_bytes",
+                        lambda path: original(path) + (b"\n" if path.name == name else b""))
+    assert (before != run.code_provenance()["sha256"]) is included
+
+
+@pytest.mark.parametrize("status,code", [("completed", 0), ("horizon_reached", 3), ("failed", 1)])
+def test_cli_reports_result(monkeypatch, tmp_path, status, code):
+    spec = importlib.util.spec_from_file_location("cli", Path(__file__).parents[1] / "scripts/run_traffic.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    invoke = Mock(return_value={"status": status, "counts": {}})
+    monkeypatch.setattr(cli, "run_traffic", invoke)
+    monkeypatch.setattr(sys, "argv", ["demo", "--demand", "HIGH", "--seed", "2", "--gui",
+                                     "--output-dir", str(tmp_path / "result")])
+    assert cli.main() == code
+    assert invoke.call_args.kwargs["gui"] is True
+    assert invoke.call_args.kwargs["seed"] == 2
+
+
+def test_cli_street_names_are_opt_in(monkeypatch, tmp_path):
+    spec = importlib.util.spec_from_file_location("cli", Path(__file__).parents[1] / "scripts/run_traffic.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    invoke = Mock(return_value={"status": "completed", "counts": {}})
+    monkeypatch.setattr(cli, "run_traffic", invoke)
+    for flag, expected in (([], False), (["--street-names"], True)):
+        monkeypatch.setattr(sys, "argv", ["traffic", "--gui", "--output-dir", str(tmp_path)] + flag)
+        assert cli.main() == 0
+        assert invoke.call_args.kwargs["street_names"] is expected
+
+
+def test_street_names_only_change_view(actual_network, monkeypatch, tmp_path):
+    _, config, inspection, routes = actual_network
+    monkeypatch.setattr(run, "build_network", lambda *args, **kwargs: (inspection, routes))
+    first, missions = run.prepare_traffic(config, tmp_path, "LOW", 1, 60, None)
+    scientific_files = {name: (tmp_path / name).read_bytes() for name in ("traffic.rou.xml", "simulation.sumocfg")}
+    second, labeled = run.prepare_traffic(config, tmp_path, "LOW", 1, 60, None, street_names=True)
+    assert ET.parse(tmp_path / "view.xml").find("scheme/edges").get("streetName_show") == "true"
+    assert missions == labeled and first["routes"] == second["routes"]
+    assert all((tmp_path / name).read_bytes() == data for name, data in scientific_files.items())
+
+
+def test_focus_keeps_local_links_ports_and_rejects_unknown_junctions(actual_network):
+    import sumolib
+    directory, config, inspection, routes = actual_network
+    net = sumolib.net.readNet(str(directory / "network.net.xml"))
+    selected = {node for nodes in config["network"]["active_junctions"].values() for node in nodes}
+    assert {node.getID() for node in net.getNodes()} == selected
+    assert set(inspection["active_edges"]) == {edge.getID() for edge in net.getEdges()}
+    assert {edge.getName() for edge in net.getEdges()} >= {
+        "Avenue Colonel Mondjiba", "Avenue Nguma", "Avenue Kasa-Vubu",
+        "Avenue de l’OUA", "Avenue des Ecuries", "Avenue Transversale", "Avenue Yoseki", "Avenue du Parc"}
+    for loop in (["956500885#0", "363410577", "-23386395#0", "680630199#6", "1053620734"],
+                 ["427630648#1", "427630648#2", "-57358917#1", "4642209#0", "4642209#1"]):
+        edges = [net.getEdge(item) for item in loop]
+        assert all(any(c.getDirection() != "t" and c.getFromLane().allows("passenger")
+                       and c.getToLane().allows("passenger") for c in first.getOutgoing().get(second, []))
+                   for first, second in zip(edges, edges[1:] + edges[:1]))
+    for entry, port in config["demand"]["entries"].items():
+        assert net.getEdge(port["edge"]).getLength() >= 15
+        assert net.getEdge(port["exit"]).getLength() >= 15
+        assert len([key for key in routes if key.startswith(entry + "__")]) >= 2
+    with pytest.raises(ValueError, match="absentes"):
+        network.select_active_edges(net, {"absent": ["unknown"]})
+    with pytest.raises(ValueError, match="aucune route"):
+        network.select_active_edges(net, {})
+
+
+def test_real_light_traffic_drains(tmp_path):
+    if not shutil.which("sumo") or not shutil.which("netconvert"):
+        pytest.skip("SUMO indisponible ; intégration non validée.")
+    result = run.run_traffic(tmp_path / "light", duration_s=60, seed=1)
+    assert result["status"] == "completed", result["reason"]
+    counts = result["counts"]
+    assert counts["scheduled"] == counts["departed"] == counts["arrived"] > 0
+    assert counts["active"] == counts["pending"] == counts["teleport_starts"] == counts["teleport_ends"] == 0
+    assert result["collision_ids"] == []
+    assert result["connection_closed"] and result["process_stopped"]
+    assert result["process_returncode"] == 0 and not result["forced_process_stop"]
 
 
 def fake_run(monkeypatch, tmp_path, frames, gui=False, cleanup_error=False):
     connection = Connection(frames)
-    monkeypatch.setattr(run, "read_scenario", lambda path: {"regimes": {"LOW": {
-        "missions": demand.mission_records([mission()]), "plan": {"injection_s": 0.5}}}})
-    monkeypatch.setattr(run, "check_environment", lambda *args: {"binary": args[0]})
-    monkeypatch.setattr(run, "file_hash", lambda path: "synthetic")
+    connection.lane = SimpleNamespace(getIDList=lambda: [])
+    connection.gui = SimpleNamespace(setBoundary=Mock(), setSchema=Mock())
+    config = network.read_config()
+    prepared = {"duration_s": 0.5, "rates_veh_per_hour_per_entry": {"entry": 90},
+                "routes": {"straight": ["start", "end"]}, "network": {"view_boundary_m": [-1, -1, 1, 1]}}
+    def prepare(config, directory, *args, **kwargs):
+        for name in ("scenario.json", "network.net.xml"):
+            (directory / name).write_text("synthetic")
+        return prepared, [mission()]
+    monkeypatch.setattr(run, "prepare_traffic", prepare)
+    monkeypatch.setattr(run, "require_binary", lambda name: name)
     monkeypatch.setattr(run, "code_provenance", lambda: {"sha256": "synthetic"})
-    monkeypatch.setattr(run.shutil, "which", lambda name: name)
+    monkeypatch.setattr(run, "subscribed_readings", lambda connection: None)
+    monkeypatch.setattr(run, "verify_trips", lambda path, ledger: {i: {"arrival_s": 1} for i in ledger.arrivals})
     process = Mock()
     process.poll.return_value = 0
-    process.wait.side_effect = [OSError("attente") , None] if cleanup_error else None
+    process.wait.side_effect = [OSError("attente"), None] if cleanup_error else None
     launch = Mock(return_value=process)
     monkeypatch.setattr(run.subprocess, "Popen", launch)
-    monkeypatch.setattr(run.importlib, "import_module", lambda name: SimpleNamespace(connect=lambda **kwargs: connection))
-    monkeypatch.setattr(run, "verify_trips", lambda path, ledger: {i: {"arrival_s": 1} for i in ledger.arrivals})
-    result = run.run_traffic(tmp_path, "LOW", tmp_path / "result", gui=gui, gui_delay_ms=7, drain_horizon_s=1)
+    monkeypatch.setattr(sys.modules["traci"], "connect", lambda **kwargs: connection)
+    result = run.run_traffic(tmp_path / "result", gui=gui, gui_delay_ms=7, drain_horizon_s=1)
     return result, connection, process, launch.call_args.args[0]
 
 
-def test_runner_normal_success_and_files(monkeypatch, tmp_path):
-    close = Mock(wraps=close_sumo)
-    monkeypatch.setattr(run, "close_sumo", close)
-    result, connection, process, command = fake_run(monkeypatch, tmp_path, normal_frames())
-    close.assert_called_once_with(connection, process, result)
-    assert result["status"] == "passed"
-    assert result["counts"]["scheduled"] == result["counts"]["arrived"] == 1
-    assert connection.closed and result["process_stopped"] and result["connection_closed"]
-    assert process.wait.called and command[0] == "sumo"
-    assert {"vehicles.csv", "timeline.csv", "summary.json", "sumo.log"}.issubset(p.name for p in (tmp_path / "result").iterdir())
-
-
-@pytest.mark.parametrize("filename,included", [("sumo_process.py", True), ("sumo_smoke.py", False)])
-def test_code_digest_tracks_shared_cleanup_not_smoke(monkeypatch, filename, included):
-    original = Path.read_bytes
-    before = run.code_provenance()["sha256"]
-
-    def read_bytes(path):
-        contents = original(path)
-        return contents + b"\n" if path.name == filename else contents
-
-    monkeypatch.setattr(Path, "read_bytes", read_bytes)
-    assert (run.code_provenance()["sha256"] != before) is included
-
-
-def test_failure_summary_missing_without_arrival(monkeypatch, tmp_path):
-    result, connection, _, _ = fake_run(monkeypatch, tmp_path, [normal_frames()[0], {}])
-    assert result["status"] == "failed" and "Disparition" in result["reason"]
-    counts = result["counts"]
-    assert counts["departed"] == 1 and counts["arrived"] == 0
-    assert counts["active"] == counts["pending"] == counts["delayed_not_inserted"] == 0
-    assert counts["observed_active"] == 0 and counts["validated_active"] == 1
-    assert counts["missing_without_arrival"] == 1
-    row = result["vehicles"][0]
-    assert row["status"] == "missing_without_arrival" and row["actual_departure_s"] == 0
-    assert not row["observed_active"] and row["validated_active"]
-    assert result["failure_observation"]["active_ids"] == []
-    assert result["failure_observation"]["time_s"] == 1
-    assert result["last_validated_state"]["active_ids"] == ["car"]
-    assert result["last_validated_state"]["time_s"] == 0.5
+@pytest.mark.parametrize("frames,message", [
+    ([normal_frames()[0], {}], "Disparition"),
+    ([{"departed": ["car"], "active": {"car": {"route": ("start", "wrong")}}}], "Route"),
+    ([{"teleport_starts": ["car"]}], "Téléportation"),
+    ([{"collisions": ["car"]}], "Collision"),
+])
+def test_runner_integrity_failure_keeps_diagnostics_and_closes(monkeypatch, tmp_path, frames, message):
+    import traci
+    result, connection, process, _ = fake_run(monkeypatch, tmp_path, frames)
+    assert result["status"] == "failed" and message in result["reason"]
+    assert result["failure_observation"] is not None
     assert connection.closed and result["process_stopped"]
-    for group in ("by_entry", "by_movement"):
-        assert result[group][0]["departed"] == result[group][0]["missing_without_arrival"] == 1
-        assert result[group][0]["active"] == result[group][0]["delayed_not_inserted"] == 0
-    saved = json.loads((tmp_path / "result/summary.json").read_text(encoding="utf-8"))
-    assert saved["failure_observation"] == result["failure_observation"]
-    assert saved["vehicles"][0]["status"] == "missing_without_arrival"
+    assert process.wait.called
+    saved = json.loads((tmp_path / "result/summary.json").read_text())
+    assert saved["counts"] == result["counts"]
 
 
-def test_failure_summary_invalid_route_at_departure(monkeypatch, tmp_path):
-    frame = {"departed": ["car"], "active": {"car": {"route": ("start", "wrong")}}}
-    result, connection, _, _ = fake_run(monkeypatch, tmp_path, [frame])
-    assert result["status"] == "failed" and "Route" in result["reason"]
-    counts = result["counts"]
-    assert counts["departed"] == 1 and counts["arrived"] == counts["pending"] == 0
-    row = result["vehicles"][0]
-    assert row["status"] != "delayed_not_inserted"
-    assert row["status"] == "active_unvalidated" and row["actual_departure_s"] == 0
-    assert row["observed_active"] and not row["validated_active"]
-    assert counts["active"] == counts["observed_active"] == 1 and counts["validated_active"] == 0
-    assert counts["delayed_not_inserted"] == counts["missing_without_arrival"] == 0
-    observation = result["failure_observation"]
-    assert observation["active_ids"] == observation["departed_ids"] == ["car"]
-    assert observation["vehicles"]["car"]["route"] == ["start", "wrong"]
-    assert result["last_validated_state"]["active_ids"] == []
-    assert result["last_validated_state"]["time_s"] == 0
-    assert connection.closed and result["process_stopped"]
-    for group in ("by_entry", "by_movement"):
-        assert result[group][0]["active"] == result[group][0]["active_unvalidated"] == 1
-        assert result[group][0]["delayed_not_inserted"] == 0
-    saved = json.loads((tmp_path / "result/summary.json").read_text(encoding="utf-8"))
-    assert saved["vehicles"][0]["status"] == "active_unvalidated"
-    assert saved["failure_observation"] == observation
-
-
-def test_runner_horizon_preserves_remaining_and_closes(monkeypatch, tmp_path):
+def test_runner_horizon_not_reported_as_gridlock(monkeypatch, tmp_path):
+    import traci
     result, connection, _, _ = fake_run(monkeypatch, tmp_path, [{}, {}, {}])
-    assert result["status"] == "failed" and "Horizon" in result["reason"]
-    assert result["remaining_ids"] == ["car"] and result["counts"]["delayed_not_inserted"] == 1
-    assert connection.closed
+    assert result["status"] == "horizon_reached"
+    assert result["gridlock"] == "not_evaluated"
+    assert result["counts"]["delayed_not_inserted"] == 1
+    assert result["remaining_ids"] == ["car"] and connection.closed
 
 
-def test_runner_closes_after_error(monkeypatch, tmp_path):
-    result, connection, _, _ = fake_run(monkeypatch, tmp_path, [{"teleport_starts": ["car"]}])
-    assert result["status"] == "failed" and connection.closed
-    assert result["counts"]["teleport_starts"] == 1 and result["counts"]["arrived"] == 0
-
-
-def test_cleanup_fallback_stays_failure(monkeypatch, tmp_path):
+def test_runner_cleanup_errors_are_failures(monkeypatch, tmp_path):
+    import traci
     result, connection, process, _ = fake_run(monkeypatch, tmp_path, normal_frames(), cleanup_error=True)
-    assert result["status"] == "failed" and result["cleanup_errors"]
+    assert result["status"] == "failed"
+    assert result["cleanup_errors"] and result["forced_process_stop"]
     assert process.terminate.called and connection.closed
 
 
-def test_gui_changes_only_display_command(monkeypatch, tmp_path):
-    result, _, _, command = fake_run(monkeypatch, tmp_path, normal_frames(), gui=True)
+def test_gui_only_changes_display(monkeypatch, tmp_path):
+    import traci
+    closer = Mock(wraps=close_sumo)
+    monkeypatch.setattr(run, "close_sumo", closer)
+    result, connection, process, command = fake_run(monkeypatch, tmp_path, normal_frames(), gui=True)
+    closer.assert_called_once_with(connection, process, result)
+    assert result["status"] == "completed"
     assert command[0] == "sumo-gui"
     assert command[command.index("--delay") + 1] == "7"
     assert command[command.index("--start") + 1] == "true"
-    assert result["step_s"] == 0.5 and result["seed"] == 0 and result["status"] == "passed"
+    assert result["step_s"] == 0.5 and result["seed"] == 1
+    connection.gui.setSchema.assert_called_once_with("View #0", "kintambo")
+    connection.gui.setBoundary.assert_called_once_with("View #0", -1, -1, 1, 1)
 
 
-@pytest.mark.parametrize("change", ["step", "route", "phases"])
-def test_loaded_scenario_mismatch_refused(change):
-    connection = Connection([])
-    if change == "step":
-        connection.simulation.getDeltaT = lambda: 1
-    elif change == "route":
-        connection.route.getEdges = lambda item: ("start", "other")
-    else:
-        connection.trafficlight.getProgram = lambda item: "changed"
-    with pytest.raises(RuntimeError):
-        run.verify_loaded_scenario(connection, [mission()])
-
-
-def test_prepare_failure_is_not_partially_published(monkeypatch, tmp_path, contract):
-    monkeypatch.setattr(scenario, "read_contract", lambda path: contract)
-    monkeypatch.setattr(scenario, "check_environment", lambda *args: {})
-    monkeypatch.setattr(scenario, "convert_network", Mock(side_effect=RuntimeError("conversion")))
-    output = tmp_path / "scenario"
+def test_preparation_failure_retains_diagnostic(monkeypatch, tmp_path):
+    monkeypatch.setattr(run, "prepare_traffic", Mock(side_effect=RuntimeError("conversion")))
     with pytest.raises(RuntimeError, match="conversion"):
-        scenario.prepare_traffic("unused", "unused", output)
-    assert not output.exists()
-    assert not list(tmp_path.glob(".traffic-*"))
+        run.run_traffic(tmp_path / "failure")
+    saved = json.loads((tmp_path / "failure/preparation_error.json").read_text())
+    assert saved == {"status": "failed", "reason": "conversion"}
 
 
-def test_output_refuses_nonempty_directory(tmp_path):
-    (tmp_path / "keep.txt").write_text("à conserver", encoding="utf-8")
-    with pytest.raises(demand.TrafficInputError):
-        scenario.new_output_directory(tmp_path)
-    assert (tmp_path / "keep.txt").read_text(encoding="utf-8") == "à conserver"
+def test_physical_samples_keep_units_and_do_not_diagnose_gridlock():
+    connection = SimpleNamespace(
+        vehicle=SimpleNamespace(getLeader=lambda item: None,
+                                getNextTLS=lambda item: [("light", 0, 2, "r")]),
+        lane=SimpleNamespace(getLastStepOccupancy=lambda lane: 0.65))
+    ledger = SimpleNamespace(time_s=5, observed_active={"first", "second"})
+    readings = {item: {"lane": "lane", "road_id": "road", "lane_position": position,
+                       "speed": 0, "distance": position, "route_index": 0}
+                for item, position in (("first", 7), ("second", 20))}
+    previous = {}
+    vehicles, lanes = run.sample_physics(connection, ledger, {"lane": 100}, previous, readings)
+    assert all(v["progress_m"] is None for v in vehicles)
+    assert all(v["leader_id"] is None for v in vehicles)
+    assert lanes[0]["occupancy_ratio"] == 0.65
+    assert lanes[0]["upstream_free_m"] == 2
+    assert lanes[0]["queue_extent_m"] == 98
+    assert lanes[0]["queue_reaches_upstream"] is True
+    assert "gridlock" not in lanes[0]  # Le rouge et une file ne suffisent pas.
+    ledger.time_s = 10
+    vehicles, _ = run.sample_physics(connection, ledger, {"lane": 100}, previous, readings)
+    assert all(v["progress_m"] == 0 for v in vehicles)
 
 
-def test_scenario_hash_rejects_changed_files(tmp_path):
-    manifest = {"schema_version": "traffic-scenario-1", "status": "prepared", "files_sha256": {}}
-    names = ["network.net.xml", "view.xml"] + [f"{r}/{f}" for r in ("LOW", "MID", "HIGH")
-                                               for f in ("traffic.rou.xml", "simulation.sumocfg")]
-    for name in names:
-        path = tmp_path / name
-        path.parent.mkdir(exist_ok=True)
-        path.write_text("synthetic", encoding="utf-8")
-        manifest["files_sha256"][name] = demand.file_hash(path)
-    scenario.write_json(tmp_path / "scenario.json", manifest)
-    (tmp_path / "view.xml").write_text("changed", encoding="utf-8")
-    with pytest.raises(demand.TrafficInputError, match="modifié"):
-        scenario.read_scenario(tmp_path)
+def test_one_halted_vehicle_is_not_an_upstream_queue():
+    connection = SimpleNamespace(vehicle=SimpleNamespace(getLeader=lambda item: None,
+                                getNextTLS=lambda item: []),
+                                 lane=SimpleNamespace(getLastStepOccupancy=lambda lane: 0.05))
+    ledger = SimpleNamespace(time_s=5, observed_active={"car"})
+    readings = {"car": {"lane": "lane", "road_id": "road", "lane_position": 5,
+                        "speed": 0, "distance": 5, "route_index": 0}}
+    _, lanes = run.sample_physics(connection, ledger, {"lane": 100}, {}, readings)
+    assert lanes[0]["halting"] == 1 and lanes[0]["queue_reaches_upstream"] is False
 
 
-def load_cli(name):
-    spec = importlib.util.spec_from_file_location(name, Path(__file__).parents[1] / f"scripts/{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def test_street_name_survives_source_adaptation_and_conversion(actual_network):
+    directory, _, _, _ = actual_network
+    source = ET.fromstring(gzip.decompress((network.SCENARIO_DIR / "roads.osm.gz").read_bytes()))
+    expected = source.find("way[@id='427630648']/tag[@k='name']").get("v")
+    assert expected == "Avenue Colonel Mondjiba"
+    assert ET.parse(directory / "adapted.osm").find("way[@id='427630648']/tag[@k='name']").get("v") == expected
+    edges = [e for e in ET.parse(directory / "network.net.xml").getroot().findall("edge")
+             if e.get("id", "").startswith("427630648")]
+    assert edges and all(e.get("name") == expected for e in edges)
 
 
-@pytest.mark.parametrize("name", ["prepare_traffic", "run_traffic"])
-def test_cli_rejects_absent_input(monkeypatch, tmp_path, name):
-    cli = load_cli(name)
-    args = (["--osm", "absent", "--contract", "absent"] if name == "prepare_traffic"
-            else ["--scenario-dir", "absent", "--regime", "LOW"])
-    monkeypatch.setattr("sys.argv", [name, *args, "--output-dir", str(tmp_path / "result")])
-    assert cli.main() == 2
+@pytest.mark.parametrize("length,short,shared", [(0.2, True, True), (12.81, True, False), (15, False, False)])
+def test_lane_preparation_preserves_movements_and_only_couples_links_without_buffer(length, short, shared):
+    root = ET.fromstring(f"""<net>
+      <edge id="approach" from="before" to="a"><lane index="0" length="100" /></edge>
+      <edge id="connector" from="a" to="b">
+        <lane index="0" length="{length}" /><lane index="1" length="{length}" />
+      </edge>
+      <edge id="exit" from="b" to="after"><lane index="0" length="100" /></edge>
+      <connection from="approach" to="connector" fromLane="0" toLane="0" />
+      <connection from="connector" to="exit" fromLane="0" toLane="0" />
+      <connection from="connector" to="exit" fromLane="1" toLane="0" />
+      <junction id="a" type="traffic_light" /><junction id="b" type="traffic_light" />
+    </net>""")
+    edges, connections, nodes, report = network._connection_patches(root, 7.5, {"a"})
+    assert bool(edges.findall("edge")) is short
+    assert bool(nodes.findall("node")) is shared
+    assert report["added_lane_connections"] == ([('approach', 'connector', 0, 1)] if short else [])
+    movements = {(c.get("from"), c.get("to")) for c in root.findall("connection")}
+    assert all((c.get("from"), c.get("to")) in movements for c in connections)
+    assert all(c.get("contPos") == "0" and c.get("changeLeft") == c.get("changeRight") == "emergency"
+               for c in connections)
+    assert report["shared_controller_junctions"] == ([["a", "b"]] if shared else [])
 
 
-@pytest.mark.parametrize("name", ["prepare_traffic", "run_traffic"])
-def test_cli_technical_error(monkeypatch, tmp_path, name):
-    cli = load_cli(name)
-    args = (["--osm", "synthetic", "--contract", "synthetic"] if name == "prepare_traffic"
-            else ["--scenario-dir", "synthetic", "--regime", "LOW"])
-    monkeypatch.setattr("sys.argv", [name, *args, "--output-dir", str(tmp_path / "result")])
-    monkeypatch.setattr(cli, name, Mock(side_effect=OSError("écriture")))
-    assert cli.main() == 1
+def test_short_connectors_and_intersections_forbid_passenger_lane_changes(actual_network):
+    directory, _, inspection, _ = actual_network
+    root = ET.parse(directory / "network.net.xml").getroot()
+    short = set(inspection["connection_rules"]["short_connectors"])
+    assert "-957109397" in short
+    for edge in root.findall("edge"):
+        if edge.get("id") in short or edge.get("function") == "internal":
+            lanes = edge.findall("lane")
+            for index, lane in enumerate(lanes):
+                # Une frontière de chaussée n'a pas de voie voisine à interdire.
+                if index + 1 < len(lanes):
+                    if lane.get("changeLeft") != "emergency":
+                        # netconvert conserve une issue aux voies sans raccord aval.
+                        assert not root.findall(
+                            f"connection[@from='{edge.get('id')}'][@fromLane='{index}']")
+                        assert "Ignoring changeLeft prohibition" in (
+                            directory / "continuity.log").read_text()
+                if index > 0:
+                    assert lane.get("changeRight") == "emergency"
+    pairs = {tuple(row[:2]) for row in inspection["connection_rules"]["added_lane_connections"]}
+    original = ET.parse(directory / "unsignalized.net.xml").getroot()
+    movements = {(c.get("from"), c.get("to")) for c in original.findall("connection")}
+    assert pairs.issubset(movements)
 
 
-def synthetic_network(path):
-    """Décrit un carrefour fictif avec les noms utilisés par le mapping."""
-    root = ET.Element("net")
-    ET.SubElement(root, "location", netOffset="0,0", projParameter="!", convBoundary="0,0,100,100")
-    ET.SubElement(root, "junction", id=network.CENTER_NODE, type="traffic_light", x="50", y="50")
-    tls = ET.SubElement(root, "tlLogic", id=network.CENTER_NODE, type="static", programID="0", offset="0")
-    for duration, state in network.CENTER_PHASES:
-        ET.SubElement(tls, "phase", duration=str(duration), state=state)
-    endpoints = {
-        "23183369#1": ("a", "2725672310"), "23183369#2": ("2725672310", "b"),
-        "23183369#3": ("b", network.CENTER_NODE), "23183369#4": (network.CENTER_NODE, "c"),
-        "23183369#5": ("c", "d"), "284241336#1": ("e", "f"),
-        "284241336#2": ("f", network.CENTER_NODE), "284241336#3": (network.CENTER_NODE, "g"),
-    }
-    for name, (start, end) in endpoints.items():
-        edge = ET.SubElement(root, "edge", id=name, **{"from": start, "to": end})
-        for index in range(1 if name.startswith("231") else 2):
-            lane = ET.SubElement(edge, "lane", id=f"{name}_{index}", length="25", speed="10")
-            ET.SubElement(lane, "param", key="origId", value=name.split("#")[0])
-    for a in ("23183369#3", "284241336#2"):
-        for b in ("23183369#4", "284241336#3"):
-            ET.SubElement(root, "connection", **{"from": a, "to": b, "tl": network.CENTER_NODE})
-    network.write_xml(path, root)
-    return root
+def test_coupled_signal_programs_are_static_and_all_movements_have_service(actual_network):
+    directory, _, inspection, _ = actual_network
+    assert inspection["connection_rules"]["shared_controller_junctions"] == [
+        ["3675784999", "magasin_west"], ["magasin_nguma", "magasin_oua"]]
+    root = ET.parse(directory / "network.net.xml").getroot()
+    for tls in root.findall("tlLogic"):
+        states = [p.get("state") for p in tls.findall("phase")]
+        for index in range(len(states[0])):
+            assert any(state[index] in "Gg" for state in states)
 
 
-class NetworkDouble:
-    def __init__(self, root):
-        self.edges = {e.get("id"): e for e in root.findall("edge")}
-        self.forbidden = False
-        self.detour = False
-
-    def getEdge(self, name):
-        row = self.edges[name]
-        edge = ComparableEdge(getID=lambda: name, getFunction=lambda: "",
-                              allows=lambda vehicle: not self.forbidden)
-        # Les mêmes objets nœuds sont comparés par identité dans sumolib.
-        edge.getFromNode = lambda: self.node(row.get("from"))
-        edge.getToNode = lambda: self.node(row.get("to"))
-        edge.getAllowedOutgoing = lambda vehicle: [self.getEdge(k) for k, e in self.edges.items()
-                                                   if e.get("from") == row.get("to")]
-        return edge
-
-    def node(self, item):
-        if not hasattr(self, "nodes"):
-            self.nodes = {}
-        return self.nodes.setdefault(item, SimpleNamespace(getID=lambda: item))
-
-    def getShortestPath(self, start, end, **kwargs):
-        expected = next(route for route in network.ROUTES.values() if route[0] == start.getID() and route[-1] == end.getID())
-        if self.detour:
-            return (None, 0)
-        route = [self.getEdge(e) for e in expected]
-        if expected[0].startswith("231"):
-            route.insert(1, SimpleNamespace(getID=lambda: ":2725672310_0", getFunction=lambda: "internal",
-                                            allows=lambda vehicle: True))
-        return (route, 1)
-
-
-class ComparableEdge(SimpleNamespace):
-    def __eq__(self, other):
-        return self.getID() == other.getID()
-
-
-@pytest.mark.parametrize("change", [None, "cycle", "controller", "detour", "permission", "origin", "lanes"])
-def test_network_mapping_routes_and_provenance(monkeypatch, tmp_path, change):
-    import sumolib
-    path = tmp_path / "network.net.xml"
-    root = synthetic_network(path)
-    double = NetworkDouble(root)
-    if change == "cycle":
-        root.find("tlLogic/phase").set("duration", "38")
-    elif change == "controller":
-        root.find("junction").set("type", "priority")
-    elif change == "detour":
-        double.detour = True
-    elif change == "permission":
-        double.forbidden = True
-    elif change == "origin":
-        root.find("edge/lane/param").set("value", "unknown")
-    elif change == "lanes":
-        root.find("edge").append(deepcopy(root.find("edge/lane")))
-    network.write_xml(path, root)
-    monkeypatch.setattr(sumolib.net, "readNet", lambda *args, **kwargs: double)
-    if change:
-        with pytest.raises(demand.TrafficInputError):
-            network.inspect_network(path, FIXTURE.with_name("road.osm"))
-    else:
-        result = network.inspect_network(path, FIXTURE.with_name("road.osm"))
-        assert result["gate_mapping"]["W23183369_IN"] == "23183369#1"
-        assert result["gate_mapping"]["entry_connector"] == ":2725672310_0"
-        assert result["routes"] == {name: list(edges) for name, edges in network.ROUTES.items()}
-        assert result["traffic_lights"][0]["cycle_s"] == 90
-        assert all(e["speed_origin"] == "typemap/règle SUMO" for e in result["edges"])
-
-
-def test_conversion_parameters_and_error(monkeypatch, tmp_path):
-    monkeypatch.setattr(network, "verify_identity", lambda *args: {"sha256": "synthetic"})
-    monkeypatch.setattr(network.shutil, "which", lambda tool: tool)
-    root = synthetic_network(tmp_path / "network.net.xml")
-    execute = Mock(return_value=SimpleNamespace(returncode=0, stderr=""))
-    monkeypatch.setattr(network.subprocess, "run", execute)
-    network.convert_network(FIXTURE.with_name("road.osm"), tmp_path)
-    command = execute.call_args.args[0]
-    for option, value in (("--tls.default-type", "static"), ("--tls.cycle.time", "90"),
-                           ("--tls.join", "false"), ("--junctions.join", "false"),
-                           ("--output.original-names", "true"), ("--osm.annotate-defaults", "true")):
-        assert command[command.index(option) + 1] == value
-    execute.return_value = SimpleNamespace(returncode=1, stderr="conversion impossible")
-    with pytest.raises(RuntimeError, match="conversion impossible"):
-        network.convert_network(FIXTURE.with_name("road.osm"), tmp_path)
-
-
-@pytest.mark.parametrize("change", [None, "mission", "allocation", "xml_route", "xml_step"])
-def test_preparation_publishes_complete_directory_and_is_deterministic(monkeypatch, tmp_path, contract, change):
-    monkeypatch.setattr(scenario, "read_contract", lambda path: contract)
-    monkeypatch.setattr(scenario, "check_environment", lambda *args: {})
-    def convert(source, output):
-        synthetic_network(output / "network.net.xml")
-        return {"source": {"sha256": "synthetic"}}
-    monkeypatch.setattr(scenario, "convert_network", convert)
-    monkeypatch.setattr(scenario, "inspect_network", lambda *args: {
-        "center": {"x": "50", "y": "50"}, "routes": {name: list(edges) for name, edges in network.ROUTES.items()},
-        "gate_mapping": {**network.GATE_EDGES, "entry_connector": ":2725672310_0"}})
-    monkeypatch.setattr(scenario, "build_scenery", lambda *args: {"polygons": 0})
-    results = []
-    for name in ("first", "second"):
-        output = tmp_path / name
-        if name == "first":
-            output.mkdir()
-        results.append(scenario.prepare_traffic("synthetic", "synthetic", output))
-        assert scenario.read_scenario(output)["status"] == "prepared"
-        assert all((output / regime / "simulation.sumocfg").exists() for regime in ("LOW", "MID", "HIGH"))
-    assert results[0] == results[1]
-    assert not list(tmp_path.glob(".traffic-*"))
-    if change:
-        output = tmp_path / "first"
-        manifest = scenario.read_scenario(output)
-        if change == "mission":
-            manifest["regimes"]["LOW"]["missions"][0]["destination"] = "wrong"
-        elif change == "allocation":
-            manifest["regimes"]["LOW"]["plan"]["allocation"][demand.ENTRY_GATES[0]][demand.EXIT_GATES[0]] += 1
-        else:
-            name = "LOW/traffic.rou.xml" if change == "xml_route" else "LOW/simulation.sumocfg"
-            path = output / name
-            root = ET.parse(path).getroot()
-            if change == "xml_route":
-                root.find("vehicle").set("route", "wrong")
-            else:
-                root.find("time/step-length").set("value", "1")
-            network.write_xml(path, root)
-            manifest["files_sha256"][name] = demand.file_hash(path)
-        scenario.write_json(output / "scenario.json", manifest)
-        with pytest.raises(demand.TrafficInputError):
-            scenario.read_scenario(output)
-
-
-@pytest.mark.parametrize("version", ["missing", "1.20.0"])
-def test_versions_refused(monkeypatch, version):
-    monkeypatch.setattr(network.shutil, "which", lambda tool: None if version == "missing" else tool)
-    monkeypatch.setattr(network.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=f"SUMO {version}"))
-    with pytest.raises(demand.TrafficInputError):
-        network.check_environment("sumo")
-
-
-@pytest.mark.parametrize("field", ["schema", "sector", "gates", "coverage", "counts"])
-def test_contract_identity_fields_checked_after_hash(monkeypatch, tmp_path, contract, field):
-    contract.update(schema_version="CGR-E03-1", status="complete", empirical_context={
-        "sector": {"id": "C3", "osm_node_id": 250691665, "entry_gates": list(demand.ENTRY_GATES),
-                   "exit_gates": list(demand.EXIT_GATES)},
-        "coverage": {"status": "known", "intervals": [[0.0, 802.8]]}})
-    contract["passenger_cav_contract"].update(source_categories=["Car", "Taxi"], population_id="passenger_CAV")
-    if field == "schema":
-        contract["schema_version"] = "other"
-    elif field == "sector":
-        contract["empirical_context"]["sector"]["osm_node_id"] = 1
-    elif field == "gates":
-        contract["empirical_context"]["sector"]["entry_gates"] = ["wrong"]
-    elif field == "coverage":
-        contract["empirical_context"]["coverage"]["status"] = "unknown"
-    path = tmp_path / "contract.json"
-    scenario.write_json(path, contract)
-    monkeypatch.setattr(demand, "CONTRACT_IDENTITY", (path.stat().st_size, demand.file_hash(path)))
-    with pytest.raises(demand.TrafficInputError, match="Effectifs" if field == "counts" else "Identité"):
-        demand.read_contract(path)
-
-
-@pytest.mark.parametrize("existing_empty", [False, True])
-def test_generation_error_never_publishes_network_only(monkeypatch, tmp_path, contract, existing_empty):
-    monkeypatch.setattr(scenario, "read_contract", lambda path: contract)
-    monkeypatch.setattr(scenario, "check_environment", lambda *args: {})
-    def convert(source, output):
-        synthetic_network(output / "network.net.xml")
-        return {}
-    monkeypatch.setattr(scenario, "convert_network", convert)
-    monkeypatch.setattr(scenario, "inspect_network", lambda *args: {
-        "center": {"x": "50", "y": "50"}, "routes": {name: list(edges) for name, edges in network.ROUTES.items()}})
-    monkeypatch.setattr(scenario, "build_scenery", lambda *args: {})
-    monkeypatch.setattr(scenario, "write_traffic_files", Mock(side_effect=OSError("écriture interrompue")))
-    output = tmp_path / "scenario"
-    if existing_empty:
-        output.mkdir()
-    with pytest.raises(OSError, match="interrompue"):
-        scenario.prepare_traffic("synthetic", "synthetic", output)
-    assert (output.exists() and not list(output.iterdir())) if existing_empty else not output.exists()
-    assert not list(tmp_path.glob(".traffic-*"))
-
-
-def test_missions_never_use_random_generator(monkeypatch, contract):
-    import random
-    for name in ("random", "randrange", "choice", "shuffle"):
-        monkeypatch.setattr(random, name, Mock(side_effect=AssertionError("tirage interdit")))
-    assert len(demand.build_missions("MID", demand.demand_plans(contract)["MID"], network.ROUTES)) == 7
-
-
-@pytest.mark.parametrize("name", ["prepare_traffic", "run_traffic"])
-def test_cli_success(monkeypatch, tmp_path, name):
-    cli = load_cli(name)
-    args = (["--osm", "synthetic", "--contract", "synthetic"] if name == "prepare_traffic"
-            else ["--scenario-dir", "synthetic", "--regime", "LOW"])
-    monkeypatch.setattr("sys.argv", [name, *args, "--output-dir", str(tmp_path / "result")])
-    result = ({"regimes": {"LOW": {"missions": ["car"], "plan": {"injection_s": 1}}}}
-              if name == "prepare_traffic" else {"status": "passed", "reason": None,
-                "counts": run.TrafficLedger([mission()]).snapshot(), "connection_closed": True, "process_stopped": True})
-    monkeypatch.setattr(cli, name, Mock(return_value=result))
-    assert cli.main() == 0
+def test_real_medium_collision_regression(tmp_path):
+    if not shutil.which("sumo") or not shutil.which("netconvert"):
+        pytest.skip("SUMO absent ; intégration non validée.")
+    result = run.run_traffic(tmp_path / "medium", demand="MEDIUM", seed=1)
+    # Le découpage rapproche les portes et conserve le débit total attendu.
+    assert result["counts"]["scheduled"] == 606
+    assert result["counts"]["simulation_time_s"] > 189
+    assert result["status"] in ("completed", "horizon_reached"), result["reason"]
+    assert result["collision_ids"] == []
+    assert result["counts"]["teleport_starts"] == result["counts"]["teleport_ends"] == 0
+    assert result["counts"]["missing_without_arrival"] == 0
+    assert result["connection_closed"] and result["process_stopped"]

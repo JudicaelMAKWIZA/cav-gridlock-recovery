@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<osm version="0.6">
-  <!-- Seuls les identifiants du mapping sont repris ; aucun lieu réel n'est décrit. -->
-  <way id="23183369"><tag k="highway" v="tertiary"/><tag k="oneway" v="yes"/><tag k="lanes" v="1"/></way>
-  <way id="284241336"><tag k="highway" v="primary"/><tag k="oneway" v="yes"/></way>
-</osm>
