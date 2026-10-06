@@ -1,3 +1,0 @@
-track_id; type; traveled_d; avg_speed; lat; lon; speed; lon_acc; lat_acc; time
-alpha; Car; 10; 36; 37.0; 23.0; 36; 0; 0; 0; 37.1; 23.1; 18; 0; 0; 1; 37.2; 23.2; 7.2; 0; 0; 3
-beta; Taxi; 2; 3.6; 37.3; 23.3; 3.6; 0; 0; 4; 37.4; 23.4; 0; 0; 0; 6
