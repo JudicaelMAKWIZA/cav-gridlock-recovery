@@ -8,9 +8,10 @@ import math
 from pathlib import Path
 import socket
 import subprocess
+import sys
 
-from .benchmark_network import build_network, read_config, require_binary, write_xml
-from .synthetic_demand import poisson_missions
+from .road_network import build_network, read_config, require_binary, write_xml
+from .traffic_demand import poisson_missions
 from .sumo_process import close_sumo
 from .vehicle_tracking import TrafficLedger, verify_trips, STEP_S
 
@@ -30,7 +31,7 @@ def write_json(path: Path, data) -> None:
 
 def code_provenance() -> dict:
     digest = hashlib.sha256()
-    for name in ("benchmark_network.py", "synthetic_demand.py", "benchmark_run.py",
+    for name in ("road_network.py", "traffic_demand.py", "traffic_run.py",
                  "vehicle_tracking.py", "sumo_process.py"):
         digest.update(name.encode() + Path(__file__).with_name(name).read_bytes())
     commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
@@ -41,9 +42,10 @@ def code_provenance() -> dict:
             "git_state": ("dirty" if state.stdout.strip() else "clean") if state.returncode == 0 else None}
 
 
-def prepare_experiment(config: dict, output: Path, demand: str, seed: int,
+def prepare_traffic(config: dict, output: Path, demand: str, seed: int,
                        duration_s: float | None, rate: float | None) -> tuple[dict, list]:
-    inspection, routes = build_network(config, output)
+    vehicle_space = float(VEHICLE_TYPE["length"]) + float(VEHICLE_TYPE["minGap"])
+    inspection, routes = build_network(config, output, vehicle_space_m=vehicle_space)
     duration = config["demand"]["duration_s"] if duration_s is None else duration_s
     intensity = config["demand"]["rates_veh_per_hour_per_entry"][demand] if rate is None else rate
     rates = {entry: intensity for entry in config["demand"]["entries"]}
@@ -58,7 +60,10 @@ def prepare_experiment(config: dict, output: Path, demand: str, seed: int,
                       departLane="best", departSpeed="0")
     write_xml(output / "traffic.rou.xml", root)
     view = ET.Element("viewsettings")
-    scheme = ET.SubElement(view, "scheme", name="real world")
+    scheme = ET.SubElement(view, "scheme", name="kintambo")
+    ET.SubElement(scheme, "edges", streetName_show="true", streetName_size="30",
+                  streetName_constantSize="true", streetName_onlySelected="false",
+                  streetName_color="0,0,160", streetName_bgColor="255,255,255")
     ET.SubElement(scheme, "vehicles", vehicleQuality="2", vehicleExaggeration="1.5", vehicleMinSize="1")
     ET.SubElement(scheme, "background", backgroundColor="238,240,235")
     ET.SubElement(view, "viewport", x=str(inspection["center_xy_m"][0]),
@@ -148,7 +153,7 @@ def subscribed_readings(connection) -> dict:
             for item in connection.vehicle.getIDList()}
 
 
-def run_experiment(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
+def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                    gui: bool = False, gui_delay_ms: int = 100, config_path=None,
                    duration_s: float | None = None, rate: float | None = None,
                    drain_horizon_s: float | None = None) -> dict:
@@ -171,7 +176,7 @@ def run_experiment(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1
         raise ValueError("Le dossier de résultats doit être absent ou vide.")
     output.mkdir(parents=True, exist_ok=True)
     try:
-        prepared, missions = prepare_experiment(config, output, demand, seed, duration_s, rate)
+        prepared, missions = prepare_traffic(config, output, demand, seed, duration_s, rate)
     except Exception as error:
         write_json(output / "preparation_error.json", {"status": "failed", "reason": str(error)})
         raise
@@ -216,8 +221,9 @@ def run_experiment(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1
                 command.extend(["--start", "true", "--quit-on-end", "true", "--delay", str(gui_delay_ms)])
             result["command"] = command
             process = subprocess.Popen(command, stdout=log, stderr=log)
-            connection = traci.connect(port=port, proc=process, numRetries=20, waitBetweenRetries=0.1)
+            connection = traci.connect(port=port, proc=process, numRetries=300, waitBetweenRetries=0.1)
             if gui:
+                connection.gui.setSchema("View #0", "kintambo")
                 connection.gui.setOffset("View #0", *prepared["network"]["center_xy_m"])
                 connection.gui.setZoom("View #0", 1500)
             result["sumo_version"] = connection.getVersion()[1]
@@ -251,6 +257,8 @@ def run_experiment(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1
             else:
                 result["status"] = "horizon_reached"
                 result["reason"] = "Des missions restent présentes ou en attente à l'horizon."
+            if gui and sys.stdin.isatty():
+                input("Observer la vue, puis appuyer sur Entrée pour fermer SUMO-GUI. ")
         except Exception as error:
             result["status"] = "failed"
             result["reason"] = str(error)

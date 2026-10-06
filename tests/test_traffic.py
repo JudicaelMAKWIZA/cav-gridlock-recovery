@@ -1,4 +1,4 @@
-"""Demande Poisson, réseau publié, intégrité et lancement du benchmark."""
+"""Demande Poisson, réseau publié, intégrité et exécution du trafic."""
 
 from collections import Counter
 import gzip
@@ -16,9 +16,9 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from cav_recovery.simulation import benchmark_network as network
-from cav_recovery.simulation import benchmark_run as run
-from cav_recovery.simulation.synthetic_demand import poisson_missions
+from cav_recovery.simulation import road_network as network
+from cav_recovery.simulation import traffic_run as run
+from cav_recovery.simulation.traffic_demand import poisson_missions
 from cav_recovery.simulation.sumo_process import close_sumo
 from test_vehicle_tracking import Connection, normal_frames, mission
 
@@ -67,8 +67,8 @@ def test_missing_route_not_silently_replaced():
 
 def test_source_identity_and_synthetic_adaptations(tmp_path):
     data = gzip.decompress((network.SCENARIO_DIR / "roads.osm.gz").read_bytes())
-    assert hashlib.sha256(data).hexdigest() == network.SOURCE_SHA256
     config = network.read_config()
+    assert hashlib.sha256(data).hexdigest() == config["source"]["roads_sha256_uncompressed"]
     target = tmp_path / "adapted.osm"
     network.adapt_roads(config, target)
     original = ET.fromstring(data)
@@ -122,9 +122,9 @@ def test_real_network_and_routes(actual_network):
 
 def test_preparation_xml_and_deterministic_missions(actual_network, monkeypatch, tmp_path):
     _, config, inspection, routes = actual_network
-    monkeypatch.setattr(run, "build_network", lambda *args: (inspection, routes))
-    prepared, first = run.prepare_experiment(config, tmp_path, "LOW", 1, 60, None)
-    _, second = run.prepare_experiment(config, tmp_path, "LOW", 1, 60, None)
+    monkeypatch.setattr(run, "build_network", lambda *args, **kwargs: (inspection, routes))
+    prepared, first = run.prepare_traffic(config, tmp_path, "LOW", 1, 60, None)
+    _, second = run.prepare_traffic(config, tmp_path, "LOW", 1, 60, None)
     assert first == second
     root = ET.parse(tmp_path / "traffic.rou.xml").getroot()
     assert root.find("vType").get("guiShape") == "passenger/sedan"
@@ -132,6 +132,11 @@ def test_preparation_xml_and_deterministic_missions(actual_network, monkeypatch,
     config_xml = ET.parse(tmp_path / "simulation.sumocfg").getroot()
     assert config_xml.find("processing/time-to-teleport").get("value") == "-1"
     assert config_xml.find("processing/collision.check-junctions").get("value") == "true"
+    street_view = ET.parse(tmp_path / "view.xml").find("scheme/edges")
+    assert street_view.get("streetName_show") == "true"
+    assert street_view.get("streetName_constantSize") == "true"
+    assert street_view.get("streetName_onlySelected") == "false"
+    assert ET.parse(tmp_path / "view.xml").find("scheme").get("name") == "kintambo"
     assert ET.parse(tmp_path / "view.xml").find("scheme/vehicles").get("vehicleQuality") == "2"
     assert prepared["seed"] == 1
 
@@ -140,11 +145,12 @@ def test_nonempty_results_preserved(tmp_path):
     path = tmp_path / "keep.txt"
     path.write_text("important")
     with pytest.raises(ValueError, match="absent ou vide"):
-        run.run_experiment(tmp_path)
+        run.run_traffic(tmp_path)
     assert path.read_text() == "important"
 
 
 @pytest.mark.parametrize("name,included", [
+    ("road_network.py", True), ("traffic_demand.py", True), ("traffic_run.py", True),
     ("sumo_process.py", True), ("vehicle_tracking.py", True), ("sumo_smoke.py", False),
 ])
 def test_code_digest_covers_actual_execution(monkeypatch, name, included):
@@ -157,11 +163,11 @@ def test_code_digest_covers_actual_execution(monkeypatch, name, included):
 
 @pytest.mark.parametrize("status,code", [("completed", 0), ("horizon_reached", 3), ("failed", 1)])
 def test_cli_reports_result(monkeypatch, tmp_path, status, code):
-    spec = importlib.util.spec_from_file_location("cli", Path(__file__).parents[1] / "scripts/run_experiment.py")
+    spec = importlib.util.spec_from_file_location("cli", Path(__file__).parents[1] / "scripts/run_traffic.py")
     cli = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cli)
     invoke = Mock(return_value={"status": status, "counts": {}})
-    monkeypatch.setattr(cli, "run_experiment", invoke)
+    monkeypatch.setattr(cli, "run_traffic", invoke)
     monkeypatch.setattr(sys, "argv", ["demo", "--demand", "HIGH", "--seed", "2", "--gui",
                                      "--output-dir", str(tmp_path / "result")])
     assert cli.main() == code
@@ -172,7 +178,7 @@ def test_cli_reports_result(monkeypatch, tmp_path, status, code):
 def test_real_light_traffic_drains(tmp_path):
     if not shutil.which("sumo") or not shutil.which("netconvert"):
         pytest.skip("SUMO indisponible ; intégration non validée.")
-    result = run.run_experiment(tmp_path / "light", duration_s=60, seed=1)
+    result = run.run_traffic(tmp_path / "light", duration_s=60, seed=1)
     assert result["status"] == "completed", result["reason"]
     counts = result["counts"]
     assert counts["scheduled"] == counts["departed"] == counts["arrived"] > 0
@@ -185,7 +191,7 @@ def test_real_light_traffic_drains(tmp_path):
 def fake_run(monkeypatch, tmp_path, frames, gui=False, cleanup_error=False):
     connection = Connection(frames)
     connection.lane = SimpleNamespace(getIDList=lambda: [])
-    connection.gui = SimpleNamespace(setOffset=Mock(), setZoom=Mock())
+    connection.gui = SimpleNamespace(setOffset=Mock(), setZoom=Mock(), setSchema=Mock())
     config = network.read_config()
     prepared = {"duration_s": 0.5, "rates_veh_per_hour_per_entry": {"entry": 90},
                 "routes": {"straight": ["start", "end"]}, "network": {"center_xy_m": [0, 0]}}
@@ -193,7 +199,7 @@ def fake_run(monkeypatch, tmp_path, frames, gui=False, cleanup_error=False):
         for name in ("scenario.json", "network.net.xml"):
             (directory / name).write_text("synthetic")
         return prepared, [mission()]
-    monkeypatch.setattr(run, "prepare_experiment", prepare)
+    monkeypatch.setattr(run, "prepare_traffic", prepare)
     monkeypatch.setattr(run, "require_binary", lambda name: name)
     monkeypatch.setattr(run, "code_provenance", lambda: {"sha256": "synthetic"})
     monkeypatch.setattr(run, "subscribed_readings", lambda connection: None)
@@ -204,7 +210,7 @@ def fake_run(monkeypatch, tmp_path, frames, gui=False, cleanup_error=False):
     launch = Mock(return_value=process)
     monkeypatch.setattr(run.subprocess, "Popen", launch)
     monkeypatch.setattr(sys.modules["traci"], "connect", lambda **kwargs: connection)
-    result = run.run_experiment(tmp_path / "result", gui=gui, gui_delay_ms=7, drain_horizon_s=1)
+    result = run.run_traffic(tmp_path / "result", gui=gui, gui_delay_ms=7, drain_horizon_s=1)
     return result, connection, process, launch.call_args.args[0]
 
 
@@ -253,12 +259,13 @@ def test_gui_only_changes_display(monkeypatch, tmp_path):
     assert command[command.index("--delay") + 1] == "7"
     assert command[command.index("--start") + 1] == "true"
     assert result["step_s"] == 0.5 and result["seed"] == 1
+    connection.gui.setSchema.assert_called_once_with("View #0", "kintambo")
 
 
 def test_preparation_failure_retains_diagnostic(monkeypatch, tmp_path):
-    monkeypatch.setattr(run, "prepare_experiment", Mock(side_effect=RuntimeError("conversion")))
+    monkeypatch.setattr(run, "prepare_traffic", Mock(side_effect=RuntimeError("conversion")))
     with pytest.raises(RuntimeError, match="conversion"):
-        run.run_experiment(tmp_path / "failure")
+        run.run_traffic(tmp_path / "failure")
     saved = json.loads((tmp_path / "failure/preparation_error.json").read_text())
     assert saved == {"status": "failed", "reason": "conversion"}
 
@@ -295,3 +302,87 @@ def test_one_halted_vehicle_is_not_an_upstream_queue():
                         "speed": 0, "distance": 5, "route_index": 0}}
     _, lanes = run.sample_physics(connection, ledger, {"lane": 100}, {}, readings)
     assert lanes[0]["halting"] == 1 and lanes[0]["queue_reaches_upstream"] is False
+
+
+def test_street_name_survives_source_adaptation_and_conversion(actual_network):
+    directory, _, _, _ = actual_network
+    source = ET.fromstring(gzip.decompress((network.SCENARIO_DIR / "roads.osm.gz").read_bytes()))
+    expected = source.find("way[@id='427630648']/tag[@k='name']").get("v")
+    assert expected == "Avenue Colonel Mondjiba"
+    assert ET.parse(directory / "adapted.osm").find("way[@id='427630648']/tag[@k='name']").get("v") == expected
+    edges = [e for e in ET.parse(directory / "network.net.xml").getroot().findall("edge")
+             if e.get("id", "").startswith("427630648")]
+    assert edges and all(e.get("name") == expected for e in edges)
+
+
+@pytest.mark.parametrize("length,short,shared", [(0.2, True, True), (12.81, True, False), (15, False, False)])
+def test_lane_preparation_preserves_movements_and_only_couples_links_without_buffer(length, short, shared):
+    root = ET.fromstring(f"""<net>
+      <edge id="approach" from="before" to="a"><lane index="0" length="100" /></edge>
+      <edge id="connector" from="a" to="b">
+        <lane index="0" length="{length}" /><lane index="1" length="{length}" />
+      </edge>
+      <edge id="exit" from="b" to="after"><lane index="0" length="100" /></edge>
+      <connection from="approach" to="connector" fromLane="0" toLane="0" />
+      <connection from="connector" to="exit" fromLane="0" toLane="0" />
+      <connection from="connector" to="exit" fromLane="1" toLane="0" />
+      <junction id="a" type="traffic_light" /><junction id="b" type="traffic_light" />
+    </net>""")
+    edges, connections, nodes, report = network._connection_patches(root, 7.5, {"a"})
+    assert bool(edges.findall("edge")) is short
+    assert bool(nodes.findall("node")) is shared
+    assert report["added_lane_connections"] == ([('approach', 'connector', 0, 1)] if short else [])
+    movements = {(c.get("from"), c.get("to")) for c in root.findall("connection")}
+    assert all((c.get("from"), c.get("to")) in movements for c in connections)
+    assert all(c.get("contPos") == "0" and c.get("changeLeft") == c.get("changeRight") == "emergency"
+               for c in connections)
+    assert report["shared_controller_junctions"] == ([["a", "b"]] if shared else [])
+
+
+def test_short_connectors_and_intersections_forbid_passenger_lane_changes(actual_network):
+    directory, _, inspection, _ = actual_network
+    root = ET.parse(directory / "network.net.xml").getroot()
+    short = set(inspection["connection_rules"]["short_connectors"])
+    assert "-957109397" in short
+    for edge in root.findall("edge"):
+        if edge.get("id") in short or edge.get("function") == "internal":
+            lanes = edge.findall("lane")
+            for index, lane in enumerate(lanes):
+                # Une frontière de chaussée n'a pas de voie voisine à interdire.
+                if index + 1 < len(lanes):
+                    if lane.get("changeLeft") != "emergency":
+                        # netconvert conserve une issue aux voies sans raccord aval.
+                        assert not root.findall(
+                            f"connection[@from='{edge.get('id')}'][@fromLane='{index}']")
+                        assert "Ignoring changeLeft prohibition" in (
+                            directory / "continuity.log").read_text()
+                if index > 0:
+                    assert lane.get("changeRight") == "emergency"
+    pairs = {tuple(row[:2]) for row in inspection["connection_rules"]["added_lane_connections"]}
+    original = ET.parse(directory / "unsignalized.net.xml").getroot()
+    movements = {(c.get("from"), c.get("to")) for c in original.findall("connection")}
+    assert pairs.issubset(movements)
+
+
+def test_coupled_signal_programs_are_static_and_all_movements_have_service(actual_network):
+    directory, _, inspection, _ = actual_network
+    assert inspection["connection_rules"]["shared_controller_junctions"] == [
+        ["3675784999", "magasin_west"], ["magasin_nguma", "magasin_oua"]]
+    root = ET.parse(directory / "network.net.xml").getroot()
+    for tls in root.findall("tlLogic"):
+        states = [p.get("state") for p in tls.findall("phase")]
+        for index in range(len(states[0])):
+            assert any(state[index] in "Gg" for state in states)
+
+
+def test_real_medium_collision_regression(tmp_path):
+    if not shutil.which("sumo") or not shutil.which("netconvert"):
+        pytest.skip("SUMO absent ; intégration non validée.")
+    result = run.run_traffic(tmp_path / "medium", demand="MEDIUM", seed=1)
+    assert result["counts"]["scheduled"] == 579
+    assert result["counts"]["simulation_time_s"] > 189
+    assert result["status"] in ("completed", "horizon_reached"), result["reason"]
+    assert result["collision_ids"] == []
+    assert result["counts"]["teleport_starts"] == result["counts"]["teleport_ends"] == 0
+    assert result["counts"]["missing_without_arrival"] == 0
+    assert result["connection_closed"] and result["process_stopped"]

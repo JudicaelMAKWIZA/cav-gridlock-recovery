@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Callable
 import xml.etree.ElementTree as ET
 
-from .synthetic_demand import Mission
+from .traffic_demand import Mission
 
 STEP_S = 0.5
 

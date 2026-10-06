@@ -1,5 +1,16 @@
 {
   "scenario": "kintambo",
+  "source": {
+    "name": "OpenStreetMap",
+    "licence": "ODbL 1.0",
+    "licence_url": "https://opendatacommons.org/licenses/odbl/1-0/",
+    "attribution": "© OpenStreetMap contributors",
+    "attribution_url": "https://www.openstreetmap.org/copyright",
+    "retrieved_on": "2026-10-06",
+    "bbox_west_south_east_north": [15.244, -4.348, 15.274, -4.322],
+    "roads_sha256": "37ed914f0764e66b2900695695c63280af322921197c12d337a0b02e6e63e4b9",
+    "roads_sha256_uncompressed": "93a31d50a909221924ef820747d87035bbea5451a3bdd339f689d3783e40c45b"
+  },
   "center_lon_lat": [15.25822, -4.33404],
   "network": {
     "lanes_per_direction": {"major": 4, "intermediate": 2, "minor": 1},

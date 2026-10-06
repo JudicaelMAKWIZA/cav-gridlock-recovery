@@ -13,7 +13,6 @@ import xml.etree.ElementTree as ET
 
 
 SCENARIO_DIR = Path(__file__).parents[1] / "scenarios" / "kintambo"
-SOURCE_SHA256 = "93a31d50a909221924ef820747d87035bbea5451a3bdd339f689d3783e40c45b"
 SUMO_VERSION = "1.27.1"
 
 
@@ -23,7 +22,7 @@ def write_xml(path: Path, root: ET.Element) -> None:
 
 
 def read_config(path: str | Path | None = None) -> dict:
-    config = json.loads(Path(path or SCENARIO_DIR / "experiment.json").read_text(encoding="utf-8"))
+    config = json.loads(Path(path or SCENARIO_DIR / "scenario.json").read_text(encoding="utf-8"))
     if config["scenario"] != "kintambo":
         raise ValueError("Le scénario attendu est kintambo.")
     for group in ("major", "intermediate", "minor"):
@@ -56,8 +55,10 @@ def require_binary(name: str) -> str:
 
 def adapt_roads(config: dict, target: Path) -> None:
     """Conserve les positions et sens OSM, mais déclare des voies synthétiques."""
-    data = gzip.decompress((SCENARIO_DIR / "roads.osm.gz").read_bytes())
-    if hashlib.sha256(data).hexdigest() != SOURCE_SHA256:
+    compressed = (SCENARIO_DIR / "roads.osm.gz").read_bytes()
+    data = gzip.decompress(compressed)
+    if (hashlib.sha256(compressed).hexdigest() != config["source"]["roads_sha256"]
+            or hashlib.sha256(data).hexdigest() != config["source"]["roads_sha256_uncompressed"]):
         raise ValueError("L'extrait OSM distribué a été modifié.")
     root = ET.fromstring(data)
     for way in root.findall("way"):
@@ -80,7 +81,7 @@ def adapt_roads(config: dict, target: Path) -> None:
     write_xml(target, root)
 
 
-def build_network(config: dict, directory: Path) -> tuple[dict, dict]:
+def build_network(config: dict, directory: Path, *, vehicle_space_m: float = 7.5) -> tuple[dict, dict]:
     """Regroupe les raccords décrits et ajoute des feux fixes, avec keepClear."""
     import sumolib
 
@@ -121,6 +122,7 @@ def build_network(config: dict, directory: Path) -> tuple[dict, dict]:
         raise RuntimeError("Conversion échouée ; consulter conversion.log.")
     # Les commentaires contiennent les chemins de sortie et une date variable.
     write_xml(directory / "network.net.xml", ET.parse(directory / "network.net.xml").getroot())
+    corrections = _correct_connections(config, directory, vehicle_space_m)
     net = sumolib.net.readNet(str(directory / "network.net.xml"), withPrograms=True)
     routes = build_routes(net, config)
     controllers = [{"id": row.getID(), "programs": [
@@ -128,7 +130,8 @@ def build_network(config: dict, directory: Path) -> tuple[dict, dict]:
          "phases": [{"duration_s": phase.duration, "state": phase.state} for phase in p.getPhases()]}
         for program_id, p in row.getPrograms().items()]} for row in net.getTrafficLights()]
     inspection = {
-        "source_sha256": SOURCE_SHA256, "conversion_command": command,
+        "source": config["source"], "conversion_command": command,
+        "connection_rules": corrections,
         "nodes": len(net.getNodes()), "edges": len(net.getEdges()),
         "lanes": sum(e.getLaneNumber() for e in net.getEdges()),
         "branching_junctions": sum(len(n.getIncoming()) >= 3 for n in net.getNodes()),
@@ -140,6 +143,118 @@ def build_network(config: dict, directory: Path) -> tuple[dict, dict]:
     }
     inspection["volatile_xml_comments_removed"] = True
     return inspection, routes
+
+
+def _connection_patches(root: ET.Element, vehicle_space_m: float, anchors: set[str]) -> tuple:
+    """Prépare les voies avant les raccords où un changement latéral ne tient pas.
+
+    On ne crée aucun nouveau mouvement entre routes : seules les voies d'un
+    mouvement déjà permis sont raccordées aux voies nécessaires en aval.
+    Le CAV choisit sa voie avant la traversée, sans saut latéral dans le conflit.
+    """
+    edges = {e.get("id"): e for e in root.findall("edge") if e.get("function") != "internal"}
+    connections = [c for c in root.findall("connection")
+                   if c.get("from") in edges and c.get("to") in edges]
+    edge_rules, connection_rules = ET.Element("edges"), ET.Element("connections")
+    existing = {(c.get("from"), c.get("to"), int(c.get("fromLane")), int(c.get("toLane")))
+                for c in connections}
+    # SUMO recommande de conserver l'exception emergency. Nos CAV sont passenger.
+    for connection in connections:
+        ET.SubElement(connection_rules, "connection",
+                      **{k: connection.get(k) for k in ("from", "to", "fromLane", "toLane")},
+                      changeLeft="emergency", changeRight="emergency", contPos="0")
+    short, added = [], []
+    for target, edge in edges.items():
+        # Le raccord doit offrir deux emplacements nominaux complets : entrée
+        # et réception du véhicule. Sinon, sa voie est préparée avant le virage.
+        if float(edge.find("lane").get("length")) >= 2 * vehicle_space_m or len(edge.findall("lane")) < 2:
+            continue
+        short.append(target)
+        row = ET.SubElement(edge_rules, "edge", id=target)
+        for lane in edge.findall("lane"):
+            ET.SubElement(row, "lane", index=lane.get("index"),
+                          changeLeft="emergency", changeRight="emergency")
+        needed = {int(c.get("fromLane")) for c in connections if c.get("from") == target}
+        incoming = {}
+        for connection in connections:
+            if connection.get("to") == target:
+                incoming.setdefault(connection.get("from"), []).append(connection)
+        for origin, candidates in incoming.items():
+            for to_lane in sorted(needed):
+                if any(int(c.get("toLane")) == to_lane for c in candidates):
+                    continue
+                selected = min(candidates, key=lambda c: (abs(int(c.get("toLane")) - to_lane),
+                                                          int(c.get("fromLane"))))
+                key = (origin, target, int(selected.get("fromLane")), to_lane)
+                if key not in existing:
+                    added.append(key)
+                    ET.SubElement(connection_rules, "connection",
+                                  **{"from": origin, "to": target, "fromLane": str(key[2]),
+                                     "toLane": str(to_lane), "changeLeft": "emergency",
+                                     "changeRight": "emergency", "contPos": "0"})
+                    existing.add(key)
+    graph = {}
+    tls_nodes = {j.get("id") for j in root.findall("junction") if j.get("type") == "traffic_light"}
+    for target in short:
+        edge = edges[target]
+        if float(edge.find("lane").get("length")) >= vehicle_space_m:
+            continue
+        start, end = edge.get("from"), edge.get("to")
+        if start in tls_nodes and end in tls_nodes:
+            graph.setdefault(start, set()).add(end)
+            graph.setdefault(end, set()).add(start)
+    node_rules, seen, groups = ET.Element("nodes"), set(), []
+    for start in sorted(graph):
+        if start in seen:
+            continue
+        component, pending = set(), [start]
+        while pending:
+            item = pending.pop()
+            if item not in seen:
+                seen.add(item)
+                component.add(item)
+                pending.extend(graph[item] - seen)
+        if not component.intersection(anchors):
+            continue
+        groups.append(sorted(component))
+        for item in sorted(component):
+            ET.SubElement(node_rules, "node", id=item, type="traffic_light",
+                          tl=f"kintambo_shared_{len(groups)}", tlLayout="incoming")
+    return edge_rules, connection_rules, node_rules, {
+        "vehicle_space_m": vehicle_space_m, "lane_change_clearance_m": 2 * vehicle_space_m,
+        "controller_coupling_clearance_m": vehicle_space_m, "short_connectors": short,
+        "added_lane_connections": added, "shared_controller_junctions": groups,
+        "lane_changes_in_intersections": "emergency_only",
+        "yielding_position": "before_conflict_zone",
+    }
+
+
+def _correct_connections(config: dict, directory: Path, vehicle_space_m: float) -> dict:
+    """Reconstruit géométrie, priorités et feux avec netconvert, jamais à la main."""
+    if not math.isfinite(vehicle_space_m) or vehicle_space_m <= 0:
+        raise ValueError("L'espace nominal du véhicule doit être positif.")
+    path = directory / "network.net.xml"
+    patches = _connection_patches(ET.parse(path).getroot(), vehicle_space_m,
+                                  set(config["network"]["junction_groups"]))
+    for name, root in zip(("continuity.edg.xml", "continuity.con.xml", "control.nod.xml"), patches[:3]):
+        write_xml(directory / name, root)
+    output = directory / "connected.net.xml"
+    command = [require_binary("netconvert"), "--sumo-net-file", str(path),
+               "--edge-files", str(directory / "continuity.edg.xml"),
+               "--connection-files", str(directory / "continuity.con.xml"),
+               "--node-files", str(directory / "control.nod.xml"),
+               "--tls.rebuild", "true", "--tls.default-type", "static", "--tls.join", "false",
+               "--tls.cycle.time", str(config["network"]["cycle_s"]),
+               "--tls.layout", config["network"]["signal_layout"],
+               "--tls.allred.time", str(config["network"]["all_red_s"]),
+               "--tls.minor-left.max-speed", "0", "--no-turnarounds", "true",
+               "--output-file", str(output)]
+    with (directory / "continuity.log").open("w", encoding="utf-8") as log:
+        completed = subprocess.run(command, stdout=log, stderr=log)
+    if completed.returncode:
+        raise RuntimeError("Correction des raccords échouée ; consulter continuity.log.")
+    write_xml(path, ET.parse(output).getroot())
+    return {**patches[3], "command": command}
 
 
 def build_routes(net, config: dict) -> dict:

@@ -1,4 +1,4 @@
-"""Lance le benchmark synthétique de Kintambo depuis le dépôt."""
+"""Lance le trafic simulé de Kintambo depuis le dépôt."""
 
 import argparse
 from datetime import datetime
@@ -7,12 +7,11 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cav_recovery.simulation.benchmark_run import run_experiment
+from cav_recovery.simulation.traffic_run import run_traffic
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Observer une demande Poisson sur la topologie de Kintambo.")
-    parser.add_argument("--scenario", choices=["kintambo"], default="kintambo")
     parser.add_argument("--demand", choices=["LOW", "MEDIUM", "HIGH", "STRESS"], default="LOW")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--gui", action="store_true", help="Utiliser sumo-gui avec démarrage automatique.")
@@ -26,7 +25,7 @@ def main() -> int:
     output = args.output_dir or str(Path("outputs/simulation/kintambo") /
                                    datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
     try:
-        result = run_experiment(output, demand=args.demand, seed=args.seed, gui=args.gui,
+        result = run_traffic(output, demand=args.demand, seed=args.seed, gui=args.gui,
                                 gui_delay_ms=args.gui_delay_ms, config_path=args.config,
                                 duration_s=args.duration_s, rate=args.rate,
                                 drain_horizon_s=args.drain_horizon_s)

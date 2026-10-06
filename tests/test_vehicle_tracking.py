@@ -5,9 +5,9 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from cav_recovery.simulation import synthetic_demand as demand
+from cav_recovery.simulation import traffic_demand as demand
 from cav_recovery.simulation import vehicle_tracking as run
-from cav_recovery.simulation import benchmark_network as network
+from cav_recovery.simulation import road_network as network
 
 
 def mission(item="car", scheduled=0):

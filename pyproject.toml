@@ -16,7 +16,7 @@ dependencies = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-cav_recovery = ["scenarios/kintambo/*.json", "scenarios/kintambo/*.gz", "scenarios/kintambo/*.md"]
+cav_recovery = ["scenarios/kintambo/*.json", "scenarios/kintambo/*.gz"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
