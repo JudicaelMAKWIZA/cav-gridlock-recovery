@@ -18,10 +18,15 @@ def main() -> int:
     parser.add_argument("--gui", action="store_true", help="Utiliser sumo-gui avec démarrage automatique.")
     parser.add_argument("--gui-delay-ms", type=int, default=100, help="Délai d'affichage en millisecondes, sans changer le pas simulé.")
     parser.add_argument("--drain-horizon-s", type=float, default=600, help="Attente maximale après injection, en secondes simulées.")
+    parser.add_argument("--local-blockage", action="store_true", help="Éprouver un incident aval sur LOW, sans récupération.")
+    parser.add_argument("--feasibility-release", action="store_true",
+                        help="Avec l'incident : libération externe après preuve du blocage, sans politique autonome.")
     args = parser.parse_args()
     try:
+        options = {"local_blockage": args.local_blockage, "feasibility_release": args.feasibility_release} \
+            if args.local_blockage or args.feasibility_release else {}
         result = run_traffic(args.scenario_dir, args.regime, args.output_dir, gui=args.gui,
-                             gui_delay_ms=args.gui_delay_ms, drain_horizon_s=args.drain_horizon_s)
+                             gui_delay_ms=args.gui_delay_ms, drain_horizon_s=args.drain_horizon_s, **options)
     except TrafficInputError as error:
         print(f"Entrée refusée : {error}", file=sys.stderr)
         return 2
@@ -35,6 +40,10 @@ def main() -> int:
                  "simulation_time_s"):
         print(f"{name} : {counts[name]}")
     print(f"Connexion fermée : {result['connection_closed']} ; processus arrêté : {result['process_stopped']}")
+    if "incident" in result:
+        incident = result["incident"]
+        print(f"Expérience : {result['experiment_outcome']} ; t_phys : {incident['t_phys']} ; t_form : {incident['t_form']}")
+        print("La libération éventuelle est un contrôle de faisabilité physique, pas une récupération autonome.")
     if result["reason"]:
         print(result["reason"], file=sys.stderr)
     return 0 if result["status"] == "passed" else 1

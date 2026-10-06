@@ -36,9 +36,11 @@ Le dépôt permet actuellement de :
 - vérifier un petit trajet synthétique dans SUMO avec TraCI ;
 - construire un réseau depuis la carte historique validée et simuler trois
   demandes de trafic, avec ou sans interface graphique ;
-- suivre chaque véhicule jusqu'à sa destination et vérifier les bilans.
+- suivre chaque véhicule jusqu'à sa destination et vérifier les bilans ;
+- éprouver une immobilisation aval réversible et mesurer la formation d'un
+  blocage local.
 
-Aucune simulation de blocage ni méthode de récupération n'est encore incluse.
+Aucune récupération autonome ni simulation de gridlock de réseau n'est encore incluse.
 
 ## Technologies
 
@@ -49,8 +51,7 @@ Aucune simulation de blocage ni méthode de récupération n'est encore incluse.
   lire ses événements depuis Python ;
 - fichiers CSV, JSON, GeoJSON et Markdown pour les entrées et les résultats.
 
-SUMO et TraCI servent à la simulation de trafic nominal, sans incident ni
-simulation de blocage.
+SUMO et TraCI servent au trafic nominal et à un premier contrôle de blocage local.
 
 ## Structure du dépôt
 
@@ -248,6 +249,13 @@ l'exécution. Après l'injection, l'attente est limitée à 600 s ;
 Chaque préparation et chaque exécution exigent un dossier de sortie absent ou
 vide. Consulter `--help` pour tous les arguments.
 
+Pour éprouver le blocage local, reprendre la commande de lancement LOW avec
+`--local-blockage`. Le témoin conserve l'incident et les missions non terminées.
+Ajouter `--feasibility-release` pour un essai séparé : une libération externe
+après preuve du blocage vérifie seulement la possibilité physique de repartir.
+Le bilan distingue cette expérience de la vidange nominale.
+Il ne s'agit pas d'une récupération autonome.
+
 ## Limites actuelles
 
 - Les données étudiées viennent actuellement d'un seul secteur pNEUMA.
@@ -261,8 +269,8 @@ vide. Consulter `--help` pour tous les arguments.
   garantissent pas un taux d'insertion réel dans le réseau simulé.
 - Les voies et vitesses absentes de la carte utilisent les règles de conversion
   SUMO. Elles ne constituent pas des mesures de capacité routière.
-- Aucune simulation de blocage et aucune stratégie de récupération ne sont
-  intégrées dans cette branche.
+- Le blocage étudié est local et non cyclique ; ni gridlock de réseau ni
+  stratégie de récupération autonome ne sont encore validés.
 
 ## Suite du projet
 

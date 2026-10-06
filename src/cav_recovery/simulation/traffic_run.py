@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import csv
+from contextlib import nullcontext
 import hashlib
 import importlib
+import json
 import math
 from pathlib import Path
 import shutil
@@ -16,6 +18,7 @@ from .road_network import CENTER_NODE, CENTER_PROGRAM_ID, CENTER_PHASES, check_e
 from .sumo_process import close_sumo
 from .traffic_demand import Mission, STEP_S, TrafficInputError, file_hash
 from .traffic_scenario import SEED, TIME_TO_TELEPORT_S, new_output_directory, read_scenario, write_json
+from .traffic_incident import LocalBlockage, incident_placement
 
 
 class TrafficLedger:
@@ -219,7 +222,8 @@ def verify_loaded_scenario(connection, missions: list[Mission]) -> None:
 def code_provenance() -> dict:
     """Calcule l'empreinte des modules producteurs et relève l'état Git."""
     digest = hashlib.sha256()
-    for name in ("traffic_demand.py", "road_network.py", "traffic_scenario.py", "traffic_run.py", "sumo_process.py"):
+    for name in ("traffic_demand.py", "road_network.py", "traffic_scenario.py", "traffic_run.py", "sumo_process.py",
+                 "traffic_incident.py"):
         path = Path(__file__).with_name(name)
         digest.update(name.encode() + path.read_bytes())
     path = Path(__file__).parents[1] / "c3_reference.py"
@@ -231,8 +235,9 @@ def code_provenance() -> dict:
             "git_state": ("dirty" if state.stdout.strip() else "clean") if state.returncode == 0 else None}
 
 
-def observe_traffic(connection, ledger: TrafficLedger, horizon_s: float, result: dict, writer) -> None:
-    """Avance jusqu'à vidange, sans dépasser l'horizon ni assister les véhicules."""
+def observe_traffic(connection, ledger: TrafficLedger, horizon_s: float, result: dict, writer,
+                    blockage: LocalBlockage | None = None, measurements=None) -> None:
+    """Suit les missions ; l'expérience optionnelle distingue blocage maintenu et reprise externe."""
     verify_loaded_scenario(connection, list(ledger.missions.values()))
     previous_state = None
     for _ in range(int(horizon_s / STEP_S)):
@@ -243,9 +248,21 @@ def observe_traffic(connection, ledger: TrafficLedger, horizon_s: float, result:
         if state != previous_state:
             result["tls_states"].append({"time_s": ledger.time_s, "state": state})
             previous_state = state
+        if blockage is not None:
+            observation = blockage.observe(connection, ledger.time_s, ledger.observed_active)
+            measurements.write(json.dumps(observation, ensure_ascii=False, allow_nan=False) + "\n")
         if len(ledger.arrivals) == len(ledger.missions):
+            if blockage is not None and (blockage.t_form is None or not blockage.feasibility_release
+                                         or blockage.resume_time_s is None):
+                raise RuntimeError("Vidange sans preuve du blocage et de sa libération physique.")
             result["status"] = "passed"
             return
+    if blockage is not None and not blockage.feasibility_release and blockage.t_form is not None:
+        if (blockage.state != "active" or blockage.placement.vehicle_id not in ledger.observed_active
+                or len(blockage.last_queue["ids"]) < 2 or not blockage.last_queue["propagation_ids"]):
+            raise RuntimeError("L'incident n'est plus physiquement maintenu à l'horizon.")
+        result["status"] = "passed"
+        return
     raise RuntimeError("Horizon atteint : des missions ne sont pas arrivées normalement.")
 
 
@@ -263,15 +280,21 @@ def group_counts(records: list[dict], ledger: TrafficLedger) -> dict:
 
 def run_traffic(scenario_dir: str | Path, regime: str, output_dir: str | Path, *,
                 gui: bool = False, gui_delay_ms: int = 100,
-                drain_horizon_s: float = 600) -> dict:
-    """Exécute la demande sans assistance et conserve aussi les bilans d'échec.
+                drain_horizon_s: float = 600, local_blockage: bool = False,
+                feasibility_release: bool = False) -> dict:
+    """Exécute la demande et conserve aussi les bilans d'échec.
 
     L'affichage ne change pas le pas simulé. Après l'injection, l'horizon borne
     strictement l'attente des arrivées ; aucune mission restante n'est supprimée.
+    Sans incident, le parcours nominal est inchangé. Le mode de blocage valide
+    une preuve physique, pas la vidange du témoin sans libération.
     """
     scenario_dir = Path(scenario_dir).resolve()
     output = new_output_directory(output_dir)
     manifest = read_scenario(scenario_dir)
+    if (type(local_blockage) is not bool or type(feasibility_release) is not bool
+            or feasibility_release and not local_blockage or local_blockage and regime != "LOW"):
+        raise TrafficInputError("Le blocage local est réservé à LOW ; la libération exige un incident.")
     if regime not in manifest["regimes"]:
         raise TrafficInputError("Le niveau de charge doit être LOW, MID ou HIGH.")
     if (not math.isfinite(drain_horizon_s) or drain_horizon_s <= 0 or drain_horizon_s % STEP_S
@@ -283,6 +306,9 @@ def run_traffic(scenario_dir: str | Path, regime: str, output_dir: str | Path, *
     binary = "sumo-gui" if gui else "sumo"
     versions = check_environment(binary)
     horizon = manifest["regimes"][regime]["plan"]["injection_s"] + drain_horizon_s
+    blockage = (LocalBlockage(incident_placement(scenario_dir / "network.net.xml", missions,
+                                                manifest["vehicle_type"]), horizon, feasibility_release)
+                if local_blockage else None)
     output.mkdir(parents=True, exist_ok=True)
     result = {
         "status": "failed",
@@ -316,7 +342,9 @@ def run_traffic(scenario_dir: str | Path, regime: str, output_dir: str | Path, *
     process = connection = None
     trips = {}
     with (output / "sumo.log").open("w", encoding="utf-8") as log, \
-            (output / "timeline.csv").open("w", encoding="utf-8", newline="") as trace:
+            (output / "timeline.csv").open("w", encoding="utf-8", newline="") as trace, \
+            ((output / "incident_observations.jsonl").open("w", encoding="utf-8")
+             if blockage is not None else nullcontext()) as measurements:
         writer = csv.DictWriter(trace, fieldnames=list(ledger.snapshot()))
         writer.writeheader()
         writer.writerow(ledger.snapshot())
@@ -336,7 +364,10 @@ def run_traffic(scenario_dir: str | Path, regime: str, output_dir: str | Path, *
             connection = traci.connect(port=port, host="127.0.0.1", proc=process,
                                        numRetries=20, waitBetweenRetries=0.1)
             result["sumo_version"] = connection.getVersion()[1]
-            observe_traffic(connection, ledger, horizon, result, writer)
+            if blockage is None:
+                observe_traffic(connection, ledger, horizon, result, writer)
+            else:
+                observe_traffic(connection, ledger, horizon, result, writer, blockage, measurements)
         except Exception as error:
             result["status"] = "failed"
             result["reason"] = str(error)
@@ -356,6 +387,19 @@ def run_traffic(scenario_dir: str | Path, regime: str, output_dir: str | Path, *
         result["status"] = "failed"
         result["reason"] = result["reason"] or str(error)
     result["counts"] = ledger.snapshot()
+    if blockage is not None:
+        result["incident"] = blockage.summary()
+        result["assistance_commands"] = [event for event in blockage.events if event["kind"] == "feasibility_release"]
+        result["experiment_outcome"] = ("feasibility_release_verified" if feasibility_release else "blockage_formed_control") \
+            if result["status"] == "passed" else "not_validated"
+        result["incident"]["validated"] = result["status"] == "passed"
+        result["incident"]["integrity"] = {
+            "collision_count": 0 if ledger.failure_observation is None and result["status"] == "passed" else None,
+            "disappearance_count": result["counts"]["missing_without_arrival"],
+            "destination_changes": 0 if ledger.failure_observation is None and result["status"] == "passed" else None,
+            "teleport_starts": result["counts"]["teleport_starts"],
+            "teleport_ends": result["counts"]["teleport_ends"],
+        }
     result["failure_observation"] = ledger.failure_observation
     result["last_validated_state"] = ledger.last_validated_state
     result["vehicles"] = ledger.vehicle_records(trips)
