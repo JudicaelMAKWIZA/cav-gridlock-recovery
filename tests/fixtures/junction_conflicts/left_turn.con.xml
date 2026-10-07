@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<connections>
+    <connection from="south_in" to="west_out" fromLane="0" toLane="0" />
+    <connection from="north_in" to="south_out" fromLane="0" toLane="0" />
+</connections>

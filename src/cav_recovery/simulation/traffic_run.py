@@ -160,6 +160,49 @@ def subscribed_readings(connection, *, include_length: bool = False) -> dict:
             for item in connection.vehicle.getIDList()}
 
 
+def sample_junctions(connection, readings: dict, leaders: dict, lanes: dict, movements: dict,
+                     first_halted: dict, time_s: float, cache: dict, *, min_wait_s: float,
+                     halting_speed: float, min_gap_m: float, step_s: float) -> dict:
+    """Lit les conflits natifs des seuls véhicules arrêtés près d'une traversée."""
+    observations = {}
+    for item, row in sorted(readings.items()):
+        if (row["speed"] >= halting_speed or item not in first_halted
+                or time_s - first_halted[item] < min_wait_s
+                or dependency_graph.close_leader(item, readings, leaders, halting_speed, step_s)):
+            continue
+        info = lanes[row["lane"]]
+        required = row["length"] + min_gap_m
+        if not info["internal"] and info["length_m"] - row["lane_position"] > required:
+            continue
+        connections = dependency_graph.junction_movements(row, lanes, movements)
+        if not connections:
+            continue
+        links = [link for link in connection.lane.getLinks(row["lane"], extended=True)
+                 if link[5] not in ("r", "y", "u") and link[3]
+                 and any(link[0] == c["lane"] and (link[4] or row["lane"]) in c["internal_lanes"]
+                         for c in connections)]
+        if not links:
+            continue
+        foes = connection.vehicle.getJunctionFoes(item, required)
+        if not foes:
+            continue
+        internal = {}
+        for lane in sorted({foe[5] for foe in foes}):
+            key = ("internal", lane)
+            if key not in cache:
+                cache[key] = connection.lane.getInternalFoes(lane)
+            internal[lane] = cache[key]
+        priorities = {}
+        for c in connections:
+            key = ("priority", c["from_lane"], c["lane"])
+            if key not in cache:
+                cache[key] = connection.lane.getFoes(c["from_lane"], c["lane"])
+            priorities[(c["from_lane"], c["lane"])] = cache[key]
+        observations[item] = {"foes": foes, "links": links, "internal_foes": internal,
+                              "priority_foes": priorities, "min_gap_m": min_gap_m}
+    return observations
+
+
 def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                    gui: bool = False, gui_delay_ms: int = 100, street_names: bool = False, config_path=None,
                    duration_s: float | None = None, rate: float | None = None,
@@ -211,6 +254,7 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
     previous = {}
     trips = {}
     first_halted = {}
+    junction_cache = {}
     graph_summary, graph_peak = dependency_graph.empty_summary(), None
     reader = (lambda connection: subscribed_readings(connection, include_length=True)) if crdg else subscribed_readings
     with (output / "sumo.log").open("w", encoding="utf-8") as log, \
@@ -286,11 +330,16 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                     if tls_states is None:
                         tls_states = {item: connection.trafficlight.getRedYellowGreenState(item)
                                       for item in connection.trafficlight.getIDList()}
+                    junctions = sample_junctions(
+                        connection, ledger.readings, leaders, graph_lanes, movements, first_halted,
+                        ledger.time_s, junction_cache, min_wait_s=graph_settings["min_wait_s"],
+                        halting_speed=result["halting_speed_m_per_s"],
+                        min_gap_m=float(VEHICLE_TYPE["minGap"]), step_s=STEP_S)
                     graph = dependency_graph.build_graph(
                         ledger.readings, leaders, dependency_graph.receiving_spaces(ledger.readings, graph_lanes),
                         graph_lanes, movements, tls_states, first_halted, ledger.time_s,
                         min_wait_s=graph_settings["min_wait_s"], halting_speed=result["halting_speed_m_per_s"],
-                        min_gap_m=float(VEHICLE_TYPE["minGap"]), step_s=STEP_S)
+                        min_gap_m=float(VEHICLE_TYPE["minGap"]), step_s=STEP_S, junctions=junctions)
                     current = dependency_graph.snapshot(graph)
                     graph_file.write(json.dumps(current, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
                     graph_peak = dependency_graph.record_snapshot(graph_summary, current, graph_peak)
@@ -337,7 +386,10 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                               "halting_speed_m_per_s": result["halting_speed_m_per_s"],
                               "leader_progress_margin_m": result["halting_speed_m_per_s"] * STEP_S,
                               "required_space_basis": "vehicle_length + minGap",
-                              "internal_conflicts": "not_represented", "gridlock": "not_evaluated",
+                              "internal_conflicts": "native_occupied_conflicts_only", "gridlock": "not_evaluated",
+                              "junction_evidence": "junction_foes_distances_response_and_lane_links",
+                              "receiving_release_mode": "one_candidate_free",
+                              "closed_cycles": "conservative_scc_alternative_filter",
                               "run_status": result["status"], "network_sha256": result["network_sha256"],
                               "scenario_sha256": result["scenario_sha256"], "code": result["code"]})
         write_json(output / "crdg_summary.json", graph_summary)
