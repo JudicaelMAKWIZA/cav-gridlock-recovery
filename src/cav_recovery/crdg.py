@@ -66,8 +66,8 @@ def build_graph(readings: dict, leaders: dict, spaces: dict, lanes: dict, moveme
                 halting_speed: float, min_gap_m: float, step_s: float) -> nx.DiGraph:
     """Reconstruit les seules dépendances observées : A → B signifie A attend B.
 
-    Une voie libre parmi les choix suffit : les alternatives ne deviennent
-    pas des obligations simultanées. Les conflits internes ne sont pas modélisés.
+    Une voie libre parmi celles actuellement servies suffit : les alternatives
+    ne deviennent pas des obligations simultanées. Les conflits internes ne sont pas modélisés.
     """
     graph = nx.DiGraph(time_s=time_s)
     reasons = {}
@@ -101,7 +101,9 @@ def build_graph(readings: dict, leaders: dict, spaces: dict, lanes: dict, moveme
         connections = movements.get((row["lane"], target), []) if target else []
         service = [{**c, "state": tls_states[c["tls"]][c["link_index"]] if c["tls"] else None}
                    for c in connections]
-        served = any(c["state"] in (None, "G", "g") for c in service)
+        # Un g peut encore devoir céder le passage ; ces conflits restent hors modèle.
+        available_service = [c for c in service if c["state"] in (None, "G", "g")]
+        served = bool(available_service)
         if near_end and service and not served:
             reasons[item] = "signal"
         if close_leader:
@@ -117,7 +119,9 @@ def build_graph(readings: dict, leaders: dict, spaces: dict, lanes: dict, moveme
                            leader_gap_m=following[1], progress_margin_m=halting_speed * step_s)
         if info["internal"] or not near_end or not target or not served:
             continue
-        candidates = sorted({c["lane"] for c in service})
+        # service garde les connexions légales ; candidate_lanes ne garde que
+        # les voies utilisables maintenant, sans alternative rouge ou jaune.
+        candidates = sorted({c["lane"] for c in available_service})
         if not candidates:
             continue
         # Une voie vide est libre, même sur les petits raccords SUMO où une

@@ -77,12 +77,15 @@ def test_only_a_close_observed_halted_leader_creates_an_edge(scene):
     assert build(scene).number_of_edges() == 0
 
 
-@pytest.mark.parametrize("state", ["r", "y"])
-def test_signal_queue_ends_at_signal_without_a_fake_resource(scene, state):
+@pytest.mark.parametrize("state", ["r", "y", "u"])
+@pytest.mark.parametrize("occupied", [False, True])
+def test_signal_queue_ends_at_signal_without_a_fake_resource(scene, state, occupied):
     scene["tls_states"]["light"] = state
     scene["readings"]["F"] = vehicle("a", 91.499)
     scene["leaders"]["F"] = ("A", 0.001)
     scene["first_halted"]["F"] = 0
+    if occupied:
+        scene["readings"]["B"] = vehicle("b", 6)
     graph = build(scene)
     assert list(graph.edges) == [("vehicle:F", "vehicle:A")]
     assert graph.nodes["vehicle:A"]["waiting_reason"] == "signal"
@@ -110,12 +113,42 @@ def test_receiving_resource_uses_actual_rear_position_and_known_occupant(scene):
     assert crdg.receiving_spaces(scene["readings"], scene["lanes"])["b_0"]["free_space_m"] == 0
 
 
-def test_one_free_legal_alternative_prevents_a_receiving_dependency(scene):
+def test_one_free_served_alternative_prevents_a_receiving_dependency(scene):
     scene["readings"]["B"] = vehicle("b", 6)
     scene["lanes"]["b_1"] = {**scene["lanes"]["b_0"]}
     scene["movements"][("a_0", "b")].append({"lane": "b_1", "tls": "light", "link_index": 1})
-    scene["tls_states"]["light"] = "Gr"
+    scene["tls_states"]["light"] = "GG"
     assert build(scene).number_of_nodes() == 0
+
+
+@pytest.mark.parametrize("states", ["Gr", "gr", "Gy", "Gu"])
+def test_free_lane_without_current_service_does_not_hide_blocked_receiving_space(scene, states):
+    scene["readings"]["B"] = vehicle("b", 6)
+    scene["lanes"]["b_1"] = {**scene["lanes"]["b_0"]}
+    scene["movements"][("a_0", "b")].append({"lane": "b_1", "tls": "light", "link_index": 1})
+    scene["tls_states"]["light"] = states
+    graph = build(scene)
+    resource = "resource:receiving:a_0:b"
+    assert graph.edges["vehicle:A", resource]["edge_type"] == "waits_for"
+    assert graph.nodes[resource]["candidate_lanes"] == ["b_0"]
+    assert graph.nodes[resource]["blocked_lanes"] == ["b_0"]
+    assert set(graph.nodes[resource]["lane_spaces"]) == {"b_0"}
+    assert graph.nodes[resource]["max_free_space_m"] == 1
+    assert [connection["lane"] for connection in graph.nodes[resource]["service"]] == ["b_0", "b_1"]
+    assert set(graph.successors(resource)) == {"vehicle:B"}
+
+
+@pytest.mark.parametrize("occupied", [False, True])
+def test_uncontrolled_connection_uses_current_receiving_space(scene, occupied):
+    scene["movements"][("a_0", "b")][0].update(tls=None, link_index=-1)
+    if occupied:
+        scene["readings"]["B"] = vehicle("b", 6)
+        graph = build(scene)
+        resource = "resource:receiving:a_0:b"
+        assert graph.edges["vehicle:A", resource]["edge_type"] == "waits_for"
+        assert graph.nodes[resource]["service"][0]["state"] is None
+    else:
+        assert build(scene).number_of_nodes() == 0
 
 
 def test_all_blocked_lanes_reference_their_real_occupants(scene):
