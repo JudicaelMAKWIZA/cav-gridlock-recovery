@@ -1,1 +1,2 @@
 pytest>=8.0
+networkx==3.7

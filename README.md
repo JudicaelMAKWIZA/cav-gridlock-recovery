@@ -84,6 +84,19 @@ Une fin à l'horizon est distincte d'une vidange complète. Codes de sortie :
 d'intégrité, 2 pour une entrée refusée. Les files et occupations sont des
 observations ; elles ne constituent pas à elles seules une preuve de gridlock.
 
+## C-RDG
+
+Le C-RDG représente les dépendances observées entre véhicules et espace aval.
+Il lit la simulation sans agir sur le trafic. Pour l'activer :
+
+```bash
+python scripts/run_traffic.py --demand HIGH --seed 1 --crdg
+```
+
+Il produit `crdg.jsonl` (graphes successifs), `crdg_summary.json` (bilan) et
+`crdg_peak.json` (snapshot retenu). Un cycle candidat n'est pas une preuve de
+gridlock. L'intervalle et l'attente minimale se règlent dans `scenario.json`.
+
 ## Tests
 
 ```bash
@@ -104,5 +117,5 @@ une perspective.
 
 Le réseau, les arrivées et le suivi des missions sont disponibles.
 Les phénomènes observés doivent être distingués d'un gridlock confirmé.
-C-RDG, récupération autonome, environnement RL et Graph-MARL ne sont pas
-encore implémentés.
+Le diagnostic final de gridlock, la récupération autonome, l'environnement RL
+et Graph-MARL ne sont pas encore implémentés.

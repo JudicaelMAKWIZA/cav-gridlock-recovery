@@ -150,6 +150,7 @@ def test_nonempty_results_preserved(tmp_path):
 
 
 @pytest.mark.parametrize("name,included", [
+    ("crdg.py", True),
     ("road_network.py", True), ("traffic_demand.py", True), ("traffic_run.py", True),
     ("sumo_process.py", True), ("vehicle_tracking.py", True), ("sumo_smoke.py", False),
 ])
@@ -185,6 +186,18 @@ def test_cli_street_names_are_opt_in(monkeypatch, tmp_path):
         monkeypatch.setattr(sys, "argv", ["traffic", "--gui", "--output-dir", str(tmp_path)] + flag)
         assert cli.main() == 0
         assert invoke.call_args.kwargs["street_names"] is expected
+
+
+def test_cli_crdg_is_opt_in(monkeypatch, tmp_path):
+    spec = importlib.util.spec_from_file_location("cli", Path(__file__).parents[1] / "scripts/run_traffic.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    invoke = Mock(return_value={"status": "completed", "counts": {}})
+    monkeypatch.setattr(cli, "run_traffic", invoke)
+    for flag, expected in (([], False), (["--crdg"], True)):
+        monkeypatch.setattr(sys, "argv", ["traffic", "--output-dir", str(tmp_path)] + flag)
+        assert cli.main() == 0
+        assert invoke.call_args.kwargs["crdg"] is expected
 
 
 def test_street_names_only_change_view(actual_network, monkeypatch, tmp_path):

@@ -57,5 +57,6 @@
       "ecuries": {"mondjiba": 1, "nguma": 1, "kasa_vubu": 1, "oua": 1, "fleuve": 1, "montagne": 1}
     }
   },
-  "simulation": {"step_s": 0.5, "drain_horizon_s": 600}
+  "simulation": {"step_s": 0.5, "drain_horizon_s": 600},
+  "crdg": {"sample_interval_s": 5, "min_wait_s": 5}
 }
