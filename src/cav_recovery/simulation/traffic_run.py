@@ -1,6 +1,7 @@
 """Prépare et lance le trafic sans intervention sur les véhicules."""
 
 import csv
+from contextlib import nullcontext
 from dataclasses import asdict
 import hashlib
 import json
@@ -14,6 +15,7 @@ from .road_network import build_network, read_config, require_binary, write_xml
 from .traffic_demand import poisson_missions
 from .sumo_process import close_sumo
 from .vehicle_tracking import TrafficLedger, verify_trips, STEP_S
+from .. import crdg as dependency_graph
 
 import xml.etree.ElementTree as ET
 
@@ -35,6 +37,7 @@ def code_provenance() -> dict:
     for name in ("road_network.py", "traffic_demand.py", "traffic_run.py",
                  "vehicle_tracking.py", "sumo_process.py"):
         digest.update(name.encode() + Path(__file__).with_name(name).read_bytes())
+    digest.update(b"crdg.py" + (Path(__file__).parents[1] / "crdg.py").read_bytes())
     commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
                             cwd=Path(__file__).resolve().parents[3])
     state = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True,
@@ -139,7 +142,7 @@ def sample_physics(connection, ledger: TrafficLedger, lanes: dict, previous: dic
     return vehicles, rows
 
 
-def subscribed_readings(connection) -> dict:
+def subscribed_readings(connection, *, include_length: bool = False) -> dict:
     """Lit les données du pas courant ensemble pour limiter les appels TraCI."""
     import traci.constants as tc
 
@@ -148,6 +151,8 @@ def subscribed_readings(connection) -> dict:
                  "shape": tc.VAR_SHAPECLASS, "lane": tc.VAR_LANE_ID,
                  "lane_position": tc.VAR_LANEPOSITION, "speed": tc.VAR_SPEED,
                  "distance": tc.VAR_DISTANCE}
+    if include_length:
+        variables["length"] = tc.VAR_LENGTH
     for item in connection.simulation.getDepartedIDList():
         connection.vehicle.subscribe(item, list(variables.values()))
     results = connection.vehicle.getAllSubscriptionResults()
@@ -158,7 +163,7 @@ def subscribed_readings(connection) -> dict:
 def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                    gui: bool = False, gui_delay_ms: int = 100, street_names: bool = False, config_path=None,
                    duration_s: float | None = None, rate: float | None = None,
-                   drain_horizon_s: float | None = None) -> dict:
+                   drain_horizon_s: float | None = None, crdg: bool = False) -> dict:
     """Prépare et suit le trafic sans arrêt imposé, changement de route ni assistance.
 
     À la limite de temps, un trafic non vidé reste incomplet, pas un gridlock
@@ -173,6 +178,11 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
     drain = config["simulation"]["drain_horizon_s"] if drain_horizon_s is None else drain_horizon_s
     if not math.isfinite(drain) or drain <= 0 or drain % STEP_S:
         raise ValueError("L'horizon doit être positif et multiple de 0,5 s.")
+    graph_settings = config["crdg"] if crdg else None
+    if crdg:
+        interval, wait = graph_settings["sample_interval_s"], graph_settings["min_wait_s"]
+        if not math.isfinite(interval) or interval <= 0 or interval % STEP_S or not math.isfinite(wait) or wait < 0:
+            raise ValueError("Intervalle C-RDG ou durée d'attente invalide.")
     output = Path(output_dir).resolve()
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         raise ValueError("Le dossier de résultats doit être absent ou vide.")
@@ -200,10 +210,14 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
     connection = process = None
     previous = {}
     trips = {}
+    first_halted = {}
+    graph_summary, graph_peak = dependency_graph.empty_summary(), None
+    reader = (lambda connection: subscribed_readings(connection, include_length=True)) if crdg else subscribed_readings
     with (output / "sumo.log").open("w", encoding="utf-8") as log, \
             (output / "timeline.csv").open("w", encoding="utf-8", newline="") as trace, \
             (output / "lanes.csv").open("w", encoding="utf-8", newline="") as lane_file, \
-            (output / "observations.jsonl").open("w", encoding="utf-8") as observations:
+            (output / "observations.jsonl").open("w", encoding="utf-8") as observations, \
+            ((output / "crdg.jsonl").open("w", encoding="utf-8") if crdg else nullcontext()) as graph_file:
         timeline = csv.DictWriter(trace, fieldnames=list(ledger.snapshot()))
         timeline.writeheader()
         lane_writer = csv.DictWriter(lane_file, fieldnames=["time_s", "lane", "length_m", "vehicles",
@@ -212,6 +226,8 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
         lane_writer.writeheader()
         try:
             import traci
+            if crdg:
+                graph_lanes, movements = dependency_graph.read_network(output / "network.net.xml")
             binary = require_binary("sumo-gui" if gui else "sumo")
             with socket.socket() as reservation:
                 reservation.bind(("127.0.0.1", 0))
@@ -241,12 +257,17 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
             for _ in range(int(horizon / STEP_S)):
                 connection.simulationStep()
                 result["collision_ids"].extend(connection.simulation.getCollidingVehiclesIDList())
-                timeline.writerow(ledger.observe(connection, subscribed_readings))
+                timeline.writerow(ledger.observe(connection, reader))
+                vehicles = tls_states = None
+                if crdg:
+                    dependency_graph.update_waiting(first_halted, ledger.readings, ledger.time_s,
+                                                     result["halting_speed_m_per_s"])
                 if ledger.time_s % 5 == 0:
                     vehicles, lane_rows = sample_physics(connection, ledger, lanes, previous, ledger.readings)
+                    tls_states = {item: connection.trafficlight.getRedYellowGreenState(item)
+                                  for item in connection.trafficlight.getIDList()}
                     observations.write(json.dumps({"time_s": ledger.time_s, "vehicles": vehicles,
-                        "tls": {item: connection.trafficlight.getRedYellowGreenState(item)
-                                for item in connection.trafficlight.getIDList()}}) + "\n")
+                                                   "tls": tls_states}) + "\n")
                     lane_writer.writerows(lane_rows)
                     result["max_halting"] = max(result["max_halting"], sum(r["halting"] for r in lane_rows))
                     result["max_lane_occupancy_ratio"] = max(result["max_lane_occupancy_ratio"],
@@ -254,6 +275,25 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                     result["upstream_queue_samples"] += sum(r["queue_reaches_upstream"] for r in lane_rows)
                     if gui and ledger.time_s == min(300, math.floor(horizon / 10) * 5):
                         connection.gui.screenshot("View #0", str(output / "view.png"))
+                if crdg and ledger.time_s % graph_settings["sample_interval_s"] == 0:
+                    # Les lectures déjà faites pour les files servent aussi au graphe.
+                    if vehicles is not None:
+                        leaders = {r["vehicle_id"]: (r["leader_id"], r["leader_gap_m"])
+                                   for r in vehicles if r["leader_id"]}
+                    else:
+                        leaders = {item: connection.vehicle.getLeader(item) for item in first_halted
+                                   if ledger.time_s - first_halted[item] >= graph_settings["min_wait_s"]}
+                    if tls_states is None:
+                        tls_states = {item: connection.trafficlight.getRedYellowGreenState(item)
+                                      for item in connection.trafficlight.getIDList()}
+                    graph = dependency_graph.build_graph(
+                        ledger.readings, leaders, dependency_graph.receiving_spaces(ledger.readings, graph_lanes),
+                        graph_lanes, movements, tls_states, first_halted, ledger.time_s,
+                        min_wait_s=graph_settings["min_wait_s"], halting_speed=result["halting_speed_m_per_s"],
+                        min_gap_m=float(VEHICLE_TYPE["minGap"]), step_s=STEP_S)
+                    current = dependency_graph.snapshot(graph)
+                    graph_file.write(json.dumps(current, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
+                    graph_peak = dependency_graph.record_snapshot(graph_summary, current, graph_peak)
                 if len(ledger.arrivals) == len(missions):
                     result["status"] = "completed"
                     break
@@ -292,4 +332,14 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
         writer.writeheader()
         writer.writerows(records)
     write_json(output / "summary.json", result)
+    if crdg:
+        graph_summary.update({"settings": graph_settings, "networkx_version": dependency_graph.nx.__version__,
+                              "halting_speed_m_per_s": result["halting_speed_m_per_s"],
+                              "leader_progress_margin_m": result["halting_speed_m_per_s"] * STEP_S,
+                              "required_space_basis": "vehicle_length + minGap",
+                              "internal_conflicts": "not_represented", "gridlock": "not_evaluated",
+                              "run_status": result["status"], "network_sha256": result["network_sha256"],
+                              "scenario_sha256": result["scenario_sha256"], "code": result["code"]})
+        write_json(output / "crdg_summary.json", graph_summary)
+        write_json(output / "crdg_peak.json", graph_peak)
     return result
