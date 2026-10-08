@@ -135,6 +135,69 @@ def test_disappearance_without_arrival_interrupts_the_evidence():
     assert row["end_s"] is None and row["end_reason"] == "missing_observation"
 
 
+def test_arrival_at_22_5_after_last_graph_at_22_closes_episode_and_group_without_new_observation():
+    tracker = BlockageObservation()
+    current = snapshot(22)
+    current["cycle_candidates"] = [{"nodes": ["vehicle:A", "vehicle:B"], "vehicle_count": 2, "resource_count": 0}]
+    tracker.observe(22, {"A": vehicle(), "B": vehicle(20)}, current, LANES, MOVEMENTS)
+    identity = tracker.active["A"]["episode_id"]
+    events = tracker.record_arrivals({"A": 22.5})
+    end = next(e for e in events if e["event"] == "situation_ended")
+    assert end["episode_id"] == identity and end["end_reason"] == "arrival_observed"
+    assert end["end_s"] == 22.5 and end["last_seen_s"] == 22
+    assert end["last_distance_m"] == end["first_distance_m"] == 10
+    assert tracker.last_time == 22 and tracker.counts["observations"] == 1
+    assert sum(e["event"] == "arrival_observed" for e in events) == 1
+    group = next(e for e in events if e["scope"] == "group")
+    assert group["arrived_vehicle_id"] == "A" and group["end_s"] == 22.5
+    assert group["last_seen_s"] == 22 and group["physical_resolution"] == "unknown"
+    assert tracker.record_arrivals({"A": 22.5}) == []
+    assert not any(e.get("vehicle_id") == "A" for e in tracker.finish(22.5, "completed"))
+
+
+def test_intermediate_arrival_keeps_its_date_at_next_graph_and_other_vehicle_is_censored():
+    tracker = BlockageObservation()
+    observe(tracker, 22, {"A": vehicle(), "B": vehicle(20)})
+    events = tracker.record_arrivals({"A": 22.5})
+    events += tracker.observe(23, {"B": vehicle(20)}, snapshot(23), LANES, MOVEMENTS, arrivals={"A": 22.5})
+    assert [e["time_s"] for e in events if e["event"] == "arrival_observed"] == [22.5]
+    assert not any(e["event"] == "observation_interrupted" for e in events)
+    row = tracker.finish(23, "horizon_reached")[0]
+    assert row["vehicle_id"] == "B" and row["right_censored"] and row["end_s"] is None
+
+
+def test_arrival_batch_preserves_individual_dates_and_finished_episode_link():
+    tracker = BlockageObservation()
+    observe(tracker, 20, {"A": vehicle(), "B": vehicle(20), "C": vehicle(30)})
+    identity = tracker.active["A"]["episode_id"]
+    observe(tracker, 21, {"A": vehicle(15, 2), "B": vehicle(20), "C": vehicle(30)})
+    events = tracker.record_arrivals({"A": 21.5, "B": 22, "C": 22})
+    arrivals = [e for e in events if e["event"] == "arrival_observed"]
+    assert [(e["vehicle_id"], e["time_s"]) for e in arrivals] == [("A", 21.5), ("B", 22), ("C", 22)]
+    assert arrivals[0]["episode_id"] == identity
+    assert not any(e["event"] == "situation_ended" and e["vehicle_id"] == "A" for e in events)
+    assert tracker.record_arrivals({"A": 21.5, "B": 22, "C": 22}) == []
+    assert tracker.finish(22, "completed") == []
+
+
+def test_arrival_on_graph_step_is_not_duplicated_by_observe():
+    tracker = BlockageObservation()
+    observe(tracker, 21)
+    events = tracker.record_arrivals({"A": 22})
+    events += tracker.observe(22, {}, snapshot(22), LANES, MOVEMENTS, arrivals={"A": 22})
+    assert sum(e["event"] == "arrival_observed" for e in events) == 1
+    assert not tracker.active and tracker.summary()["counts"]["tracked_vehicles_arrived"] == 1
+
+
+def test_untracked_arrival_is_recorded_once_without_inventing_an_episode():
+    tracker = BlockageObservation()
+    events = tracker.record_arrivals({"A": 22.5})
+    assert events == [{"event": "arrival_observed", "scope": "vehicle", "time_s": 22.5,
+                       "vehicle_id": "A", "episode_id": None}]
+    assert tracker.record_arrivals({"A": 22.5}) == []
+    assert tracker.last_time is None and not tracker.active
+
+
 def test_disappearing_dependency_is_not_a_physical_resolution():
     tracker = BlockageObservation()
     observe(tracker, 1, leader="B")
@@ -260,12 +323,18 @@ def test_cli_enables_evidence_without_changing_existing_crdg_option(monkeypatch,
     assert runner.call_args.kwargs["crdg"] is False
 
 
-def test_real_small_run_evidence_has_identical_physics_and_arrivals(tmp_path):
+@pytest.mark.parametrize("calculation_interval", [.5, 1])
+def test_real_small_run_evidence_has_identical_physics_and_arrivals(tmp_path, calculation_interval):
     if not shutil.which("sumo") or not shutil.which("netconvert"):
         pytest.skip("SUMO absent ; non-interférence réelle non validée.")
     off, on = tmp_path / "off", tmp_path / "on"
-    a = traffic_run.run_traffic(off, duration_s=60, crdg=True)
-    b = traffic_run.run_traffic(on, duration_s=60, blockage_evidence=True)
+    from cav_recovery.simulation.road_network import read_config
+    config = read_config()
+    config["crdg"]["calculation_interval_s"] = calculation_interval
+    path = tmp_path / "config.json"
+    traffic_run.write_json(path, config)
+    a = traffic_run.run_traffic(off, duration_s=60, crdg=True, config_path=path)
+    b = traffic_run.run_traffic(on, duration_s=60, blockage_evidence=True, config_path=path)
     assert a["status"] == b["status"] == "completed"
     assert a["counts"] == b["counts"]
     assert a["collision_ids"] == b["collision_ids"] == []
@@ -277,6 +346,54 @@ def test_real_small_run_evidence_has_identical_physics_and_arrivals(tmp_path):
     assert any(e["event"] == "situation_started" for e in events)
     assert any(e["event"] == "arrival_observed" for e in events)
     assert not any(e["event"] == "episode_censored" for e in events)
+    import csv
+    expected = {r["vehicle_id"]: float(r["arrival_event_s"]) for r in csv.DictReader((on / "vehicles.csv").open())}
+    arrivals = [e for e in events if e["event"] == "arrival_observed"]
+    assert len(arrivals) == len({e["vehicle_id"] for e in arrivals})
+    assert all(e["time_s"] == expected[e["vehicle_id"]] for e in arrivals)
+    assert len(arrivals) == b["counts"]["arrived"]
+    if calculation_interval == 1:
+        assert any(e["time_s"] % calculation_interval for e in arrivals)
     summary = json.loads((on / "blockage_summary.json").read_text())
     assert summary["gridlock"] == "not_evaluated"
+    assert b["connection_closed"] and b["process_stopped"] and not b["cleanup_errors"]
+
+
+def test_real_sumo_finishes_at_22_5_without_extra_graph_and_keeps_physics(tmp_path, monkeypatch):
+    if not shutil.which("sumo"):
+        pytest.skip("SUMO absent ; arrivée entre deux calculs non validée.")
+    from cav_recovery.simulation.road_network import read_config
+    from cav_recovery.simulation.traffic_demand import Mission
+    fixture = Path(__file__).parent / "fixtures/sumo_smoke"
+    config = read_config()
+    config["crdg"]["calculation_interval_s"] = 1
+    monkeypatch.setattr(traffic_run, "read_config", lambda _: config)
+    def prepare(config, directory, *args, **kwargs):
+        for name in ("network.net.xml", "traffic.rou.xml", "simulation.sumocfg"):
+            shutil.copyfile(fixture / name, directory / name)
+        traffic_run.write_json(directory / "scenario.json", config)
+        return {"duration_s": .5, "rates_veh_per_hour_per_entry": {"entry": 90},
+                "routes": {"mission": ["approach", "destination"]}}, [
+                    Mission("smoke_car", "LOW", "entry", "exit", "mission", ("approach", "destination"), "destination", 0)]
+    monkeypatch.setattr(traffic_run, "prepare_traffic", prepare)
+    original = BlockageObservation.record_arrivals
+    known = []
+    def recorded(self, arrivals):
+        known.extend(arrivals.values())
+        return original(self, arrivals)
+    monkeypatch.setattr(BlockageObservation, "record_arrivals", recorded)
+    off, on = tmp_path / "off", tmp_path / "on"
+    a = traffic_run.run_traffic(off, crdg=True)
+    b = traffic_run.run_traffic(on, blockage_evidence=True)
+    assert a["status"] == b["status"] == "completed"
+    assert a["counts"] == b["counts"]
+    assert b["counts"]["simulation_time_s"] == 22.5 and b["counts"]["arrived"] == 1
+    assert known == [22.5]
+    events = [json.loads(line) for line in (on / "blockage_events.jsonl").read_text().splitlines()]
+    assert [(e["vehicle_id"], e["time_s"]) for e in events if e["event"] == "arrival_observed"] == [("smoke_car", 22.5)]
+    assert json.loads((on / "crdg_summary.json").read_text())["sample_count"] == 22
+    assert json.loads((on / "blockage_summary.json").read_text())["last_observation_s"] == 22
+    for name in ("network.net.xml", "traffic.rou.xml", "vehicles.csv", "timeline.csv", "lanes.csv", "observations.jsonl", "crdg.jsonl"):
+        assert (off / name).read_bytes() == (on / name).read_bytes()
+    assert a["collision_ids"] == b["collision_ids"] == []
     assert b["connection_closed"] and b["process_stopped"] and not b["cleanup_errors"]

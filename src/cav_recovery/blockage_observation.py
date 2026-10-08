@@ -34,6 +34,7 @@ class BlockageObservation:
         self.active = {}
         self.groups = {}
         self.last_episode = {}
+        self.recorded_arrivals = set()
         self.counts = Counter()
         self.sequence = 0
         self.last_time = None
@@ -151,6 +152,31 @@ class BlockageObservation:
                                  for edge in dependencies],
                 "resources": resources, "vehicle": _position(item, readings), "related_vehicles": related}
 
+    def record_arrivals(self, arrivals):
+        """Enregistre les arrivées validées et datées, même sans nouveau graphe."""
+        events = []
+        for item in sorted(arrivals.keys() - self.recorded_arrivals, key=lambda item: (arrivals[item], item)):
+            time_s = _number(arrivals[item])
+            if time_s is None:
+                raise ValueError("Une arrivée validée doit avoir une date finie.")
+            episode_id = self.last_episode.pop(item, None)
+            if item in self.active:
+                events.append(self._finish(item, time_s, "arrival_observed"))
+            events.append({"event": "arrival_observed", "scope": "vehicle", "time_s": time_s,
+                           "vehicle_id": item, "episode_id": episode_id})
+            self.recorded_arrivals.add(item)
+            self.counts["arrivals_observed"] += 1
+            if episode_id is not None:
+                self.counts["tracked_vehicles_arrived"] += 1
+            for key in sorted(list(self.groups)):
+                if item not in self.groups[key]["members"]:
+                    continue
+                group = self.groups.pop(key)
+                events.append({"event": "candidate_group_no_longer_observed", "scope": "group",
+                               "time_s": time_s, "end_s": time_s, "reason": "member_arrival",
+                               "arrived_vehicle_id": item, "physical_resolution": "unknown", **self._public(group)})
+        return events
+
     def observe(self, time_s, readings, snapshot, lanes, movements, *, arrivals=(), dependency_events=()):
         """Consomme le calcul C-RDG déjà fait et les lectures physiques du même pas."""
         if not math.isfinite(time_s) or (self.last_time is not None and time_s <= self.last_time):
@@ -165,15 +191,10 @@ class BlockageObservation:
         for edge in snapshot["edges"]:
             outgoing[edge["source"]].append(edge)
         receiving = {r["vehicle_id"]: r["lane_states"] for r in snapshot.get("receiving_observations", [])}
-        arrivals = set(arrivals)
+        arrival_times = arrivals if isinstance(arrivals, dict) else {item: time_s for item in arrivals}
+        events.extend(self.record_arrivals(arrival_times))
         for item in sorted(set(self.active) - set(readings)):
-            events.append(self._finish(item, time_s, "arrival_observed" if item in arrivals else
-                                       "missing_observation", "ended" if item in arrivals else "interrupted"))
-        for item in sorted(arrivals & self.last_episode.keys()):
-            events.append({"event": "arrival_observed", "scope": "vehicle", "time_s": time_s,
-                           "vehicle_id": item, "episode_id": self.last_episode[item]})
-            self.counts["tracked_vehicles_arrived"] += 1
-            del self.last_episode[item]
+            events.append(self._finish(item, time_s, "missing_observation", "interrupted"))
         for item in sorted(readings):
             row = readings[item]
             speed = _number(row.get("speed"))

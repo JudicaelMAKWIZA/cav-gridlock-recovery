@@ -376,6 +376,10 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                 connection.simulationStep()
                 result["collision_ids"].extend(connection.simulation.getCollidingVehiclesIDList())
                 timeline.writerow(ledger.observe(connection, reader))
+                if evidence:
+                    # Les arrivées validées ne doivent pas attendre le prochain graphe.
+                    for event in evidence.record_arrivals(ledger.arrivals):
+                        evidence_file.write(json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
                 vehicles = tls_states = None
                 if crdg:
                     dependency_graph.update_waiting(first_halted, ledger.readings, ledger.time_s,
