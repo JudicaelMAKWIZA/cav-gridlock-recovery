@@ -17,6 +17,8 @@ def main() -> int:
     parser.add_argument("--gui", action="store_true", help="Utiliser sumo-gui avec démarrage automatique.")
     parser.add_argument("--street-names", action="store_true", help="Afficher les noms OSM dans la vue graphique.")
     parser.add_argument("--crdg", action="store_true", help="Observer les dépendances entre véhicules et espace aval.")
+    parser.add_argument("--blockage-evidence", action="store_true",
+                        help="Suivre la progression et les attentes observées ; active aussi le C-RDG, sans diagnostic de gridlock.")
     parser.add_argument("--gui-delay-ms", type=int, default=100, help="Délai visuel, sans effet sur le pas simulé.")
     parser.add_argument("--config", help="Configuration JSON de réseau et de demande.")
     parser.add_argument("--rate", type=float, help="Intensité en véhicules/heure/entrée.")
@@ -31,7 +33,8 @@ def main() -> int:
                                 street_names=args.street_names,
                                 gui_delay_ms=args.gui_delay_ms, config_path=args.config,
                                 duration_s=args.duration_s, rate=args.rate,
-                                drain_horizon_s=args.drain_horizon_s, crdg=args.crdg)
+                                drain_horizon_s=args.drain_horizon_s, crdg=args.crdg,
+                                blockage_evidence=args.blockage_evidence)
     except ValueError as error:
         print(f"Entrée refusée : {error}", file=sys.stderr)
         return 2
