@@ -39,15 +39,17 @@ def crossing():
     observation = {"foes": [("B", 2, -1, 5, 2, ":ego_0", ":foe_0", True, False)],
                    "links": [("out_0", False, False, True, ":ego_0", "g", "s", 10)],
                    "priority_foes": {("in_0", "out_0"): ["foe_in_0"]},
-                   "internal_foes": {":ego_0": [":foe_0"]}, "min_gap_m": 2.5}
+                   "internal_foes": {":ego_0": [":foe_0"]}, "stop_line_speed": 0,
+                   "halting_speed": .1, "connection_blocker": None}
     return {"readings": readings, "lanes": lanes, "movements": movements, "leaders": {},
             "first_halted": {"A": 0}, "tls_states": {"light": "gG"}, "time_s": 10,
             "junctions": {"A": observation}}
 
 
 def graph(scene):
-    return crdg.build_graph(**scene, spaces=crdg.receiving_spaces(scene["readings"], scene["lanes"]),
-                            min_wait_s=5, halting_speed=.1, min_gap_m=2.5, step_s=.5)
+    data = {key: value for key, value in scene.items() if key != "leaders"}
+    return crdg.build_graph(**data, spaces=crdg.receiving_spaces(scene["readings"], scene["lanes"]),
+                            halting_speed=.1, min_gap_m=2.5)
 
 
 def junctions(scene):
@@ -63,7 +65,7 @@ def test_permissive_green_has_native_priority_and_an_occupied_conflict(crossing)
     assert edge["edge_type"] == "blocked_by"
     request = current.edges["vehicle:A", resource]
     assert request["ego_response"] is True and request["foe_response"] is False
-    assert request["priority_evidence"] == "native_response_closed_link_and_occupied_conflict"
+    assert request["priority_evidence"] == "native_priority_at_stopline"
     assert current.nodes["vehicle:A"]["waiting_reason"] == "junction_conflict"
     assert current.nodes[resource]["release_mode"] == "all_blockers_clear"
     assert crossing == before
@@ -88,14 +90,16 @@ def test_geometric_foe_with_ego_priority_does_not_create_an_approaching_dependen
     assert junctions(crossing) == []
 
 
-def test_priority_green_only_uses_a_native_conflict_still_physically_occupied(crossing):
+def test_priority_green_requires_more_than_a_physically_occupied_conflict(crossing):
     crossing["tls_states"]["light"] = "Gr"
     obs = crossing["junctions"]["A"]
     obs["links"] = [("out_0", True, True, True, ":ego_0", "G", "s", 10)]
     obs["foes"] = [("B", 2, -1, 5, 2, ":ego_0", ":foe_0", False, True)]
+    assert junctions(crossing) == []
+    obs["connection_blocker"] = "B"
     current = graph(crossing)
     resource = "resource:junction::ego_0::foe_0"
-    assert current.edges["vehicle:A", resource]["priority_evidence"] == "native_conflict_occupied"
+    assert current.edges["vehicle:A", resource]["priority_evidence"] == "native_connection_obstacle"
     obs["internal_foes"] = {}
     assert junctions(crossing) == []
 
@@ -103,6 +107,7 @@ def test_priority_green_only_uses_a_native_conflict_still_physically_occupied(cr
 def test_internal_priority_link_state_is_not_a_signal_color(crossing):
     crossing["readings"]["A"].update(lane=":ego_0", road_id=":ego", lane_position=1)
     crossing["junctions"]["A"]["links"] = [("out_0", True, True, True, "", "M", "s", 10)]
+    crossing["junctions"]["A"]["connection_blocker"] = "B"
     current = graph(crossing)
     request = current.edges["vehicle:A", "resource:junction::ego_0::foe_0"]
     assert request["link_state"] == "M"
@@ -135,12 +140,12 @@ def test_signal_with_foes_is_not_a_junction_dependency(crossing, state):
     crossing["first_halted"]["F"] = 0
     crossing["leaders"]["F"] = ("A", 0)
     current = graph(crossing)
-    assert current.nodes["vehicle:A"]["waiting_reason"] == "signal"
+    assert current.graph["waiting_states"]["A"] == "signal"
     assert not any(d.get("resource_type") == "junction_conflict" for _, d in current.nodes(data=True))
 
 
 @pytest.mark.parametrize("problem", ["absent", "different_lane", "far", "cleared", "no_response",
-                                     "open_link", "no_foe", "unknown_movement", "recent", "moving"])
+                                     "open_link", "no_foe", "unknown_movement", "not_at_stopline", "moving"])
 def test_insufficient_junction_evidence_does_not_invent_a_blocker(crossing, problem):
     obs = crossing["junctions"]["A"]
     if problem == "absent":
@@ -149,6 +154,7 @@ def test_insufficient_junction_evidence_does_not_invent_a_blocker(crossing, prob
         crossing["readings"]["B"]["lane"] = "foe_in_0"
     elif problem == "far":
         obs["foes"] = [("B", 20, -1, 23, 2, ":ego_0", ":foe_0", True, False)]
+        obs["stop_line_speed"] = 1
     elif problem == "cleared":
         obs["foes"] = [("B", 2, -10, 5, -7, ":ego_0", ":foe_0", True, False)]
     elif problem == "no_response":
@@ -159,21 +165,18 @@ def test_insufficient_junction_evidence_does_not_invent_a_blocker(crossing, prob
         obs["links"] = [("out_0", False, False, False, ":ego_0", "g", "s", 10)]
     elif problem == "unknown_movement":
         crossing["readings"]["A"]["route_index"] = -1
-    elif problem == "recent":
-        crossing["first_halted"]["A"] = 6
+    elif problem == "not_at_stopline":
+        obs["stop_line_speed"] = .2
     else:
         crossing["readings"]["A"]["speed"] = .1
     assert junctions(crossing) == []
 
 
-def test_direct_leader_and_receiving_space_take_precedence(crossing):
+def test_independent_receiving_and_junction_constraints_can_coexist(crossing):
     crossing["readings"]["F"] = {**crossing["readings"]["A"], "lane_position": 100}
     crossing["leaders"]["A"] = ("F", 0)
-    assert junctions(crossing) == []
-    assert graph(crossing).edges["vehicle:A", "vehicle:F"]["edge_type"] == "leader"
-    crossing["leaders"] = {}
     crossing["readings"]["F"].update(lane="out_0", road_id="out", lane_position=5, route_index=1)
-    assert junctions(crossing) == []
+    assert junctions(crossing)
     assert any(d.get("resource_type") == "receiving_space" for _, d in graph(crossing).nodes(data=True))
 
 
@@ -274,19 +277,20 @@ def test_foe_queries_only_use_waited_nearby_vehicles_and_reuse_static_cache(cros
         lane=SimpleNamespace(getLinks=Mock(return_value=crossing["junctions"]["A"]["links"]),
                              getFoes=Mock(return_value=("foe_in_0",)),
                              getInternalFoes=Mock(return_value=(":foe_0",))),
-        vehicle=SimpleNamespace(getJunctionFoes=Mock(return_value=crossing["junctions"]["A"]["foes"])))
+        vehicle=SimpleNamespace(getJunctionFoes=Mock(return_value=crossing["junctions"]["A"]["foes"]),
+                                getStopSpeed=Mock(return_value=0)))
     cache = {}
     def sample():
-        return traffic_run.sample_junctions(connection, crossing["readings"], crossing["leaders"],
-                                           crossing["lanes"], crossing["movements"], crossing["first_halted"],
-                                           10, cache, min_wait_s=5, halting_speed=.1, min_gap_m=2.5, step_s=.5)
+        return traffic_run.sample_junctions(connection, crossing["readings"],
+                                           crossing["lanes"], crossing["movements"], cache, halting_speed=.1)
     assert set(sample()) == {"A"}
     assert set(sample()) == {"A"}
     assert connection.lane.getFoes.call_count == connection.lane.getInternalFoes.call_count == 1
     assert connection.vehicle.getJunctionFoes.call_count == 2
     crossing["readings"]["A"]["lane_position"] = 50
-    assert sample() == {}
-    assert connection.vehicle.getJunctionFoes.call_count == 2
+    assert sample()
+    assert connection.vehicle.getJunctionFoes.call_count == 3
+    assert connection.vehicle.getJunctionFoes.call_args.args[1] == 70
 
 
 @pytest.fixture(scope="module", params=["priority", "green", "red", "internal"])
@@ -329,7 +333,7 @@ def native_crossing(request, tmp_path_factory):
         ET.SubElement(routes, "vehicle", id=f"B{i:02}", type="passenger_CAV", route="foe", depart=str(i * 1.5), departSpeed="0")
     traffic_run.write_xml(directory / "routes.rou.xml", routes)
     lanes, movements = crdg.read_network(directory / "network.net.xml")
-    first, cache, frames, raw = {}, {}, [], []
+    first, cache, frames, raw, trails = {}, {}, [], [], {}
     connection = process = None
     result = {"connection_closed": False, "process_stopped": False, "process_returncode": None,
               "forced_process_stop": False, "cleanup_errors": []}
@@ -354,22 +358,27 @@ def native_crossing(request, tmp_path_factory):
                 assert not connection.simulation.getEndingTeleportIDList()
                 crdg.update_waiting(first, readings, time, .1)
                 leaders = {item: connection.vehicle.getLeader(item) for item in readings}
+                model_samples = [(gap, speed, connection.vehicle.getFollowSpeed("A", 0, gap, speed, 4.5))
+                                 for gap, speed in ((0, 0), (.05, 0), (.1, 0), (.2, 0), (.1, 1), (.1, 3))] if "A" in readings else []
+                following = traffic_run.sample_following(connection, readings, leaders, lanes, movements, cache,
+                                                         halting_speed=.1, leader_decel=4.5)
+                footprints = crdg.update_footprints(trails, readings, lanes, movements)
                 # Deux témoins suffisent pour confronter les réponses aux priorités connues.
                 for item in ("A", "B01"):
                     if item in readings:
                         for foe in connection.vehicle.getJunctionFoes(item, 7.5):
                             raw.append({"id": item, "time_s": time, "foe": foe,
+                                        "model_samples": model_samples,
                                         "reading": readings[item].copy(), "foe_reading": readings[foe[0]].copy(),
                                         "links": connection.lane.getLinks(readings[item]["lane"], extended=True),
                                         "internal_foes": connection.lane.getInternalFoes(foe[5])})
                 observations = traffic_run.sample_junctions(
-                    connection, readings, leaders, lanes, movements, first, time, cache,
-                    min_wait_s=5, halting_speed=.1, min_gap_m=2.5, step_s=.5)
+                    connection, readings, lanes, movements, cache, halting_speed=.1, following=following)
                 states = {item: connection.trafficlight.getRedYellowGreenState(item)
                           for item in connection.trafficlight.getIDList()}
-                current = crdg.build_graph(readings, leaders, crdg.receiving_spaces(readings, lanes),
-                                           lanes, movements, states, first, time, min_wait_s=5,
-                                           halting_speed=.1, min_gap_m=2.5, step_s=.5, junctions=observations)
+                current = crdg.build_graph(readings, crdg.receiving_spaces(readings, lanes, footprints),
+                                           lanes, movements, states, first, time,
+                                           halting_speed=.1, min_gap_m=2.5, junctions=observations, following=following)
                 frames.append(crdg.snapshot(current))
     finally:
         close_sumo(connection, process, result)
@@ -400,6 +409,18 @@ def test_native_responses_match_known_request_priority(native_crossing):
     assert occupied
     if kind != "red":
         assert any(r["reading"]["speed"] < .1 and r["links"][0][1:4] == (False, False, True) for r in occupied)
+
+
+def test_native_krauss_follow_speed_separates_limiting_gaps_and_mobile_leader(native_crossing):
+    _, _, raw, _ = native_crossing
+    samples = next(r["model_samples"] for r in raw if r["model_samples"])
+    speeds = {(gap, leader_speed): speed for gap, leader_speed, speed in samples}
+    assert speeds[(0, 0)] == 0
+    assert 0 < speeds[(.05, 0)] < speeds[(.1, 0)] < .1
+    assert speeds[(.2, 0)] >= .1
+    # Un leader lent peut s'arrêter en un pas : sa mobilité ne suffit pas à libérer le suivi.
+    assert speeds[(.1, 1)] == pytest.approx(speeds[(.1, 0)])
+    assert speeds[(.1, 3)] >= .1
 
 
 def test_native_distances_follow_entry_exit_and_the_observed_vehicle(native_crossing):

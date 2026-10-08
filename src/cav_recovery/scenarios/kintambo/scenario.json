@@ -58,5 +58,5 @@
     }
   },
   "simulation": {"step_s": 0.5, "drain_horizon_s": 600},
-  "crdg": {"sample_interval_s": 5, "min_wait_s": 5}
+  "crdg": {"sample_interval_s": 5, "calculation_interval_s": 0.5}
 }
