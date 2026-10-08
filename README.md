@@ -87,15 +87,20 @@ observations ; elles ne constituent pas à elles seules une preuve de gridlock.
 ## C-RDG
 
 Le C-RDG représente les dépendances observées entre véhicules et espace aval.
-Il lit la simulation sans agir sur le trafic. Pour l'activer :
+Il représente aussi certains conflits de carrefour à partir des observations
+natives de SUMO. Il lit la simulation sans agir sur le trafic. Pour l'activer :
 
 ```bash
 python scripts/run_traffic.py --demand HIGH --seed 1 --crdg
 ```
 
-Il produit `crdg.jsonl` (graphes successifs), `crdg_summary.json` (bilan) et
-`crdg_peak.json` (snapshot retenu). Un cycle candidat n'est pas une preuve de
-gridlock. L'intervalle et l'attente minimale se règlent dans `scenario.json`.
+Il produit `crdg.jsonl` (graphes successifs), `crdg_events.jsonl` (apparitions,
+disparitions et changements de cause), `crdg_summary.json` (bilan) et
+`crdg_peak.json` (snapshot retenu). Il distingue les cycles structurels des
+candidats fermés sans alternative de réception observable hors du groupe.
+Aucun de ces candidats n'est une preuve de gridlock. L'âge d'une dépendance
+est distinct de la durée d'arrêt du véhicule. Le calcul et l'export ont des
+cadences séparées, réglables dans la partie `crdg` de la configuration.
 
 ## Tests
 

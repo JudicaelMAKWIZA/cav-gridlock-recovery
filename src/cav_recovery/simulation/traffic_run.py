@@ -160,6 +160,112 @@ def subscribed_readings(connection, *, include_length: bool = False) -> dict:
             for item in connection.vehicle.getIDList()}
 
 
+def selected_lanes(row: dict, best_lanes: tuple, lanes: dict, movements: dict) -> set[str]:
+    connections = dependency_graph.junction_movements(row, lanes, movements)
+    origin = row["lane"] if not lanes[row["lane"]]["internal"] else (
+        connections[0]["from_lane"] if len(connections) == 1 else None)
+    best = [r for r in best_lanes if r[0] == origin]
+    path = {row["lane"]}
+    if len(best) != 1:
+        return path
+    sequence = [lane for lane in best[0][5] if lane]
+    path.update(sequence)
+    for a, b in zip(sequence, sequence[1:]):
+        matches = [c for c in movements.get((a, lanes[b]["edge"]), []) if c["lane"] == b]
+        if len(matches) == 1:
+            path.update(matches[0]["internal_lanes"])
+    return path
+
+
+def sample_following(connection, readings: dict, leaders: dict, lanes: dict, movements: dict,
+                     cache: dict, *, halting_speed: float, leader_decel: float) -> dict:
+    """Demande au modèle natif si le leader limite encore le progrès sûr."""
+    following = {}
+    for item, row in sorted(readings.items()):
+        native = leaders.get(item)
+        if row["speed"] >= halting_speed or not native or native[0] not in readings or native[0] == item:
+            continue
+        target, gap = native
+        speed = connection.vehicle.getFollowSpeed(item, row["speed"], gap,
+                                                  readings[target]["speed"], leader_decel, target)
+        relation = "unknown"
+        if readings[target]["lane"] == row["lane"]:
+            relation = "longitudinal_following"
+        elif speed < halting_speed:
+            best = connection.vehicle.getBestLanes(item)
+            path = selected_lanes(row, best, lanes, movements)
+            if readings[target]["lane"] in path:
+                relation = "longitudinal_following"
+            elif lanes[readings[target]["lane"]]["internal"]:
+                ego = dependency_graph.junction_movements(row, lanes, movements)
+                foe = dependency_graph.junction_movements(readings[target], lanes, movements)
+                # Deux traversées distinctes peuvent converger vers la même voie.
+                converges = any(a["lane"] == b["lane"] for a in ego for b in foe)
+                internal = set()
+                for lane in {via for c in ego for via in c["internal_lanes"]}:
+                    key = ("internal", lane)
+                    if key not in cache:
+                        cache[key] = connection.lane.getInternalFoes(lane)
+                    internal.update(cache[key])
+                if converges or readings[target]["lane"] in internal:
+                    relation = "connection_obstacle"
+        following[item] = dependency_graph.Following(target, gap, speed, relation)
+    return following
+
+
+def sample_junctions(connection, readings: dict, lanes: dict, movements: dict,
+                     cache: dict, *, halting_speed: float, following: dict | None = None) -> dict:
+    """Lit les conflits natifs des seuls véhicules arrêtés près d'une traversée."""
+    observations = {}
+    links_by_lane = {}
+    for item, row in sorted(readings.items()):
+        if row["speed"] >= halting_speed:
+            continue
+        info = lanes[row["lane"]]
+        connections = dependency_graph.junction_movements(row, lanes, movements)
+        if not connections:
+            continue
+        if row["lane"] not in links_by_lane:
+            links_by_lane[row["lane"]] = connection.lane.getLinks(row["lane"], extended=True)
+        links = [link for link in links_by_lane[row["lane"]]
+                 if link[5] not in ("r", "y", "u") and link[3]
+                 and any(link[0] == c["lane"] and (link[4] or row["lane"]) in c["internal_lanes"]
+                         for c in connections)]
+        if not links:
+            continue
+        # On couvre la traversée identifiée, pas une longueur de voiture arbitraire.
+        remaining = info["length_m"] - row["lane_position"]
+        def remaining_traversal(c):
+            chain = c["internal_lanes"]
+            ahead = chain[chain.index(row["lane"]) + 1:] if row["lane"] in chain else chain
+            return sum(lanes[lane]["length_m"] for lane in ahead)
+        traversal = max(remaining_traversal(c) for c in connections)
+        foes = connection.vehicle.getJunctionFoes(item, max(remaining + traversal, math.ulp(1.0)))
+        if not foes:
+            continue
+        internal = {}
+        for lane in sorted({foe[5] for foe in foes}):
+            key = ("internal", lane)
+            if key not in cache:
+                cache[key] = connection.lane.getInternalFoes(lane)
+            internal[lane] = cache[key]
+        priorities = {}
+        for c in connections:
+            key = ("priority", c["from_lane"], c["lane"])
+            if key not in cache:
+                cache[key] = connection.lane.getFoes(c["from_lane"], c["lane"])
+            priorities[(c["from_lane"], c["lane"])] = cache[key]
+        evidence = dependency_graph.limiting_following(item, readings, following or {}, halting_speed)
+        # SUMO 1.27.1 garde au moins POSITION_EPS=0,1 m avant une ligne d'attente.
+        stop_speed = connection.vehicle.getStopSpeed(item, row["speed"], max(0, remaining - 0.1))
+        observations[item] = {"foes": foes, "links": links, "internal_foes": internal,
+                              "priority_foes": priorities, "stop_line_speed": stop_speed,
+                              "halting_speed": halting_speed,
+                              "connection_blocker": evidence.vehicle_id if evidence and
+                              evidence.relation == "connection_obstacle" else None}
+    return observations
+
+
 def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                    gui: bool = False, gui_delay_ms: int = 100, street_names: bool = False, config_path=None,
                    duration_s: float | None = None, rate: float | None = None,
@@ -178,11 +284,14 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
     drain = config["simulation"]["drain_horizon_s"] if drain_horizon_s is None else drain_horizon_s
     if not math.isfinite(drain) or drain <= 0 or drain % STEP_S:
         raise ValueError("L'horizon doit être positif et multiple de 0,5 s.")
-    graph_settings = config["crdg"] if crdg else None
+    graph_settings = {key: value for key, value in config["crdg"].items() if key != "min_wait_s"} if crdg else None
     if crdg:
-        interval, wait = graph_settings["sample_interval_s"], graph_settings["min_wait_s"]
-        if not math.isfinite(interval) or interval <= 0 or interval % STEP_S or not math.isfinite(wait) or wait < 0:
-            raise ValueError("Intervalle C-RDG ou durée d'attente invalide.")
+        interval = graph_settings["sample_interval_s"]
+        calculation = graph_settings.get("calculation_interval_s", STEP_S)
+        if (not math.isfinite(interval) or interval <= 0 or interval % STEP_S
+                or not math.isfinite(calculation) or calculation <= 0 or calculation % STEP_S
+                or interval % calculation):
+            raise ValueError("Cadence de calcul ou d'export C-RDG invalide.")
     output = Path(output_dir).resolve()
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         raise ValueError("Le dossier de résultats doit être absent ou vide.")
@@ -211,13 +320,16 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
     previous = {}
     trips = {}
     first_halted = {}
+    junction_cache = {}
+    trails, dependency_history = {}, {}
     graph_summary, graph_peak = dependency_graph.empty_summary(), None
     reader = (lambda connection: subscribed_readings(connection, include_length=True)) if crdg else subscribed_readings
     with (output / "sumo.log").open("w", encoding="utf-8") as log, \
             (output / "timeline.csv").open("w", encoding="utf-8", newline="") as trace, \
             (output / "lanes.csv").open("w", encoding="utf-8", newline="") as lane_file, \
             (output / "observations.jsonl").open("w", encoding="utf-8") as observations, \
-            ((output / "crdg.jsonl").open("w", encoding="utf-8") if crdg else nullcontext()) as graph_file:
+            ((output / "crdg.jsonl").open("w", encoding="utf-8") if crdg else nullcontext()) as graph_file, \
+            ((output / "crdg_events.jsonl").open("w", encoding="utf-8") if crdg else nullcontext()) as event_file:
         timeline = csv.DictWriter(trace, fieldnames=list(ledger.snapshot()))
         timeline.writeheader()
         lane_writer = csv.DictWriter(lane_file, fieldnames=["time_s", "lane", "length_m", "vehicles",
@@ -262,6 +374,7 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                 if crdg:
                     dependency_graph.update_waiting(first_halted, ledger.readings, ledger.time_s,
                                                      result["halting_speed_m_per_s"])
+                    footprints = dependency_graph.update_footprints(trails, ledger.readings, graph_lanes, movements)
                 if ledger.time_s % 5 == 0:
                     vehicles, lane_rows = sample_physics(connection, ledger, lanes, previous, ledger.readings)
                     tls_states = {item: connection.trafficlight.getRedYellowGreenState(item)
@@ -275,25 +388,34 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                     result["upstream_queue_samples"] += sum(r["queue_reaches_upstream"] for r in lane_rows)
                     if gui and ledger.time_s == min(300, math.floor(horizon / 10) * 5):
                         connection.gui.screenshot("View #0", str(output / "view.png"))
-                if crdg and ledger.time_s % graph_settings["sample_interval_s"] == 0:
+                if crdg and ledger.time_s % calculation == 0:
                     # Les lectures déjà faites pour les files servent aussi au graphe.
                     if vehicles is not None:
                         leaders = {r["vehicle_id"]: (r["leader_id"], r["leader_gap_m"])
                                    for r in vehicles if r["leader_id"]}
                     else:
-                        leaders = {item: connection.vehicle.getLeader(item) for item in first_halted
-                                   if ledger.time_s - first_halted[item] >= graph_settings["min_wait_s"]}
+                        leaders = {item: connection.vehicle.getLeader(item) for item in first_halted}
                     if tls_states is None:
                         tls_states = {item: connection.trafficlight.getRedYellowGreenState(item)
                                       for item in connection.trafficlight.getIDList()}
+                    following = sample_following(connection, ledger.readings, leaders, graph_lanes, movements,
+                                                  junction_cache, halting_speed=result["halting_speed_m_per_s"],
+                                                  leader_decel=float(VEHICLE_TYPE["decel"]))
+                    junctions = sample_junctions(connection, ledger.readings, graph_lanes, movements,
+                                                junction_cache, halting_speed=result["halting_speed_m_per_s"],
+                                                following=following)
                     graph = dependency_graph.build_graph(
-                        ledger.readings, leaders, dependency_graph.receiving_spaces(ledger.readings, graph_lanes),
+                        ledger.readings, dependency_graph.receiving_spaces(ledger.readings, graph_lanes, footprints),
                         graph_lanes, movements, tls_states, first_halted, ledger.time_s,
-                        min_wait_s=graph_settings["min_wait_s"], halting_speed=result["halting_speed_m_per_s"],
-                        min_gap_m=float(VEHICLE_TYPE["minGap"]), step_s=STEP_S)
+                        halting_speed=result["halting_speed_m_per_s"], min_gap_m=float(VEHICLE_TYPE["minGap"]),
+                        junctions=junctions, following=following)
+                    for event in dependency_graph.track_dependencies(graph, dependency_history):
+                        event_file.write(json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
                     current = dependency_graph.snapshot(graph)
-                    graph_file.write(json.dumps(current, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
                     graph_peak = dependency_graph.record_snapshot(graph_summary, current, graph_peak)
+                    if ledger.time_s % interval == 0:
+                        graph_file.write(json.dumps(current, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
+                        graph_summary["exported_sample_count"] = graph_summary.get("exported_sample_count", 0) + 1
                 if len(ledger.arrivals) == len(missions):
                     result["status"] = "completed"
                     break
@@ -335,9 +457,14 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
     if crdg:
         graph_summary.update({"settings": graph_settings, "networkx_version": dependency_graph.nx.__version__,
                               "halting_speed_m_per_s": result["halting_speed_m_per_s"],
-                              "leader_progress_margin_m": result["halting_speed_m_per_s"] * STEP_S,
+                              "calculation_interval_s": calculation, "export_interval_s": interval,
+                              "dependency_history": dependency_history.get("statistics", {}),
+                              "active_dependencies": list(dependency_history.get("active", {}).values()),
                               "required_space_basis": "vehicle_length + minGap",
-                              "internal_conflicts": "not_represented", "gridlock": "not_evaluated",
+                              "internal_conflicts": "native_active_constraints_only", "gridlock": "not_evaluated",
+                              "junction_evidence": "native_priority_at_stopline_or_connection_obstacle",
+                              "receiving_release_mode": "one_candidate_free",
+                              "closed_cycles": "observed_release_rules_fixed_point",
                               "run_status": result["status"], "network_sha256": result["network_sha256"],
                               "scenario_sha256": result["scenario_sha256"], "code": result["code"]})
         write_json(output / "crdg_summary.json", graph_summary)

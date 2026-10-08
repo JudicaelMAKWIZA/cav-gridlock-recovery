@@ -29,9 +29,14 @@ def scene():
 
 
 def build(scene, spaces=None):
+    scene = copy.deepcopy(scene)
+    following = {item: crdg.Following(leader[0], leader[1], scene.get("follow_speed", 0), "longitudinal_following")
+                 for item, leader in scene["leaders"].items() if leader}
+    scene.pop("follow_speed", None)
+    scene.pop("leaders")
     return crdg.build_graph(**scene,
                            spaces=spaces if spaces is not None else crdg.receiving_spaces(scene["readings"], scene["lanes"]),
-                           min_wait_s=5, halting_speed=0.1, min_gap_m=2.5, step_s=0.5)
+                           halting_speed=0.1, min_gap_m=2.5, following=following)
 
 
 def test_waiting_resets_on_motion_and_removes_departed_vehicles():
@@ -51,13 +56,13 @@ def test_waiting_resets_on_motion_and_removes_departed_vehicles():
 
 
 @pytest.mark.parametrize("speed,first_halted", [(1, 0), (0, 6)])
-def test_moving_or_recently_halted_vehicle_is_not_added(scene, speed, first_halted):
+def test_motion_is_excluded_but_recent_physical_constraint_is_present(scene, speed, first_halted):
     scene["readings"]["A"]["speed"] = speed
     scene["readings"]["A"]["lane_position"] = 91.499
     scene["first_halted"]["A"] = first_halted
     scene["readings"]["B"] = vehicle("a", 99)
     scene["leaders"]["A"] = ("B", 0.001)
-    assert build(scene).number_of_nodes() == 0
+    assert bool(build(scene).number_of_edges()) is (speed < .1)
 
 
 def test_only_a_close_observed_halted_leader_creates_an_edge(scene):
@@ -67,13 +72,15 @@ def test_only_a_close_observed_halted_leader_creates_an_edge(scene):
     graph = build(scene)
     assert list(graph.edges) == [("vehicle:A", "vehicle:B")]
     assert graph.edges["vehicle:A", "vehicle:B"]["edge_type"] == "leader"
-    assert graph.nodes["vehicle:A"]["waiting_s"] == 10
-    assert graph.nodes["vehicle:B"]["waiting_s"] == 0
+    assert graph.nodes["vehicle:A"]["halted_age_s"] == 10
+    assert graph.nodes["vehicle:B"]["halted_age_s"] is None
     for leader in (("B", 5), ("absent", 0), None):
         scene["leaders"]["A"] = leader
+        scene["follow_speed"] = 1 if leader == ("B", 5) else 0
         assert build(scene).number_of_edges() == 0
     scene["leaders"]["A"] = ("B", 0)
     scene["readings"]["B"]["speed"] = 1
+    scene["follow_speed"] = 1
     assert build(scene).number_of_edges() == 0
 
 
@@ -100,9 +107,10 @@ def test_green_with_free_receiving_space_has_no_dependency(scene):
 def test_receiving_resource_uses_actual_rear_position_and_known_occupant(scene):
     scene["readings"]["B"] = vehicle("b", 6)
     spaces = crdg.receiving_spaces(scene["readings"], scene["lanes"])
-    assert spaces["b_0"] == {"free_space_m": 1, "occupied": True, "occupant_id": "B"}
+    assert spaces["b_0"] == {"free_space_m": 1, "occupied": True, "occupant_id": "B", "knowledge": "known",
+                              "occupant_body": [{"lane": "b_0", "rear_m": 1}]}
     graph = build(scene, spaces)
-    resource = "resource:receiving:a_0:b"
+    resource = "resource:receiving:a_0:b:b_0"
     assert graph.edges["vehicle:A", resource]["edge_type"] == "waits_for"
     assert graph.edges[resource, "vehicle:B"]["edge_type"] == "occupied_by"
     assert graph.nodes[resource]["required_space_m"] == 7.5
@@ -128,7 +136,7 @@ def test_free_lane_without_current_service_does_not_hide_blocked_receiving_space
     scene["movements"][("a_0", "b")].append({"lane": "b_1", "tls": "light", "link_index": 1})
     scene["tls_states"]["light"] = states
     graph = build(scene)
-    resource = "resource:receiving:a_0:b"
+    resource = "resource:receiving:a_0:b:b_0"
     assert graph.edges["vehicle:A", resource]["edge_type"] == "waits_for"
     assert graph.nodes[resource]["candidate_lanes"] == ["b_0"]
     assert graph.nodes[resource]["blocked_lanes"] == ["b_0"]
@@ -144,7 +152,7 @@ def test_uncontrolled_connection_uses_current_receiving_space(scene, occupied):
     if occupied:
         scene["readings"]["B"] = vehicle("b", 6)
         graph = build(scene)
-        resource = "resource:receiving:a_0:b"
+        resource = "resource:receiving:a_0:b:b_0"
         assert graph.edges["vehicle:A", resource]["edge_type"] == "waits_for"
         assert graph.nodes[resource]["service"][0]["state"] is None
     else:
@@ -157,7 +165,7 @@ def test_all_blocked_lanes_reference_their_real_occupants(scene):
     scene["lanes"]["b_1"] = {**scene["lanes"]["b_0"]}
     scene["movements"][("a_0", "b")].append({"lane": "b_1", "tls": "light", "link_index": 0})
     graph = build(scene)
-    resource = "resource:receiving:a_0:b"
+    resource = "resource:receiving:a_0:b:b_0,b_1"
     assert graph.nodes[resource]["blocked_lanes"] == ["b_0", "b_1"]
     assert set(graph.successors(resource)) == {"vehicle:B", "vehicle:C"}
 
@@ -258,8 +266,9 @@ def test_real_small_run_has_identical_missions_and_physics_with_and_without_crdg
     assert not (off / "crdg.jsonl").exists()
     summary = json.loads((on / "crdg_summary.json").read_text())
     lines = [json.loads(line) for line in (on / "crdg.jsonl").read_text().splitlines()]
-    assert len(lines) == summary["sample_count"] > 0
-    assert summary["sample_count"] == int(b["counts"]["simulation_time_s"] // interval)
+    assert len(lines) == summary["exported_sample_count"] > 0
+    assert summary["exported_sample_count"] == int(b["counts"]["simulation_time_s"] // interval)
+    assert summary["sample_count"] == int(b["counts"]["simulation_time_s"] // summary["calculation_interval_s"])
     lanes, _ = crdg.read_network(off / "network.net.xml")
     assert lanes["427630648#3_0"]["street_name"] == "Avenue Colonel Mondjiba"
     assert summary["gridlock"] == "not_evaluated"
@@ -275,7 +284,7 @@ def test_static_connections_are_passenger_legal():
 
 
 @pytest.mark.parametrize("field,value", [("sample_interval_s", 0), ("sample_interval_s", 0.25),
-                                        ("sample_interval_s", float("nan")), ("min_wait_s", -1)])
+                                        ("sample_interval_s", float("nan")), ("calculation_interval_s", -1)])
 def test_invalid_graph_parameters_are_rejected_before_preparation(tmp_path, field, value):
     from cav_recovery.simulation.road_network import read_config
     config = read_config()

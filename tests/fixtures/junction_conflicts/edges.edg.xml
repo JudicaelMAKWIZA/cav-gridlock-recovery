@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edges>
+    <edge id="west_in" from="west" to="crossing" priority="1" numLanes="1" speed="10" />
+    <edge id="east_out" from="crossing" to="east" priority="1" numLanes="1" speed="10" />
+    <edge id="south_in" from="south" to="crossing" priority="3" numLanes="1" speed="10" />
+    <edge id="north_out" from="crossing" to="north" priority="3" numLanes="1" speed="10" />
+</edges>
