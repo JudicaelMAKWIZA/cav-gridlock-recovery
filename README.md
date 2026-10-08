@@ -102,6 +102,21 @@ Aucun de ces candidats n'est une preuve de gridlock. L'âge d'une dépendance
 est distinct de la durée d'arrêt du véhicule. Le calcul et l'export ont des
 cadences séparées, réglables dans la partie `crdg` de la configuration.
 
+Pour suivre aussi l'évolution physique des attentes :
+
+```bash
+python scripts/run_traffic.py --demand LOW --seed 1 --blockage-evidence
+```
+
+Cette option active le C-RDG et ajoute `blockage_events.jsonl` et
+`blockage_summary.json`. Le suivi conserve les déplacements, les changements
+de cause, les permissions de passage et les arrivées observées. Une longueur
+de véhicule parcourue termine un épisode de faible progression, sans prouver
+que toute la file est libérée. Les situations encore ouvertes à l'horizon sont
+censurées, pas déclarées permanentes. Un vert ou une voie légalement accessible
+ne prouve pas que le passage est matériellement possible ; les inconnues restent
+explicites. Aucun gridlock confirmé n'est déclaré.
+
 ## Tests
 
 ```bash

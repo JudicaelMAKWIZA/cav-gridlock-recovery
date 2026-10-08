@@ -16,6 +16,7 @@ from .traffic_demand import poisson_missions
 from .sumo_process import close_sumo
 from .vehicle_tracking import TrafficLedger, verify_trips, STEP_S
 from .. import crdg as dependency_graph
+from ..blockage_observation import BlockageObservation
 
 import xml.etree.ElementTree as ET
 
@@ -38,6 +39,7 @@ def code_provenance() -> dict:
                  "vehicle_tracking.py", "sumo_process.py"):
         digest.update(name.encode() + Path(__file__).with_name(name).read_bytes())
     digest.update(b"crdg.py" + (Path(__file__).parents[1] / "crdg.py").read_bytes())
+    digest.update(b"blockage_observation.py" + (Path(__file__).parents[1] / "blockage_observation.py").read_bytes())
     commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
                             cwd=Path(__file__).resolve().parents[3])
     state = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True,
@@ -269,7 +271,8 @@ def sample_junctions(connection, readings: dict, lanes: dict, movements: dict,
 def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                    gui: bool = False, gui_delay_ms: int = 100, street_names: bool = False, config_path=None,
                    duration_s: float | None = None, rate: float | None = None,
-                   drain_horizon_s: float | None = None, crdg: bool = False) -> dict:
+                   drain_horizon_s: float | None = None, crdg: bool = False,
+                   blockage_evidence: bool = False) -> dict:
     """Prépare et suit le trafic sans arrêt imposé, changement de route ni assistance.
 
     À la limite de temps, un trafic non vidé reste incomplet, pas un gridlock
@@ -278,6 +281,7 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
     """
     if type(gui_delay_ms) is not int or gui_delay_ms < 0:
         raise ValueError("Le délai graphique doit être un entier positif ou nul.")
+    crdg = crdg or blockage_evidence
     config = read_config(config_path)
     if demand not in config["demand"]["rates_veh_per_hour_per_entry"]:
         raise ValueError("Niveau de demande absent de la configuration.")
@@ -323,13 +327,15 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
     junction_cache = {}
     trails, dependency_history = {}, {}
     graph_summary, graph_peak = dependency_graph.empty_summary(), None
+    evidence = BlockageObservation() if blockage_evidence else None
     reader = (lambda connection: subscribed_readings(connection, include_length=True)) if crdg else subscribed_readings
     with (output / "sumo.log").open("w", encoding="utf-8") as log, \
             (output / "timeline.csv").open("w", encoding="utf-8", newline="") as trace, \
             (output / "lanes.csv").open("w", encoding="utf-8", newline="") as lane_file, \
             (output / "observations.jsonl").open("w", encoding="utf-8") as observations, \
             ((output / "crdg.jsonl").open("w", encoding="utf-8") if crdg else nullcontext()) as graph_file, \
-            ((output / "crdg_events.jsonl").open("w", encoding="utf-8") if crdg else nullcontext()) as event_file:
+            ((output / "crdg_events.jsonl").open("w", encoding="utf-8") if crdg else nullcontext()) as event_file, \
+            ((output / "blockage_events.jsonl").open("w", encoding="utf-8") if evidence else nullcontext()) as evidence_file:
         timeline = csv.DictWriter(trace, fieldnames=list(ledger.snapshot()))
         timeline.writeheader()
         lane_writer = csv.DictWriter(lane_file, fieldnames=["time_s", "lane", "length_m", "vehicles",
@@ -409,10 +415,15 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                         graph_lanes, movements, tls_states, first_halted, ledger.time_s,
                         halting_speed=result["halting_speed_m_per_s"], min_gap_m=float(VEHICLE_TYPE["minGap"]),
                         junctions=junctions, following=following)
-                    for event in dependency_graph.track_dependencies(graph, dependency_history):
+                    dependency_events = dependency_graph.track_dependencies(graph, dependency_history)
+                    for event in dependency_events:
                         event_file.write(json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
                     current = dependency_graph.snapshot(graph)
                     graph_peak = dependency_graph.record_snapshot(graph_summary, current, graph_peak)
+                    if evidence:
+                        for event in evidence.observe(ledger.time_s, ledger.readings, current, graph_lanes, movements,
+                                                      arrivals=ledger.arrivals, dependency_events=dependency_events):
+                            evidence_file.write(json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
                     if ledger.time_s % interval == 0:
                         graph_file.write(json.dumps(current, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
                         graph_summary["exported_sample_count"] = graph_summary.get("exported_sample_count", 0) + 1
@@ -439,6 +450,16 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
         result["status"] = "failed"
         result["reason"] = result["reason"] or str(error)
     result["counts"] = ledger.snapshot()
+    if evidence:
+        with (output / "blockage_events.jsonl").open("a", encoding="utf-8") as evidence_file:
+            for event in evidence.finish(ledger.time_s, result["status"]):
+                evidence_file.write(json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
+        evidence_summary = {**evidence.summary(), "code": result["code"], "network_sha256": result["network_sha256"],
+                            "seed": seed, "demand": demand, "run_status": result["status"],
+                            "calculation_interval_s": calculation}
+        write_json(output / "blockage_summary.json", evidence_summary)
+        result["blockage_evidence"] = {"enabled": True, "events": "blockage_events.jsonl",
+                                      "summary": "blockage_summary.json"}
     result["failure_observation"] = ledger.failure_observation
     result["last_validated_state"] = ledger.last_validated_state
     result["remaining_ids"] = sorted(set(ledger.missions) - set(ledger.arrivals))
