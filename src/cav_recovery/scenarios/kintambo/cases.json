@@ -1,0 +1,43 @@
+{
+  "clearance": {
+    "aim": "Attentes normales puis vidange du noyau de Kintambo",
+    "mechanism": "Quatre mouvements croisés partagent les carrefours Magasin. La demande finie et espacée doit laisser les files se résorber.",
+    "evidence": "Progressions, arrivées de toutes les missions et disparition des contraintes ; une fin à l'horizon ne valide pas la vidange.",
+    "sector": ["magasin_west", "3675784999", "magasin_nguma", "magasin_oua", "magasin_east"],
+    "drain_s": 900, "jitter_s": 0.2,
+    "streams": [
+      {"route": "nguma__mondjiba", "count": 6, "start_s": 0, "headway_s": 8},
+      {"route": "mondjiba__nguma", "count": 6, "start_s": 0, "headway_s": 8},
+      {"route": "kasa_vubu__montagne", "count": 6, "start_s": 0, "headway_s": 8},
+      {"route": "montagne__kasa_vubu", "count": 6, "start_s": 0, "headway_s": 8}
+    ]
+  },
+  "crossing": {
+    "aim": "Dépendances concentrées autour des carrefours Magasin",
+    "mechanism": "Une vague courte sur les quatre mouvements croisés peut former des chaînes de suivi, saturer la réception et rencontrer des conflits natifs. Le réseau et les feux restent canoniques.",
+    "evidence": "Positions et progression, occupation aval, service du mouvement et preuves natives des arcs ; une file au rouge seule ne prouve pas un blocage mutuel.",
+    "sector": ["magasin_west", "3675784999", "magasin_nguma", "magasin_oua", "magasin_east"],
+    "drain_s": 270, "jitter_s": 0.2,
+    "streams": [
+      {"route": "nguma__mondjiba", "count": 24, "start_s": 0, "headway_s": 1},
+      {"route": "mondjiba__nguma", "count": 24, "start_s": 0, "headway_s": 1},
+      {"route": "kasa_vubu__montagne", "count": 24, "start_s": 0, "headway_s": 1},
+      {"route": "montagne__kasa_vubu", "count": 24, "start_s": 0, "headway_s": 1}
+    ]
+  },
+  "spillback": {
+    "aim": "Blocage collectif entre carrefours visé, non présumé",
+    "mechanism": "Six mouvements traversants et tournants chargent les liaisons courtes du noyau depuis Nguma, Mondjiba, Kasa-Vubu, Montagne, OUA et Écuries. La réception peut propager les files ; keepClear et les contrôleurs partagés peuvent empêcher une fermeture mutuelle.",
+    "evidence": "Étendue des files, progression et débit sur plusieurs cycles, causes natives et échappatoires ; un cycle C-RDG ou une fin à l'horizon ne suffit pas à confirmer le gridlock.",
+    "sector": ["magasin_west", "3675784999", "magasin_nguma", "magasin_oua", "magasin_east"],
+    "drain_s": 270, "jitter_s": 0.2,
+    "streams": [
+      {"route": "nguma__mondjiba", "count": 35, "start_s": 0, "headway_s": 1},
+      {"route": "mondjiba__nguma", "count": 35, "start_s": 0, "headway_s": 1},
+      {"route": "kasa_vubu__montagne", "count": 35, "start_s": 0, "headway_s": 1},
+      {"route": "montagne__kasa_vubu", "count": 35, "start_s": 0, "headway_s": 1},
+      {"route": "oua__ecuries", "count": 35, "start_s": 0, "headway_s": 1},
+      {"route": "ecuries__oua", "count": 35, "start_s": 0, "headway_s": 1}
+    ]
+  }
+}

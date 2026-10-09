@@ -117,9 +117,69 @@ censurées, pas déclarées permanentes. Un vert ou une voie légalement accessi
 ne prouve pas que le passage est matériellement possible ; les inconnues restent
 explicites. Aucun gridlock confirmé n'est déclaré.
 
-## Croisements contrôlés
+## Circulation ciblée sur Kintambo
 
-Des scénarios synthétiques séparés permettent d'étudier l'attente à une
+Kintambo reste le réseau principal. Trois variantes de demande utilisent ses
+routes, voies et feux canoniques sans les modifier : `clearance` vise une
+vidange, `crossing` concentre des mouvements croisés et `spillback` vise des
+contraintes entre plusieurs carrefours. Les mécanismes et preuves attendues
+figurent dans [cases.json](src/cav_recovery/scenarios/kintambo/cases.json).
+Ces variantes ont des missions finies et des départs explicites seedés, pas
+une augmentation uniforme du Poisson. Leur nom ne présume aucun résultat.
+
+```bash
+python scripts/run_traffic.py --kintambo-case clearance --seed 1 --blockage-evidence
+python scripts/run_traffic.py --kintambo-case crossing --seed 1 --blockage-evidence
+python scripts/run_traffic.py --kintambo-case spillback --seed 1 --blockage-evidence
+```
+
+Ne pas combiner une variante avec `--demand`, `--rate`, `--duration-s` ou
+`--config`. `--drain-horizon-s` peut prolonger l'observation des mêmes missions.
+Sans `--kintambo-case`, les expériences Poisson restent inchangées.
+
+## Dépendances dans SUMO-GUI
+
+```bash
+python scripts/run_traffic.py --kintambo-case crossing --seed 1 \
+  --crdg-scene-at 81.5 --crdg-focus montagne_000012 --crdg-gui
+```
+
+Cette commande termine l'expérience puis ouvre son **état natif figé à
+81,5 s** dans SUMO-GUI, avec les annotations du même calcul C-RDG. Elle ne
+dessine pas une relation ancienne sur un trafic qui a déjà avancé.
+Répéter `--crdg-scene-at` pour enregistrer plusieurs instants et examiner
+l'évolution ; choisir des multiples de la cadence de calcul (0,5 s par défaut).
+Les snapshots habituels `crdg.jsonl` restent exportés à 5 s.
+
+`--crdg-focus <ID>` choisit la voiture ; `--crdg-depth 1|2|3` règle son voisinage.
+Un anneau bleu marque cette voiture. Les repères orange et les flèches montrent
+ses dépendances proches, sur les vraies voies et les véhicules de l'état SUMO.
+Les ressources sont repérées sur leurs voies natives, pas par une zone de
+conflit recalculée. Les textes français expliquent les arcs et les paramètres
+des POI conservent leur preuve. Les repères V/R ont leurs IDs complets dans
+les paramètres et les fichiers de scène. La vue est limitée à 16 nœuds ; toute
+limitation ou cause inconnue est signalée, sans inventer de flèche.
+
+On peut cliquer sur les vrais véhicules dans SUMO pour examiner leurs données,
+zoomer et déplacer la vue. **Ne pas lancer le trafic de cette vue figée** :
+elle représente uniquement l'instant enregistré. Fermer la fenêtre termine
+sa consultation. Pour changer le véhicule mis en évidence, rouvrir la même
+scène avec `--focus` ; aucun graphe ni trafic n'est recalculé :
+
+```bash
+python scripts/view_sumo_crdg.py <sortie>/crdg_scenes/81.5 --list-vehicles
+python scripts/view_sumo_crdg.py <sortie>/crdg_scenes/81.5 --focus montagne_000012
+```
+
+Sans `--crdg-gui`, l'enregistrement reste sans fenêtre ; le rejeu s'ouvre plus
+tard avec `view_sumo_crdg.py`. Les scènes nécessitent les fichiers de leur
+exécution d'origine, dont le réseau. Les empreintes de l'état et du réseau
+sont vérifiées. Ce mode est une inspection fidèle d'instants choisis, pas
+encore une animation synchronisée en direct ni un diagnostic de gridlock.
+
+## Croisements secondaires
+
+Des scénarios synthétiques séparés servent de tests secondaires pour l'attente à une
 priorité, la rétention d'approches secondaires, des arrivées simultanées et
 le spillback entre deux croisements. Les paramètres et le mécanisme visé sont
 dans [cases.json](src/cav_recovery/scenarios/intersections/cases.json).
@@ -140,7 +200,7 @@ missions. `--demand`, `--rate`, `--duration-s` et `--config` sont réservés à
 Kintambo, qui reste le choix par défaut. `priority_wait_holdout` est une variante
 réservée à une future évaluation : ne pas l'utiliser pour régler un détecteur.
 
-## Voir un graphe C-RDG
+## Vue schématique secondaire du C-RDG
 
 Après une exécution, remplacer le chemin ci-dessous par le dossier indiqué :
 
