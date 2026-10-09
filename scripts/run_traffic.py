@@ -8,10 +8,12 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cav_recovery.simulation.traffic_run import run_traffic
+from cav_recovery.simulation.intersection_scenarios import scenario_names
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Observer une demande Poisson sur la topologie de Kintambo.")
+    parser = argparse.ArgumentParser(description="Observer Kintambo ou un croisement contrôlé, sans récupération.")
+    parser.add_argument("--scenario", choices=("kintambo", *scenario_names()), default="kintambo")
     parser.add_argument("--demand", choices=["LOW", "MEDIUM", "HIGH", "STRESS"], default="LOW")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--gui", action="store_true", help="Utiliser sumo-gui avec démarrage automatique.")
@@ -26,7 +28,7 @@ def main() -> int:
     parser.add_argument("--drain-horizon-s", type=float, help="Attente maximale après injection.")
     parser.add_argument("--output-dir", help="Dossier absent ou vide ; sinon un nouveau dossier est créé.")
     args = parser.parse_args()
-    output = args.output_dir or str(Path("outputs/simulation/kintambo") /
+    output = args.output_dir or str(Path("outputs/simulation") / args.scenario /
                                    datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
     try:
         result = run_traffic(output, demand=args.demand, seed=args.seed, gui=args.gui,
@@ -34,14 +36,15 @@ def main() -> int:
                                 gui_delay_ms=args.gui_delay_ms, config_path=args.config,
                                 duration_s=args.duration_s, rate=args.rate,
                                 drain_horizon_s=args.drain_horizon_s, crdg=args.crdg,
-                                blockage_evidence=args.blockage_evidence)
+                                blockage_evidence=args.blockage_evidence, scenario=args.scenario)
     except ValueError as error:
         print(f"Entrée refusée : {error}", file=sys.stderr)
         return 2
     except Exception as error:
         print(f"Expérience interrompue : {error}. Diagnostic : {output}", file=sys.stderr)
         return 1
-    print(f"Kintambo / {args.demand} / seed {args.seed} : {result['status']}")
+    label = f"Kintambo / {args.demand}" if args.scenario == "kintambo" else args.scenario
+    print(f"{label} / seed {args.seed} : {result['status']}")
     print(result["counts"])
     print(f"Bilan conservé : {output}")
     if result.get("reason"):

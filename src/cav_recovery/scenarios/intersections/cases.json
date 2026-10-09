@@ -1,0 +1,67 @@
+{
+  "crdg": {"sample_interval_s": 5, "calculation_interval_s": 0.5},
+  "cases": {
+    "priority_wait": {
+      "role": "development", "aim": "Attente et congestion qui se résorbent",
+      "mechanism": "Les approches secondaires cèdent à un flot principal fini. La réception et les sorties restent ouvertes.",
+      "geometry": "cross", "junction_type": "priority", "arm_length_m": 160, "speed_m_per_s": 13.89,
+      "drain_s": 180, "jitter_s": 0.2,
+      "streams": [
+        {"route": ["west_in", "east_out"], "count": 20, "start_s": 0, "headway_s": 3},
+        {"route": ["east_in", "west_out"], "count": 20, "start_s": 0, "headway_s": 3},
+        {"route": ["north_in", "south_out"], "count": 6, "start_s": 1.5, "headway_s": 5},
+        {"route": ["south_in", "north_out"], "count": 6, "start_s": 1.5, "headway_s": 5}
+      ]
+    },
+    "priority_starvation": {
+      "role": "development", "aim": "Blocage local persistant sous contrainte extérieure au groupe secondaire",
+      "mechanism": "Un flot principal dense peut retenir plusieurs véhicules secondaires sans dépendre d'eux. Les missions prioritaires sont finies ; une résolution ultérieure reste possible.",
+      "geometry": "cross", "junction_type": "priority", "arm_length_m": 160, "speed_m_per_s": 13.89,
+      "drain_s": 90, "jitter_s": 0.2,
+      "streams": [
+        {"route": ["west_in", "east_out"], "count": 80, "start_s": 0, "headway_s": 1},
+        {"route": ["east_in", "west_out"], "count": 80, "start_s": 0, "headway_s": 1},
+        {"route": ["north_in", "south_out"], "count": 10, "start_s": 20, "headway_s": 1},
+        {"route": ["south_in", "north_out"], "count": 10, "start_s": 20, "headway_s": 1}
+      ]
+    },
+    "mutual_yield": {
+      "role": "development", "aim": "Deadlock mutuel visé, non présumé",
+      "mechanism": "Quatre arrivées simultanées près de l'entrée d'un croisement à priorité à droite. Chaque mouvement traverse celui du voisin. Les règles natives peuvent départager les véhicules et réfuter le deadlock.",
+      "geometry": "cross", "junction_type": "right_before_left", "arm_length_m": 160, "speed_m_per_s": 13.89,
+      "initial_distance_to_end_m": 7.5, "drain_s": 90, "jitter_s": 0,
+      "streams": [
+        {"route": ["west_in", "east_out"], "count": 1, "start_s": 0, "headway_s": 1},
+        {"route": ["east_in", "west_out"], "count": 1, "start_s": 0, "headway_s": 1},
+        {"route": ["north_in", "south_out"], "count": 1, "start_s": 0, "headway_s": 1},
+        {"route": ["south_in", "north_out"], "count": 1, "start_s": 0, "headway_s": 1}
+      ]
+    },
+    "junction_spillback": {
+      "role": "development", "aim": "Gridlock local visé sur deux croisements, non présumé",
+      "mechanism": "Six approches et des mouvements traversants et croisés partagent une liaison courte bidirectionnelle. Une réception saturée peut retenir les carrefours voisins ; keepClear et les feux peuvent au contraire permettre la vidange.",
+      "geometry": "double_cross", "junction_type": "traffic_light", "arm_length_m": 160,
+      "link_length_m": 40, "speed_m_per_s": 13.89, "drain_s": 180, "jitter_s": 0.2,
+      "streams": [
+        {"route": ["west_in", "west_east", "east_out"], "count": 40, "start_s": 0, "headway_s": 1},
+        {"route": ["east_in", "east_west", "west_out"], "count": 40, "start_s": 0, "headway_s": 1},
+        {"route": ["wnorth_in", "west_east", "esouth_out"], "count": 40, "start_s": 0, "headway_s": 1},
+        {"route": ["wsouth_in", "west_east", "enorth_out"], "count": 40, "start_s": 0, "headway_s": 1},
+        {"route": ["enorth_in", "east_west", "wsouth_out"], "count": 40, "start_s": 0, "headway_s": 1},
+        {"route": ["esouth_in", "east_west", "wnorth_out"], "count": 40, "start_s": 0, "headway_s": 1}
+      ]
+    },
+    "priority_wait_holdout": {
+      "role": "evaluation_reserved", "aim": "Témoin négatif réservé à l'évaluation future",
+      "mechanism": "Variante publiée mais non exécutée lors de la construction. Toute utilisation pour régler le détecteur invalide son statut de réserve.",
+      "geometry": "cross", "junction_type": "priority", "arm_length_m": 190, "speed_m_per_s": 13.89,
+      "drain_s": 180, "jitter_s": 0.4,
+      "streams": [
+        {"route": ["west_in", "east_out"], "count": 24, "start_s": 0, "headway_s": 3.5},
+        {"route": ["east_in", "west_out"], "count": 24, "start_s": 1, "headway_s": 3.5},
+        {"route": ["north_in", "south_out"], "count": 8, "start_s": 2, "headway_s": 4},
+        {"route": ["south_in", "north_out"], "count": 8, "start_s": 3, "headway_s": 4}
+      ]
+    }
+  }
+}

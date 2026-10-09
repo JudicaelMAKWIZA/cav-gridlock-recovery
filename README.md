@@ -117,6 +117,51 @@ censurées, pas déclarées permanentes. Un vert ou une voie légalement accessi
 ne prouve pas que le passage est matériellement possible ; les inconnues restent
 explicites. Aucun gridlock confirmé n'est déclaré.
 
+## Croisements contrôlés
+
+Des scénarios synthétiques séparés permettent d'étudier l'attente à une
+priorité, la rétention d'approches secondaires, des arrivées simultanées et
+le spillback entre deux croisements. Les paramètres et le mécanisme visé sont
+dans [cases.json](src/cav_recovery/scenarios/intersections/cases.json).
+Ils utilisent des missions finies et des départs explicites reproductibles,
+pas le Poisson de Kintambo. Le type de véhicule et les contrôles d'intégrité
+restent les mêmes. Un nom de scénario n'est jamais une preuve de son résultat.
+
+```bash
+python scripts/run_traffic.py --scenario priority_wait --seed 1 --crdg
+python scripts/run_traffic.py --scenario priority_starvation --seed 1 --crdg
+python scripts/run_traffic.py --scenario mutual_yield --seed 1 --crdg
+python scripts/run_traffic.py --scenario junction_spillback --seed 1 --crdg
+```
+
+Ajouter `--gui` pour voir la circulation ou `--blockage-evidence` pour suivre
+les épisodes. `--drain-horizon-s` peut prolonger l'observation sans changer les
+missions. `--demand`, `--rate`, `--duration-s` et `--config` sont réservés à
+Kintambo, qui reste le choix par défaut. `priority_wait_holdout` est une variante
+réservée à une future évaluation : ne pas l'utiliser pour régler un détecteur.
+
+## Voir un graphe C-RDG
+
+Après une exécution, remplacer le chemin ci-dessous par le dossier indiqué :
+
+```bash
+python scripts/view_crdg.py outputs/simulation/mon-essai/crdg.jsonl
+```
+
+Ouvrir le fichier `crdg_view.html` créé près de la source dans Chrome, Edge ou
+un autre navigateur. La page est autonome et fonctionne hors connexion.
+Choisir un instant exporté, saisir l'ID d'une voiture puis cliquer sur
+« Centrer ». Cliquer sur un nœud ou une flèche pour lire ses attributs.
+La molette zoome ; glisser le fond déplace la vue. Pour un gros fichier,
+`--time 285` garde uniquement cet instant s'il a réellement été exporté.
+`--output <nouveau-fichier.html>` choisit la destination sans écraser un fichier.
+
+Les véhicules, ressources, arcs et candidats viennent du C-RDG source.
+La disposition est schématique, pas une carte SUMO. Les grands graphes demandent
+une focalisation explicite ; aucune relation n'est inventée ou supprimée du
+fichier. Les exports ne représentent pas tous les calculs internes et les
+cycles restent des candidats, pas des diagnostics confirmés.
+
 ## Tests
 
 ```bash

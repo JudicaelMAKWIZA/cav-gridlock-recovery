@@ -152,6 +152,7 @@ def test_nonempty_results_preserved(tmp_path):
 @pytest.mark.parametrize("name,included", [
     ("crdg.py", True),
     ("blockage_observation.py", True),
+    ("intersection_scenarios.py", True), ("crdg_view.py", False),
     ("road_network.py", True), ("traffic_demand.py", True), ("traffic_run.py", True),
     ("sumo_process.py", True), ("vehicle_tracking.py", True), ("sumo_smoke.py", False),
 ])

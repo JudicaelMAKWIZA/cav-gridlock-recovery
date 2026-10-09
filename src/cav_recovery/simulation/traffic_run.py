@@ -15,6 +15,7 @@ from .road_network import build_network, read_config, require_binary, write_xml
 from .traffic_demand import poisson_missions
 from .sumo_process import close_sumo
 from .vehicle_tracking import TrafficLedger, verify_trips, STEP_S
+from .intersection_scenarios import build_intersection, read_scenario
 from .. import crdg as dependency_graph
 from ..blockage_observation import BlockageObservation
 
@@ -36,7 +37,7 @@ def code_provenance() -> dict:
     """Identifie le code utilisé pour produire les résultats."""
     digest = hashlib.sha256()
     for name in ("road_network.py", "traffic_demand.py", "traffic_run.py",
-                 "vehicle_tracking.py", "sumo_process.py"):
+                 "vehicle_tracking.py", "sumo_process.py", "intersection_scenarios.py"):
         digest.update(name.encode() + Path(__file__).with_name(name).read_bytes())
     digest.update(b"crdg.py" + (Path(__file__).parents[1] / "crdg.py").read_bytes())
     digest.update(b"blockage_observation.py" + (Path(__file__).parents[1] / "blockage_observation.py").read_bytes())
@@ -57,17 +58,33 @@ def prepare_traffic(config: dict, output: Path, demand: str, seed: int,
     intensity = config["demand"]["rates_veh_per_hour_per_entry"][demand] if rate is None else rate
     rates = {entry: intensity for entry in config["demand"]["entries"]}
     missions = poisson_missions(routes, config["demand"]["destination_weights"], rates, duration, seed, demand)
+    write_sumo_inputs(output, inspection, routes, missions, seed, street_names=street_names)
+    prepared = {"configuration": config, "network": inspection, "routes": routes,
+                "seed": seed, "demand": demand, "duration_s": duration,
+                "rates_veh_per_hour_per_entry": rates, "vehicle_type": VEHICLE_TYPE,
+                "missions": [asdict(m) for m in missions]}
+    prepared["files_sha256"] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                                for p in sorted(output.iterdir()) if p.suffix not in (".log",)}
+    write_json(output / "scenario.json", prepared)
+    return prepared, missions
+
+
+def write_sumo_inputs(output, inspection, routes, missions, seed, *, street_names=False, initial_positions=None,
+                      scheme_name="kintambo"):
+    """Écrit les entrées avec le même véhicule et les mêmes contrôles de sécurité."""
     root = ET.Element("routes")
     ET.SubElement(root, "vType", VEHICLE_TYPE)
     for name, edges in sorted(routes.items()):
         ET.SubElement(root, "route", id=name, edges=" ".join(edges))
     for mission in missions:
-        ET.SubElement(root, "vehicle", id=mission.vehicle_id, type=VEHICLE_TYPE["id"],
+        vehicle = ET.SubElement(root, "vehicle", id=mission.vehicle_id, type=VEHICLE_TYPE["id"],
                       route=mission.route_id, depart=repr(mission.scheduled_s),
                       departLane="best", departSpeed="0")
+        if initial_positions and mission.vehicle_id in initial_positions:
+            vehicle.set("departPos", repr(initial_positions[mission.vehicle_id]))
     write_xml(output / "traffic.rou.xml", root)
     view = ET.Element("viewsettings")
-    scheme = ET.SubElement(view, "scheme", name="kintambo")
+    scheme = ET.SubElement(view, "scheme", name=scheme_name)
     ET.SubElement(scheme, "edges", streetName_show=str(street_names).lower(), streetName_size="24",
                   streetName_constantSize="true", streetName_onlySelected="false",
                   streetName_color="0,0,160", streetName_bgColor="255,255,255")
@@ -90,10 +107,18 @@ def prepare_traffic(config: dict, output: Path, demand: str, seed: int,
         for name, value in options.items():
             ET.SubElement(parent, name, value=value)
     write_xml(output / "simulation.sumocfg", root)
+
+
+def prepare_intersection(config, output, seed, *, street_names=False):
+    inspection, routes, missions, positions = build_intersection(config, output, seed)
+    write_sumo_inputs(output, inspection, routes, missions, seed, street_names=street_names,
+                      initial_positions=positions, scheme_name=config["name"])
     prepared = {"configuration": config, "network": inspection, "routes": routes,
-                "seed": seed, "demand": demand, "duration_s": duration,
-                "rates_veh_per_hour_per_entry": rates, "vehicle_type": VEHICLE_TYPE,
-                "missions": [asdict(m) for m in missions]}
+                "seed": seed, "demand": "CONTROLLED", "duration_s": math.ceil(max(m.scheduled_s for m in missions)) + STEP_S,
+                "arrival_model": "explicit_seeded_schedule", "rates_veh_per_hour_per_entry": None,
+                "vehicle_type": VEHICLE_TYPE, "gui_scheme": config["name"], "missions": [asdict(m) for m in missions],
+                "initial_positions_m": positions, "phenomenon_target": config["case"]["aim"],
+                "phenomenon_observed": "not_evaluated"}
     prepared["files_sha256"] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                                 for p in sorted(output.iterdir()) if p.suffix not in (".log",)}
     write_json(output / "scenario.json", prepared)
@@ -272,7 +297,7 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                    gui: bool = False, gui_delay_ms: int = 100, street_names: bool = False, config_path=None,
                    duration_s: float | None = None, rate: float | None = None,
                    drain_horizon_s: float | None = None, crdg: bool = False,
-                   blockage_evidence: bool = False) -> dict:
+                   blockage_evidence: bool = False, scenario: str = "kintambo") -> dict:
     """Prépare et suit le trafic sans arrêt imposé, changement de route ni assistance.
 
     À la limite de temps, un trafic non vidé reste incomplet, pas un gridlock
@@ -282,9 +307,14 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
     if type(gui_delay_ms) is not int or gui_delay_ms < 0:
         raise ValueError("Le délai graphique doit être un entier positif ou nul.")
     crdg = crdg or blockage_evidence
-    config = read_config(config_path)
-    if demand not in config["demand"]["rates_veh_per_hour_per_entry"]:
-        raise ValueError("Niveau de demande absent de la configuration.")
+    if scenario == "kintambo":
+        config = read_config(config_path)
+        if demand not in config["demand"]["rates_veh_per_hour_per_entry"]:
+            raise ValueError("Niveau de demande absent de la configuration.")
+    else:
+        if config_path is not None or rate is not None or duration_s is not None or demand != "LOW":
+            raise ValueError("Les scénarios contrôlés utilisent leurs départs définis ; config, rate, duration et demand sont réservés à Kintambo.")
+        config = read_scenario(scenario)
     drain = config["simulation"]["drain_horizon_s"] if drain_horizon_s is None else drain_horizon_s
     if not math.isfinite(drain) or drain <= 0 or drain % STEP_S:
         raise ValueError("L'horizon doit être positif et multiple de 0,5 s.")
@@ -301,14 +331,17 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
         raise ValueError("Le dossier de résultats doit être absent ou vide.")
     output.mkdir(parents=True, exist_ok=True)
     try:
-        prepared, missions = prepare_traffic(config, output, demand, seed, duration_s, rate,
-                                            street_names=street_names)
+        if scenario == "kintambo":
+            prepared, missions = prepare_traffic(config, output, demand, seed, duration_s, rate,
+                                                street_names=street_names)
+        else:
+            prepared, missions = prepare_intersection(config, output, seed, street_names=street_names)
     except Exception as error:
         write_json(output / "preparation_error.json", {"status": "failed", "reason": str(error)})
         raise
     ledger = TrafficLedger(missions)
     horizon = math.ceil(prepared["duration_s"] / STEP_S) * STEP_S + drain
-    result = {"scenario": "kintambo", "demand": demand, "seed": seed,
+    result = {"scenario": scenario, "demand": prepared.get("demand", demand), "seed": seed,
               "rates_veh_per_hour_per_entry": prepared["rates_veh_per_hour_per_entry"],
               "duration_s": prepared["duration_s"], "horizon_s": horizon,
               "scenario_sha256": hashlib.sha256((output / "scenario.json").read_bytes()).hexdigest(),
@@ -360,7 +393,7 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
             process = subprocess.Popen(command, stdout=log, stderr=log)
             connection = traci.connect(port=port, proc=process, numRetries=300, waitBetweenRetries=0.1)
             if gui:
-                connection.gui.setSchema("View #0", "kintambo")
+                connection.gui.setSchema("View #0", prepared.get("gui_scheme", "kintambo"))
                 left, bottom, right, top = prepared["network"]["view_boundary_m"]
                 connection.gui.setBoundary("View #0", left, bottom, right, top)
             result["sumo_version"] = connection.getVersion()[1]
@@ -459,7 +492,7 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
             for event in evidence.finish(ledger.time_s, result["status"]):
                 evidence_file.write(json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
         evidence_summary = {**evidence.summary(), "code": result["code"], "network_sha256": result["network_sha256"],
-                            "seed": seed, "demand": demand, "run_status": result["status"],
+                            "seed": seed, "demand": result["demand"], "run_status": result["status"],
                             "calculation_interval_s": calculation}
         write_json(output / "blockage_summary.json", evidence_summary)
         result["blockage_evidence"] = {"enabled": True, "events": "blockage_events.jsonl",
