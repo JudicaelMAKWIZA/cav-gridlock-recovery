@@ -152,8 +152,9 @@ def test_nonempty_results_preserved(tmp_path):
 @pytest.mark.parametrize("name,included", [
     ("crdg.py", True),
     ("blockage_observation.py", True),
-    ("intersection_scenarios.py", True), ("crdg_view.py", False),
-    ("kintambo_scenarios.py", True), ("crdg_gui.py", True),
+    ("kintambo_scenarios.py", True), ("sumo_snapshot.py", True),
+    ("sumo_view.py", True),
+    ("crdg_live.py", True), ("crdg_panel.py", True),
     ("road_network.py", True), ("traffic_demand.py", True), ("traffic_run.py", True),
     ("sumo_process.py", True), ("vehicle_tracking.py", True), ("sumo_smoke.py", False),
 ])
@@ -254,14 +255,15 @@ def test_real_light_traffic_drains(tmp_path):
 
 
 def fake_run(monkeypatch, tmp_path, frames, gui=False, cleanup_error=False):
+    import traci
     connection = Connection(frames)
     connection.lane = SimpleNamespace(getIDList=lambda: [])
     connection.gui = SimpleNamespace(setBoundary=Mock(), setSchema=Mock())
     config = network.read_config()
-    prepared = {"duration_s": 0.5, "rates_veh_per_hour_per_entry": {"entry": 90},
+    prepared = {"configuration": config, "duration_s": 0.5, "rates_veh_per_hour_per_entry": {"entry": 90},
                 "routes": {"straight": ["start", "end"]}, "network": {"view_boundary_m": [-1, -1, 1, 1]}}
     def prepare(config, directory, *args, **kwargs):
-        for name in ("scenario.json", "network.net.xml"):
+        for name in ("scenario.json", "network.net.xml", "traffic.rou.xml", "simulation.sumocfg", "view.xml"):
             (directory / name).write_text("synthetic")
         return prepared, [mission()]
     monkeypatch.setattr(run, "prepare_traffic", prepare)
@@ -274,7 +276,7 @@ def fake_run(monkeypatch, tmp_path, frames, gui=False, cleanup_error=False):
     process.wait.side_effect = [OSError("attente"), None] if cleanup_error else None
     launch = Mock(return_value=process)
     monkeypatch.setattr(run.subprocess, "Popen", launch)
-    monkeypatch.setattr(sys.modules["traci"], "connect", lambda **kwargs: connection)
+    monkeypatch.setattr(traci, "connect", lambda **kwargs: connection)
     result = run.run_traffic(tmp_path / "result", gui=gui, gui_delay_ms=7, drain_horizon_s=1)
     return result, connection, process, launch.call_args.args[0]
 
@@ -286,7 +288,6 @@ def fake_run(monkeypatch, tmp_path, frames, gui=False, cleanup_error=False):
     ([{"collisions": ["car"]}], "Collision"),
 ])
 def test_runner_integrity_failure_keeps_diagnostics_and_closes(monkeypatch, tmp_path, frames, message):
-    import traci
     result, connection, process, _ = fake_run(monkeypatch, tmp_path, frames)
     assert result["status"] == "failed" and message in result["reason"]
     assert result["failure_observation"] is not None
@@ -297,7 +298,6 @@ def test_runner_integrity_failure_keeps_diagnostics_and_closes(monkeypatch, tmp_
 
 
 def test_runner_horizon_not_reported_as_gridlock(monkeypatch, tmp_path):
-    import traci
     result, connection, _, _ = fake_run(monkeypatch, tmp_path, [{}, {}, {}])
     assert result["status"] == "horizon_reached"
     assert result["gridlock"] == "not_evaluated"
@@ -306,15 +306,15 @@ def test_runner_horizon_not_reported_as_gridlock(monkeypatch, tmp_path):
 
 
 def test_runner_cleanup_errors_are_failures(monkeypatch, tmp_path):
-    import traci
     result, connection, process, _ = fake_run(monkeypatch, tmp_path, normal_frames(), cleanup_error=True)
     assert result["status"] == "failed"
+    assert result["simulation_outcome"] == "completed"
+    assert "Fermeture normale non confirmée" in result["reason"]
     assert result["cleanup_errors"] and result["forced_process_stop"]
     assert process.terminate.called and connection.closed
 
 
 def test_gui_only_changes_display(monkeypatch, tmp_path):
-    import traci
     closer = Mock(wraps=close_sumo)
     monkeypatch.setattr(run, "close_sumo", closer)
     result, connection, process, command = fake_run(monkeypatch, tmp_path, normal_frames(), gui=True)

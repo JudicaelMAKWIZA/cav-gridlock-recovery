@@ -6,6 +6,7 @@ from dataclasses import asdict
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -15,9 +16,9 @@ from .road_network import build_network, read_config, require_binary, write_xml
 from .traffic_demand import poisson_missions
 from .sumo_process import close_sumo
 from .vehicle_tracking import TrafficLedger, verify_trips, STEP_S
-from .intersection_scenarios import build_intersection, read_scenario
-from .kintambo_scenarios import read_case, case_missions
-from .crdg_gui import save_scene
+from .kintambo_scenarios import read_case, case_missions, prepare_case_network
+from .sumo_snapshot import save_scene
+from .crdg_live import CrdgPanelLink, configure_live_view, local_sector, whole_network
 from .. import crdg as dependency_graph
 from ..blockage_observation import BlockageObservation
 
@@ -39,17 +40,39 @@ def code_provenance() -> dict:
     """Identifie le code utilisé pour produire les résultats."""
     digest = hashlib.sha256()
     for name in ("road_network.py", "traffic_demand.py", "traffic_run.py",
-                 "vehicle_tracking.py", "sumo_process.py", "intersection_scenarios.py",
-                 "kintambo_scenarios.py", "crdg_gui.py"):
+                 "vehicle_tracking.py", "sumo_process.py", "sumo_snapshot.py",
+                 "kintambo_scenarios.py", "crdg_live.py", "crdg_panel.py", "sumo_view.py"):
         digest.update(name.encode() + Path(__file__).with_name(name).read_bytes())
     digest.update(b"crdg.py" + (Path(__file__).parents[1] / "crdg.py").read_bytes())
     digest.update(b"blockage_observation.py" + (Path(__file__).parents[1] / "blockage_observation.py").read_bytes())
-    commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
-                            cwd=Path(__file__).resolve().parents[3])
-    state = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True,
-                           cwd=Path(__file__).resolve().parents[3])
+    digest.update(b"cli.py" + (Path(__file__).parents[1] / "cli.py").read_bytes())
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                                cwd=Path(__file__).resolve().parents[3])
+        state = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True,
+                               cwd=Path(__file__).resolve().parents[3])
+    except OSError:
+        # Un package installé reste identifiable même sans Git.
+        return {"sha256": digest.hexdigest(), "git_commit": None, "git_state": None}
     return {"sha256": digest.hexdigest(), "git_commit": commit.stdout.strip() or None,
             "git_state": ("dirty" if state.stdout.strip() else "clean") if state.returncode == 0 else None}
+
+
+def write_manifest(output, prepared, result, output_mode):
+    """Garde les entrées et l'état réel du run ; une erreur n'est pas un résultat positif."""
+    inputs = ("network.net.xml", "traffic.rou.xml", "simulation.sumocfg", "view.xml", "scenario.json")
+    write_json(output / "manifest.json", {
+        "format_version": 1, "method": "traffic_observation", "crdg_enabled": result["crdg_enabled"], "diagnostic": "not_implemented",
+        "scenario": result.get("kintambo_case", "kintambo"), "seed": result["seed"],
+        "configuration": prepared.get("configuration"), "code": result["code"],
+        "sumo_version": result.get("sumo_version"), "traci_version": result.get("traci_version"),
+        "traci_protocol": result.get("traci_protocol"), "step_s": STEP_S,
+        "status": result["status"], "reason": result["reason"],
+        "display_state": result.get("display_state"), "output_mode": output_mode,
+        "inputs_sha256": {name: hashlib.sha256((output / name).read_bytes()).hexdigest() if (output / name).exists() else None for name in inputs},
+        "artifacts": sorted(p.name for p in output.iterdir() if p.is_file()),
+        "omitted_in_interactive": ["lanes.csv", "observations.jsonl", "crdg.jsonl", "crdg_events.jsonl"] if output_mode == "interactive" else [],
+        "units": {"time": "s", "position": "m", "speed": "m/s", "rate": "vehicles/hour/entry"}})
 
 
 def prepare_traffic(config: dict, output: Path, demand: str, seed: int,
@@ -59,6 +82,7 @@ def prepare_traffic(config: dict, output: Path, demand: str, seed: int,
     inspection, routes = build_network(config, output, vehicle_space_m=vehicle_space)
     case = config.get("controlled_case")
     if case:
+        inspection["experimental_variant"] = prepare_case_network(case, routes, output / "network.net.xml")
         missions = case_missions(case, routes, seed)
         duration = math.ceil(max(m.scheduled_s for m in missions)) + STEP_S
         rates, demand = None, "CONTROLLED"
@@ -81,22 +105,19 @@ def prepare_traffic(config: dict, output: Path, demand: str, seed: int,
     return prepared, missions
 
 
-def write_sumo_inputs(output, inspection, routes, missions, seed, *, street_names=False, initial_positions=None,
-                      scheme_name="kintambo"):
+def write_sumo_inputs(output, inspection, routes, missions, seed, *, street_names=False):
     """Écrit les entrées avec le même véhicule et les mêmes contrôles de sécurité."""
     root = ET.Element("routes")
     ET.SubElement(root, "vType", VEHICLE_TYPE)
     for name, edges in sorted(routes.items()):
         ET.SubElement(root, "route", id=name, edges=" ".join(edges))
     for mission in missions:
-        vehicle = ET.SubElement(root, "vehicle", id=mission.vehicle_id, type=VEHICLE_TYPE["id"],
+        ET.SubElement(root, "vehicle", id=mission.vehicle_id, type=VEHICLE_TYPE["id"],
                       route=mission.route_id, depart=repr(mission.scheduled_s),
                       departLane="best", departSpeed="0")
-        if initial_positions and mission.vehicle_id in initial_positions:
-            vehicle.set("departPos", repr(initial_positions[mission.vehicle_id]))
     write_xml(output / "traffic.rou.xml", root)
     view = ET.Element("viewsettings")
-    scheme = ET.SubElement(view, "scheme", name=scheme_name)
+    scheme = ET.SubElement(view, "scheme", name="kintambo")
     ET.SubElement(scheme, "edges", streetName_show=str(street_names).lower(), streetName_size="24",
                   streetName_constantSize="true", streetName_onlySelected="false",
                   streetName_color="0,0,160", streetName_bgColor="255,255,255")
@@ -119,22 +140,6 @@ def write_sumo_inputs(output, inspection, routes, missions, seed, *, street_name
         for name, value in options.items():
             ET.SubElement(parent, name, value=value)
     write_xml(output / "simulation.sumocfg", root)
-
-
-def prepare_intersection(config, output, seed, *, street_names=False):
-    inspection, routes, missions, positions = build_intersection(config, output, seed)
-    write_sumo_inputs(output, inspection, routes, missions, seed, street_names=street_names,
-                      initial_positions=positions, scheme_name=config["name"])
-    prepared = {"configuration": config, "network": inspection, "routes": routes,
-                "seed": seed, "demand": "CONTROLLED", "duration_s": math.ceil(max(m.scheduled_s for m in missions)) + STEP_S,
-                "arrival_model": "explicit_seeded_schedule", "rates_veh_per_hour_per_entry": None,
-                "vehicle_type": VEHICLE_TYPE, "gui_scheme": config["name"], "missions": [asdict(m) for m in missions],
-                "initial_positions_m": positions, "phenomenon_target": config["case"]["aim"],
-                "phenomenon_observed": "not_evaluated"}
-    prepared["files_sha256"] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-                                for p in sorted(output.iterdir()) if p.suffix not in (".log",)}
-    write_json(output / "scenario.json", prepared)
-    return prepared, missions
 
 
 def sample_physics(connection, ledger: TrafficLedger, lanes: dict, previous: dict,
@@ -181,7 +186,7 @@ def sample_physics(connection, ledger: TrafficLedger, lanes: dict, previous: dic
     return vehicles, rows
 
 
-def subscribed_readings(connection, *, include_length: bool = False) -> dict:
+def subscribed_readings(connection, *, include_length: bool = False, include_visual: bool = False) -> dict:
     """Lit les données du pas courant ensemble pour limiter les appels TraCI."""
     import traci.constants as tc
 
@@ -192,6 +197,8 @@ def subscribed_readings(connection, *, include_length: bool = False) -> dict:
                  "distance": tc.VAR_DISTANCE}
     if include_length:
         variables["length"] = tc.VAR_LENGTH
+    if include_visual:
+        variables.update(angle=tc.VAR_ANGLE, width=tc.VAR_WIDTH)
     for item in connection.simulation.getDepartedIDList():
         connection.vehicle.subscribe(item, list(variables.values()))
     results = connection.vehicle.getAllSubscriptionResults()
@@ -311,7 +318,8 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                    drain_horizon_s: float | None = None, crdg: bool = False,
                    blockage_evidence: bool = False, scenario: str = "kintambo",
                    kintambo_case: str | None = None, crdg_scene_times: tuple = (),
-                   crdg_focus: str | None = None, crdg_depth: int = 2) -> dict:
+                   crdg_focus: str | None = None, crdg_depth: int = 2, crdg_live: bool = False,
+                   close_on_end: bool = False, output_mode: str = "full") -> dict:
     """Prépare et suit le trafic sans arrêt imposé, changement de route ni assistance.
 
     À la limite de temps, un trafic non vidé reste incomplet, pas un gridlock
@@ -320,25 +328,24 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
     """
     if type(gui_delay_ms) is not int or gui_delay_ms < 0:
         raise ValueError("Le délai graphique doit être un entier positif ou nul.")
-    if (crdg_focus is not None or crdg_depth != 2) and not crdg_scene_times:
+    if type(close_on_end) is not bool or output_mode not in ("full", "interactive"):
+        raise ValueError("Mode de fermeture ou de sortie invalide.")
+    if crdg_live and not gui:
+        raise ValueError("INFO C-RDG animé demande --gui.")
+    if (crdg_focus is not None or crdg_depth != 2) and not crdg_scene_times and not crdg_live:
         raise ValueError("Focus et voisinage demandent un instant de scène C-RDG.")
     if type(crdg_depth) is not int or crdg_depth not in (1, 2, 3):
         raise ValueError("Le voisinage doit valoir 1, 2 ou 3.")
-    crdg = crdg or blockage_evidence or bool(crdg_scene_times)
-    if scenario == "kintambo":
-        if kintambo_case and (config_path is not None or rate is not None or duration_s is not None or demand != "LOW"):
-            raise ValueError("La variante Kintambo utilise le réseau canonique et ses départs définis.")
-        config = read_config(config_path)
-        if kintambo_case:
-            config["controlled_case"] = read_case(kintambo_case)
-        if demand not in config["demand"]["rates_veh_per_hour_per_entry"]:
-            raise ValueError("Niveau de demande absent de la configuration.")
-    else:
-        if kintambo_case:
-            raise ValueError("La variante Kintambo ne s'applique pas à un croisement secondaire.")
-        if config_path is not None or rate is not None or duration_s is not None or demand != "LOW":
-            raise ValueError("Les scénarios contrôlés utilisent leurs départs définis ; config, rate, duration et demand sont réservés à Kintambo.")
-        config = read_scenario(scenario)
+    crdg = crdg or blockage_evidence or bool(crdg_scene_times) or crdg_live
+    if scenario != "kintambo":
+        raise ValueError("Les anciens carrefours indépendants sont retirés ; choisir un scénario Kintambo avec cgr scenarios.")
+    if kintambo_case and (config_path is not None or rate is not None or duration_s is not None or demand != "LOW"):
+        raise ValueError("La variante Kintambo utilise le réseau canonique et ses départs définis.")
+    config = read_config(config_path)
+    if kintambo_case:
+        config["controlled_case"] = read_case(kintambo_case)
+    if demand not in config["demand"]["rates_veh_per_hour_per_entry"]:
+        raise ValueError("Niveau de demande absent de la configuration.")
     default_drain = config.get("controlled_case", {}).get("drain_s", config["simulation"]["drain_horizon_s"])
     drain = default_drain if drain_horizon_s is None else drain_horizon_s
     if not math.isfinite(drain) or drain <= 0 or drain % STEP_S:
@@ -351,6 +358,8 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                 or not math.isfinite(calculation) or calculation <= 0 or calculation % STEP_S
                 or interval % calculation):
             raise ValueError("Cadence de calcul ou d'export C-RDG invalide.")
+        if crdg_live and 5 % calculation:
+            raise ValueError("INFO C-RDG à 5 s demande une cadence de calcul qui divise 5 s.")
     if any(not math.isfinite(time) or time <= 0 or time % calculation for time in crdg_scene_times):
         raise ValueError("Chaque scène demande un instant positif de calcul C-RDG.")
     scene_times = set(crdg_scene_times)
@@ -359,17 +368,19 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
         raise ValueError("Le dossier de résultats doit être absent ou vide.")
     output.mkdir(parents=True, exist_ok=True)
     try:
-        if scenario == "kintambo":
-            prepared, missions = prepare_traffic(config, output, demand, seed, duration_s, rate,
-                                                street_names=street_names)
-        else:
-            prepared, missions = prepare_intersection(config, output, seed, street_names=street_names)
+        prepared, missions = prepare_traffic(config, output, demand, seed, duration_s, rate,
+                                            street_names=street_names)
     except Exception as error:
         write_json(output / "preparation_error.json", {"status": "failed", "reason": str(error)})
         raise
     ledger = TrafficLedger(missions)
     if crdg_focus is not None and crdg_focus not in ledger.missions:
         raise ValueError("Le véhicule choisi n'appartient pas aux missions préparées.")
+    if crdg_live:
+        configure_live_view(output / "view.xml")
+        prepared["files_sha256"]["view.xml"] = hashlib.sha256((output / "view.xml").read_bytes()).hexdigest()
+        prepared["info_crdg"] = {"update_interval_s": 5, "focus": crdg_focus}
+        write_json(output / "scenario.json", prepared)
     horizon = math.ceil(prepared["duration_s"] / STEP_S) * STEP_S + drain
     result = {"scenario": scenario, "demand": prepared.get("demand", demand), "seed": seed,
               "rates_veh_per_hour_per_entry": prepared["rates_veh_per_hour_per_entry"],
@@ -377,6 +388,7 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
               "scenario_sha256": hashlib.sha256((output / "scenario.json").read_bytes()).hexdigest(),
               "network_sha256": hashlib.sha256((output / "network.net.xml").read_bytes()).hexdigest(),
               "step_s": STEP_S, "gui": gui, "status": "failed", "reason": None,
+              "output_mode": output_mode, "crdg_enabled": crdg,
               "code": code_provenance(), "connection_closed": False, "process_stopped": False,
               "process_returncode": None, "forced_process_stop": False, "cleanup_errors": [],
               "collision_ids": [], "gridlock": "not_evaluated",
@@ -384,6 +396,9 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
               "upstream_queue_margin_m": 7.5,
               "max_halting": 0, "max_lane_occupancy_ratio": 0, "upstream_queue_samples": 0}
     connection = process = None
+    panel = CrdgPanelLink(output, missions, focus=crdg_focus,
+                         sector_boundary=local_sector(output / "network.net.xml", prepared["network"]["view_boundary_m"]),
+                         network_boundary=whole_network(output / "network.net.xml", prepared["network"]["view_boundary_m"])) if crdg_live else None
     if kintambo_case:
         result["kintambo_case"] = kintambo_case
     if scene_times:
@@ -395,13 +410,13 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
     trails, dependency_history = {}, {}
     graph_summary, graph_peak = dependency_graph.empty_summary(), None
     evidence = BlockageObservation() if blockage_evidence else None
-    reader = (lambda connection: subscribed_readings(connection, include_length=True)) if crdg else subscribed_readings
+    reader = (lambda connection: subscribed_readings(connection, include_length=True, include_visual=crdg_live)) if crdg else subscribed_readings
     with (output / "sumo.log").open("w", encoding="utf-8") as log, \
             (output / "timeline.csv").open("w", encoding="utf-8", newline="") as trace, \
-            (output / "lanes.csv").open("w", encoding="utf-8", newline="") as lane_file, \
-            (output / "observations.jsonl").open("w", encoding="utf-8") as observations, \
-            ((output / "crdg.jsonl").open("w", encoding="utf-8") if crdg else nullcontext()) as graph_file, \
-            ((output / "crdg_events.jsonl").open("w", encoding="utf-8") if crdg else nullcontext()) as event_file, \
+            (output / "lanes.csv" if output_mode == "full" else Path(os.devnull)).open("w", encoding="utf-8", newline="") as lane_file, \
+            (output / "observations.jsonl" if output_mode == "full" else Path(os.devnull)).open("w", encoding="utf-8") as observations, \
+            ((output / "crdg.jsonl" if output_mode == "full" else Path(os.devnull)).open("w", encoding="utf-8") if crdg else nullcontext()) as graph_file, \
+            ((output / "crdg_events.jsonl" if output_mode == "full" else Path(os.devnull)).open("w", encoding="utf-8") if crdg else nullcontext()) as event_file, \
             ((output / "blockage_events.jsonl").open("w", encoding="utf-8") if evidence else nullcontext()) as evidence_file:
         timeline = csv.DictWriter(trace, fieldnames=list(ledger.snapshot()))
         timeline.writeheader()
@@ -425,6 +440,7 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                 # La précision concerne le fichier d'état, pas les calculs du trafic.
                 command.extend(["--save-state.precision", "17"])
             if gui:
+                # La connexion reste ouverte pendant l'inspection ; close termine ensuite la GUI.
                 command.extend(["--start", "true", "--quit-on-end", "true", "--delay", str(gui_delay_ms)])
             result["command"] = command
             process = subprocess.Popen(command, stdout=log, stderr=log)
@@ -432,8 +448,12 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
             if gui:
                 connection.gui.setSchema("View #0", prepared.get("gui_scheme", "kintambo"))
                 left, bottom, right, top = prepared["network"]["view_boundary_m"]
-                connection.gui.setBoundary("View #0", left, bottom, right, top)
-            result["sumo_version"] = connection.getVersion()[1]
+                connection.gui.setBoundary("View #0", *(panel.sector_boundary if panel else (left, bottom, right, top)))
+            if panel:
+                panel.sumo_process = process
+                panel.start()
+            result["traci_protocol"], result["sumo_version"] = connection.getVersion()
+            result["traci_version"] = traci.__version__
             if abs(connection.simulation.getDeltaT() - STEP_S) > 1e-9:
                 raise RuntimeError("Pas de simulation chargé incorrect.")
             for route_id, edges in prepared["routes"].items():
@@ -443,6 +463,11 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
             lanes = {lane: connection.lane.getLength(lane) for lane in connection.lane.getIDList()
                      if not lane.startswith(":") and connection.lane.getEdgeID(lane) in route_edges}
             for _ in range(int(horizon / STEP_S)):
+                if panel:
+                    if not panel.before_step(connection, ledger.readings or {}, ledger.time_s):
+                        result["status"] = "user_closed"
+                        result["reason"] = "Démonstration fermée explicitement avant la fin des missions."
+                        break
                 connection.simulationStep()
                 result["collision_ids"].extend(connection.simulation.getCollidingVehiclesIDList())
                 timeline.writerow(ledger.observe(connection, reader))
@@ -494,6 +519,8 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                         event_file.write(json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
                     current = dependency_graph.snapshot(graph)
                     graph_peak = dependency_graph.record_snapshot(graph_summary, current, graph_peak)
+                    if panel:
+                        panel.observe(connection, graph, current, ledger.readings)
                     if ledger.time_s in scene_times:
                         saved = save_scene(connection, current, ledger.readings,
                                            output / "crdg_scenes" / f"{ledger.time_s:g}", crdg_focus, crdg_depth,
@@ -516,23 +543,56 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
             else:
                 result["status"] = "horizon_reached"
                 result["reason"] = "Des missions restent présentes ou en attente à l'horizon."
-            if gui and sys.stdin.isatty():
-                input("Observer la vue, puis appuyer sur Entrée pour fermer SUMO-GUI. ")
+            if gui and not close_on_end and result["status"] != "user_closed":
+                result.update(counts=ledger.snapshot(), display_state="awaiting_close",
+                              last_validated_state=ledger.last_validated_state)
+                write_json(output / "summary.json", result)
+                write_manifest(output, prepared, result, output_mode)
+                for stream in (trace, lane_file, observations, graph_file, event_file, evidence_file):
+                    if stream is not None:
+                        stream.flush()
+                if panel:
+                    panel.hold_view(connection, ledger.readings, result["status"], ledger.time_s,
+                                    reason=result["reason"] or "Toutes les missions sont arrivées.", counts=ledger.snapshot())
+                elif sys.stdin.isatty():
+                    input("Observer la vue, puis appuyer sur Entrée pour fermer SUMO-GUI. ")
         except Exception as error:
             result["status"] = "failed"
             result["reason"] = str(error)
+            result.update(counts=ledger.snapshot(), display_state="error")
+            write_json(output / "summary.json", result)
+            write_manifest(output, prepared, result, output_mode)
+            if panel and not close_on_end and connection is not None and panel.process is not None and panel.process.poll() is None:
+                try:
+                    panel.hold_view(connection, ledger.readings or {}, "failed", ledger.time_s,
+                                    reason=str(error), counts=ledger.snapshot())
+                except Exception as inspection_error:
+                    result["inspection_error"] = str(inspection_error)
         finally:
+            if panel:
+                try:
+                    panel.finish(connection, ledger.readings, result["status"], ledger.time_s)
+                except Exception as error:
+                    panel.stats["errors"].append(str(error))
+                    result["info_crdg_error"] = str(error)
             close_sumo(connection, process, result)
+    result["simulation_outcome"] = result["status"]
+    if result.get("info_crdg_error"):
+        result["status"] = "failed"
+        result["reason"] = f"Fermeture INFO C-RDG en erreur : {result['info_crdg_error']}"
     if (result["cleanup_errors"] or result["forced_process_stop"] or not result["connection_closed"]
             or not result["process_stopped"] or result["process_returncode"] != 0):
         result["status"] = "failed"
-        result["reason"] = result["reason"] or "Fermeture normale non confirmée."
+        result["reason"] = "Fermeture normale non confirmée." + (f" Avant fermeture : {result['reason']}" if result["reason"] else "")
     try:
         trips = verify_trips(output / "tripinfo.xml", ledger)
     except Exception as error:
         result["status"] = "failed"
         result["reason"] = result["reason"] or str(error)
     result["counts"] = ledger.snapshot()
+    result["display_state"] = "closed" if gui else "not_requested"
+    if panel:
+        result["info_crdg"] = {"directory": "info_crdg", "update_interval_s": 5, **panel.stats}
     if scene_times:
         result["crdg_scenes"]["unobserved_times_s"] = sorted(scene_times - set(result["crdg_scenes"]["recorded_times_s"]))
     if evidence:
@@ -575,4 +635,5 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                               "scenario_sha256": result["scenario_sha256"], "code": result["code"]})
         write_json(output / "crdg_summary.json", graph_summary)
         write_json(output / "crdg_peak.json", graph_peak)
+    write_manifest(output, prepared, result, output_mode)
     return result

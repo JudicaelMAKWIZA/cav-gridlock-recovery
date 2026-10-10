@@ -272,7 +272,7 @@ def test_junction_summary_reports_first_instant_and_maximum(crossing):
     assert summary["max_junction_resources"] == 1
 
 
-def test_foe_queries_only_use_waited_nearby_vehicles_and_reuse_static_cache(crossing):
+def test_foe_queries_use_stopped_vehicles_and_reuse_static_cache(crossing):
     connection = SimpleNamespace(
         lane=SimpleNamespace(getLinks=Mock(return_value=crossing["junctions"]["A"]["links"]),
                              getFoes=Mock(return_value=("foe_in_0",)),

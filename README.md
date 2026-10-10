@@ -1,36 +1,30 @@
 # CAV Gridlock Recovery
 
-Ce projet étudie les blocages collectifs entre véhicules connectés et automatisés.
-Son objectif principal est de rétablir la circulation après leur formation ;
-la prévention reste secondaire.
+Ce projet étudie la détection et la récupération de blocages collectifs de
+véhicules connectés et automatisés. La récupération après formation du blocage
+est l'objectif principal ; la prévention reste secondaire.
 
 ## Réseau et trafic
 
-La topologie vient d'OpenStreetMap autour de Kintambo Magasin, à Kinshasa.
-Elle conserve plusieurs avenues, des chaussées séparées et de nombreuses
-intersections proches. Le réseau actif se limite au noyau, à ses approches et
-aux liaisons locales utiles ; l'extrait source reste complet. Les voies,
-vitesses et feux sont des hypothèses de simulation.
+Le banc principal utilise une topologie dérivée d'OpenStreetMap autour de
+Kintambo Magasin, Kinshasa. Le réseau actif conserve les avenues, approches
+et liaisons proches du noyau. L'extrait source est fourni, utilisable hors ligne.
+Les voies, vitesses et feux sont des hypothèses de simulation, pas une calibration
+du trafic réel. La calibration empirique reste une perspective.
 
 © [OpenStreetMap contributors — ODbL 1.0](https://www.openstreetmap.org/copyright).
-La petite géométrie nécessaire est fournie avec le projet ; la préparation
-fonctionne hors ligne. Sa provenance figure dans
-[scenario.json](src/cav_recovery/scenarios/kintambo/scenario.json).
+La provenance figure dans [scenario.json](src/cav_recovery/scenarios/kintambo/scenario.json).
 
-Python génère les arrivées par intervalles exponentiels (processus de Poisson)
-avec `random.Random(seed)`. Les missions, routes et destinations sont fixées
-avant le départ. Même configuration et même seed reproduisent ces entrées.
-
-`LOW`, `MEDIUM`, `HIGH` et `STRESS` désignent une intensité demandée, pas un
-diagnostic. La configuration indique la durée, les intensités par entrée, les
-destinations et leurs poids. Le temps tiré reste dans `sampled_s` ; sa programmation
-SUMO `scheduled_s` est arrondie vers le haut à la milliseconde. L'insertion réelle
-peut être retardée.
+Python génère les arrivées Poisson par intervalles exponentiels avec
+`random.Random(seed)`. Routes et destinations sont fixées avant le départ.
+Même configuration et même seed reproduisent les missions. `LOW`, `MEDIUM`,
+`HIGH` et `STRESS` sont des niveaux de demande, pas des diagnostics.
+`sampled_s` garde le tirage ; `scheduled_s` l'arrondit vers le haut à la
+milliseconde. SUMO peut retarder l'insertion réelle.
 
 ## Installation
 
-Python 3.12 ou ultérieur est nécessaire. L'installation apporte SUMO et TraCI
-1.27.1 ; sumolib est fourni par leurs dépendances.
+Python ≥ 3.12, SUMO/TraCI 1.27.1 et NetworkX sont nécessaires.
 
 ```bash
 python -m venv .venv
@@ -39,190 +33,157 @@ python -m pip install -e .
 python -m pip install -r requirements.txt
 ```
 
-Sous PowerShell : `.venv\Scripts\Activate.ps1`.
+Sous PowerShell : `.venv\Scripts\Activate.ps1`. Pour la démonstration graphique,
+il faut un affichage compatible avec SUMO-GUI et Tkinter ; sous Ubuntu/WSLg,
+installer `python3-tk` si nécessaire. Aucun navigateur ni serveur n'est requis.
 
-## Utilisation
+## Commande officielle
 
-Depuis le dépôt, dans l'environnement activé :
-
-```bash
-python scripts/run_traffic.py --demand LOW --seed 1
-python scripts/run_traffic.py --demand HIGH --seed 1 --gui --gui-delay-ms 100
-python scripts/run_traffic.py --demand HIGH --seed 1 --gui --street-names
-```
-
-Une seule commande prépare le réseau, génère les missions et lance SUMO.
-Chaque exécution conserve ses fichiers dans un nouveau dossier.
-`--output-dir <nouveau-dossier>` permet de choisir l'emplacement ;
-un dossier non vide est refusé.
-
-`--rate` règle l'intensité en véhicules/heure/par entrée.
-`--duration-s` fixe la période d'injection et `--drain-horizon-s`
-l'attente après injection. `--config <configuration.json>` fournit d'autres
-paramètres de simulation. Consulter `--help` pour les options.
-
-La GUI utilise réellement `sumo-gui`, démarre automatiquement et se centre sur
-le noyau. Les noms OSM sont masqués par défaut ; `--street-names` les affiche.
-Une interface compatible est nécessaire, par exemple WSLg.
-Les voitures utilisent une forme native de SUMO. Le délai graphique ne change
-pas le pas simulé de 0,5 s. Dans un terminal interactif, appuyer sur Entrée
-après observation pour fermer la vue à la fin.
-
-## Sorties et contrôles
-
-Les sorties comprennent `summary.json`, `vehicles.csv`, `timeline.csv`,
-`lanes.csv`, `observations.jsonl`, `tripinfo.xml` et `sumo.log`.
-Les configurations, les corrections de connexions et les journaux de conversion
-sont aussi conservés.
-
-Le bilan distingue programmés, départs réels, insertions retardées, actifs et
-arrivées à destination. Téléportation, collision, disparition ou destination
-modifiée invalident l'exécution. Aucun véhicule n'est retiré pour obtenir un succès.
-
-Une fin à l'horizon est distincte d'une vidange complète. Codes de sortie :
-0 pour une vidange, 3 pour l'horizon atteint, 1 pour un échec technique ou
-d'intégrité, 2 pour une entrée refusée. Les files et occupations sont des
-observations ; elles ne constituent pas à elles seules une preuve de gridlock.
-
-## C-RDG
-
-Le C-RDG représente les dépendances observées entre véhicules et espace aval.
-Il représente aussi certains conflits de carrefour à partir des observations
-natives de SUMO. Il lit la simulation sans agir sur le trafic. Pour l'activer :
+Pour utiliser `cgr` depuis n'importe quel dossier d'un terminal Ubuntu/WSL,
+faire une seule fois depuis le dépôt, après l'installation :
 
 ```bash
-python scripts/run_traffic.py --demand HIGH --seed 1 --crdg
+./.venv/bin/cgr install --shell-path
 ```
 
-Il produit `crdg.jsonl` (graphes successifs), `crdg_events.jsonl` (apparitions,
-disparitions et changements de cause), `crdg_summary.json` (bilan) et
-`crdg_peak.json` (snapshot retenu). Il distingue les cycles structurels des
-candidats fermés sans alternative de réception observable hors du groupe.
-Aucun de ces candidats n'est une preuve de gridlock. L'âge d'une dépendance
-est distinct de la durée d'arrêt du véhicule. Le calcul et l'export ont des
-cadences séparées, réglables dans la partie `crdg` de la configuration.
-
-Pour suivre aussi l'évolution physique des attentes :
+Cette commande installe un relais dans `~/.local/bin/cgr` vers le Python de
+ce projet et ajoute explicitement ce dossier au PATH dans `.bashrc` et dans
+le profil de connexion actif (`.bash_profile`, `.bash_login` ou `.profile`). Sans
+`--shell-path`, aucun fichier de démarrage n'est modifié. Une autre commande
+`cgr` n'est jamais écrasée. Ouvrir ensuite un nouveau terminal Ubuntu :
 
 ```bash
-python scripts/run_traffic.py --demand LOW --seed 1 --blockage-evidence
+cgr
+cgr crossing
+cgr junction_adverse
+cgr clearance
+cgr --help
+cgr scenarios
+cgr run crossing --gui --seed 1
+cgr run junction_adverse --gui --seed 1
+cgr run kintambo --demand LOW --seed 1
 ```
 
-Cette option active le C-RDG et ajoute `blockage_events.jsonl` et
-`blockage_summary.json`. Le suivi conserve les déplacements, les changements
-de cause, les permissions de passage et les arrivées observées. Une longueur
-de véhicule parcourue termine un épisode de faible progression, sans prouver
-que toute la file est libérée. Les situations encore ouvertes à l'horizon sont
-censurées, pas déclarées permanentes. Un vert ou une voie légalement accessible
-ne prouve pas que le passage est matériellement possible ; les inconnues restent
-explicites. Aucun gridlock confirmé n'est déclaré.
+`cgr` ouvre un menu en français : simulation, liste des scénarios, aide et
+retour/quitter. Les scénarios et l'aide restent affichés jusqu'à Entrée pour
+revenir au menu. Il propose seed, affichage et délai explicites ; sans terminal
+interactif, il affiche l'aide et n'attend aucune saisie. Diagnostic confirmé,
+récupération, entraînement et évaluation restent non implémentés.
 
-## Circulation ciblée sur Kintambo
+Les raccourcis `cgr <scénario>` ouvrent SUMO et INFO par défaut, seed 1 et délai
+300 ms. Modifier avec `--seed`, `--gui-delay-ms` ou `--no-gui`. Les commandes
+avancées `cgr run …` gardent leur comportement : GUI seulement avec `--gui`,
+délai par défaut 100 ms. Le menu et les raccourcis utilisent le même pipeline.
+Le relais prépare le PATH de `.venv` et travaille depuis le dépôt ; les sorties
+par défaut y restent sous `outputs/simulation`. Les chemins relatifs d'options
+sont donc relatifs au dépôt lorsqu'on utilise ce relais.
+Après déplacement du dépôt, recréer `.venv`, réinstaller le package, puis
+réexécuter `./.venv/bin/cgr install --shell-path` au nouvel emplacement.
 
-Kintambo reste le réseau principal. Trois variantes de demande utilisent ses
-routes, voies et feux canoniques sans les modifier : `clearance` vise une
-vidange, `crossing` concentre des mouvements croisés et `spillback` vise des
-contraintes entre plusieurs carrefours. Les mécanismes et preuves attendues
-figurent dans [cases.json](src/cav_recovery/scenarios/kintambo/cases.json).
-Ces variantes ont des missions finies et des départs explicites seedés, pas
-une augmentation uniforme du Poisson. Leur nom ne présume aucun résultat.
+Une commande prépare le réseau et les missions, lance SUMO, observe le trafic,
+calcule le C-RDG et enregistre les résultats. `--gui` ouvre aussi INFO C-RDG.
+`--gui-delay-ms 100` règle le délai visuel, pas le pas physique de **0,5 s**.
+Les noms OSM sont conservés mais masqués à l'écran ; `--street-names` les affiche.
 
-```bash
-python scripts/run_traffic.py --kintambo-case clearance --seed 1 --blockage-evidence
-python scripts/run_traffic.py --kintambo-case crossing --seed 1 --blockage-evidence
-python scripts/run_traffic.py --kintambo-case spillback --seed 1 --blockage-evidence
-```
+`--output-dir <dossier>` choisit une sortie absente ou vide ; sinon un dossier
+daté est créé. `--output-mode full` garde les traces fines pour un audit.
+`--output-mode interactive` omet les traces détaillées de voies, observations
+et graphes successifs, mais conserve entrées, manifeste, bilans, missions,
+timeline, tripinfo et preuves consultées. Il n'est pas destiné à l'évaluation.
+Les campagnes d'évaluation ne sont pas encore implémentées.
 
-Ne pas combiner une variante avec `--demand`, `--rate`, `--duration-s` ou
-`--config`. `--drain-horizon-s` peut prolonger l'observation des mêmes missions.
-Sans `--kintambo-case`, les expériences Poisson restent inchangées.
+Pour Poisson, `--rate` est en véhicules/heure/entrée et `--duration-s` en secondes
+d'injection ; `--config` fournit une configuration JSON. Les cas ciblés ont leur
+propre demande finie : ne pas combiner ces options avec eux.
+`--drain-horizon-s` règle l'observation après injection sans changer les missions.
+Consulter `cgr run --help` pour les options.
 
-## Dépendances dans SUMO-GUI
+Les commandes publiées `python scripts/run_traffic.py --demand …` et
+`--kintambo-case …` restent des wrappers du même pipeline.
+Les anciens carrefours indépendants et visualiseurs HTML/à flèches sont retirés.
+Utiliser les cas Kintambo et `--gui` ; une ancienne option incompatible donne
+un message de migration, jamais un autre scénario silencieusement.
 
-```bash
-python scripts/run_traffic.py --kintambo-case crossing --seed 1 \
-  --crdg-scene-at 81.5 --crdg-focus montagne_000012 --crdg-gui
-```
+## Cas ciblés Kintambo
 
-Cette commande termine l'expérience puis ouvre son **état natif figé à
-81,5 s** dans SUMO-GUI, avec les annotations du même calcul C-RDG. Elle ne
-dessine pas une relation ancienne sur un trafic qui a déjà avancé.
-Répéter `--crdg-scene-at` pour enregistrer plusieurs instants et examiner
-l'évolution ; choisir des multiples de la cadence de calcul (0,5 s par défaut).
-Les snapshots habituels `crdg.jsonl` restent exportés à 5 s.
+`clearance` vise des attentes temporaires puis une vidange ; `crossing` concentre
+quatre mouvements ; `spillback` charge plusieurs liaisons proches. Leur demande
+est explicite et seedée, distincte du Poisson canonique.
+`junction_adverse` partage les missions de `crossing` et désactive seulement
+`keepClear` sur huit mouvements déclarés. `loop_nominal` et `loop_adverse`
+éprouvent une boucle réelle Yoseki/Transversale avec les mêmes missions ;
+l'adverse modifie cinq mouvements déclarés. Ces variantes sont séparées du
+réseau canonique. Un nom ou une forte occupation ne prouve aucun gridlock.
+Les mécanismes figurent dans [cases.json](src/cav_recovery/scenarios/kintambo/cases.json).
 
-`--crdg-focus <ID>` choisit la voiture ; `--crdg-depth 1|2|3` règle son voisinage.
-Un anneau bleu marque cette voiture. Les repères orange et les flèches montrent
-ses dépendances proches, sur les vraies voies et les véhicules de l'état SUMO.
-Les ressources sont repérées sur leurs voies natives, pas par une zone de
-conflit recalculée. Les textes français expliquent les arcs et les paramètres
-des POI conservent leur preuve. Les repères V/R ont leurs IDs complets dans
-les paramètres et les fichiers de scène. La vue est limitée à 16 nœuds ; toute
-limitation ou cause inconnue est signalée, sans inventer de flèche.
+## SUMO animé et INFO C-RDG
 
-On peut cliquer sur les vrais véhicules dans SUMO pour examiner leurs données,
-zoomer et déplacer la vue. **Ne pas lancer le trafic de cette vue figée** :
-elle représente uniquement l'instant enregistré. Fermer la fenêtre termine
-sa consultation. Pour changer le véhicule mis en évidence, rouvrir la même
-scène avec `--focus` ; aucun graphe ni trafic n'est recalculé :
+SUMO reste la vue physique principale. Le panneau reçoit les groupes du réseau
+toutes les **5 secondes simulées** ; l'heure SUMO, l'heure du graphe et son âge
+sont affichés. Des relations connues comme disparues sont grisées entre exports.
+Tous les groupes sont accessibles, avec filtres de suivi, réception, carrefour
+et cycles candidats. Les grands dessins sont paginés ; la liste conserve leurs
+relations. Les détails techniques sont disponibles sur demande.
 
-```bash
-python scripts/view_sumo_crdg.py <sortie>/crdg_scenes/81.5 --list-vehicles
-python scripts/view_sumo_crdg.py <sortie>/crdg_scenes/81.5 --focus montagne_000012
-```
+Sélectionner un groupe, une voiture ou une relation, puis **Voir sur la carte**.
+**Vue du secteur**, **Vue du réseau** et **Caméra libre** règlent le cadrage.
+La sélection seule n'impose pas de déplacement de caméra.
 
-Sans `--crdg-gui`, l'enregistrement reste sans fenêtre ; le rejeu s'ouvre plus
-tard avec `view_sumo_crdg.py`. Les scènes nécessitent les fichiers de leur
-exécution d'origine, dont le réseau. Les empreintes de l'état et du réseau
-sont vérifiées. Ce mode est une inspection fidèle d'instants choisis, pas
-encore une animation synchronisée en direct ni un diagnostic de gridlock.
+En **pause** ou à la fin, ces commandes visent toujours la caméra de SUMO.
+INFO C-RDG conserve le graphe ; aucune carte ne le remplace. Sous Linux/X11
+(notamment WSLg), un événement de redessin réveille la vue native après la
+commande TraCI, sans nouveau pas physique. Cette aide n'est pas validée pour
+les autres environnements graphiques ; utiliser leurs contrôles natifs si
+le rendu est différé. La reprise du trafic reste explicitement demandée.
 
-## Croisements secondaires
+Les alias `V001`, `V002`… sont uniques et stables, sans renommer les missions.
+Trois modes sont disponibles : **Sélection** par défaut (groupe, voiture ou
+relation inspectée), **Toutes** (priorité aux inspectés, labels secondaires
+espacés selon le zoom), **Aucune**. Un label masqué ne retire pas sa voiture.
+Choisir l'alias dans INFO C-RDG, ou y saisir l'ID SUMO, puis cadrer pour
+l'identifier. Aucun affichage sans chevauchement à toute échelle n'est promis.
 
-Des scénarios synthétiques séparés servent de tests secondaires pour l'attente à une
-priorité, la rétention d'approches secondaires, des arrivées simultanées et
-le spillback entre deux croisements. Les paramètres et le mécanisme visé sont
-dans [cases.json](src/cav_recovery/scenarios/intersections/cases.json).
-Ils utilisent des missions finies et des départs explicites reproductibles,
-pas le Poisson de Kintambo. Le type de véhicule et les contrôles d'intégrité
-restent les mêmes. Un nom de scénario n'est jamais une preuve de son résultat.
+**Bleu** : sélection ; **orange** : contrainte sortante observée ; **violet** :
+autre participant ; **jaune** : trafic ordinaire dans le schéma utilisé.
+Priorité : sélection, puis contrainte, puis participant, puis couleur d'origine.
+Le violet ne signifie pas nécessairement tête de file ; aucune couleur n'est
+un diagnostic. Les couleurs d'origine sont restaurées lorsque le rôle disparaît.
+La légende à points colorés reste uniquement dans INFO C-RDG : aucune petite
+fenêtre supplémentaire ne recouvre SUMO. Couleurs et alias y sont conservés ;
+les flèches des relations restent dans le graphe INFO, pas sur les chaussées.
+INFO peut être agrandi ou réduit avec les bords de fenêtre ou la poignée en
+bas à droite. Les barres de défilement donnent accès au contenu sur un petit
+écran. Le graphe reste présent, même en pause. Le mode **Détecteur** reste désactivé.
 
-```bash
-python scripts/run_traffic.py --scenario priority_wait --seed 1 --crdg
-python scripts/run_traffic.py --scenario priority_starvation --seed 1 --crdg
-python scripts/run_traffic.py --scenario mutual_yield --seed 1 --crdg
-python scripts/run_traffic.py --scenario junction_spillback --seed 1 --crdg
-```
+Une fin normale ou à l'horizon reste inspectable. **Fermer la démo** dans INFO
+C-RDG ferme proprement les ressources. `--close-on-end` permet une fermeture
+automatique explicitement demandée. Les erreurs restent des erreurs avec logs.
 
-Ajouter `--gui` pour voir la circulation ou `--blockage-evidence` pour suivre
-les épisodes. `--drain-horizon-s` peut prolonger l'observation sans changer les
-missions. `--demand`, `--rate`, `--duration-s` et `--config` sont réservés à
-Kintambo, qui reste le choix par défaut. `priority_wait_holdout` est une variante
-réservée à une future évaluation : ne pas l'utiliser pour régler un détecteur.
+## Résultats et sécurité
 
-## Vue schématique secondaire du C-RDG
+`manifest.json` conserve configuration, seed, version, empreintes, mode de sortie
+et statut. `summary.json`, `vehicles.csv`, `timeline.csv`, `tripinfo.xml` et
+`sumo.log` distinguent programmés, départs, arrivées, actifs et insertions retardées.
+Une collision, téléportation, disparition ou destination modifiée invalide le run.
+Aucun véhicule n'est supprimé pour obtenir un succès.
 
-Après une exécution, remplacer le chemin ci-dessous par le dossier indiqué :
+En mode complet, `lanes.csv` et `observations.jsonl` gardent les mesures physiques.
+`crdg.jsonl`, `crdg_events.jsonl`, `crdg_summary.json` et `crdg_peak.json` conservent
+les dépendances, leurs âges et les candidats structurels. Une SCC et un candidat
+fermé ne sont pas un diagnostic de gridlock. Le C-RDG ne commande pas le trafic.
 
-```bash
-python scripts/view_crdg.py outputs/simulation/mon-essai/crdg.jsonl
-```
+`--blockage-evidence` ajoute le suivi des épisodes et de leurs preuves physiques.
+Une reprise individuelle ne prouve pas la libération du groupe. Les épisodes
+ouverts à l'horizon sont censurés. Une voie légale ou un vert ne prouve pas la
+possibilité matérielle de passage ; les inconnues restent inconnues.
+`--crdg-scene-at <secondes>` conserve un état SUMO natif au même instant,
+sans nouveau pas et sans dessiner de flèches sur les routes.
 
-Ouvrir le fichier `crdg_view.html` créé près de la source dans Chrome, Edge ou
-un autre navigateur. La page est autonome et fonctionne hors connexion.
-Choisir un instant exporté, saisir l'ID d'une voiture puis cliquer sur
-« Centrer ». Cliquer sur un nœud ou une flèche pour lire ses attributs.
-La molette zoome ; glisser le fond déplace la vue. Pour un gros fichier,
-`--time 285` garde uniquement cet instant s'il a réellement été exporté.
-`--output <nouveau-fichier.html>` choisit la destination sans écraser un fichier.
+Codes de sortie : 0 vidange, 3 horizon, 4 fermeture utilisateur anticipée,
+1 panne/violation d'intégrité, 2 entrée refusée. Les sorties privées ne doivent
+pas être publiées automatiquement.
 
-Les véhicules, ressources, arcs et candidats viennent du C-RDG source.
-La disposition est schématique, pas une carte SUMO. Les grands graphes demandent
-une focalisation explicite ; aucune relation n'est inventée ou supprimée du
-fichier. Les exports ne représentent pas tous les calculs internes et les
-cycles restent des candidats, pas des diagnostics confirmés.
-
-## Tests
+## Vérification et limites
 
 ```bash
 python -m compileall -q src scripts tests
@@ -230,17 +191,13 @@ python -m pytest -q
 python scripts/check_sumo.py
 ```
 
-Les intégrations nécessitent les exécutables SUMO dans l'environnement activé.
-Un test ignoré ne valide pas l'intégration. Le contrôle technique court utilise
-une fixture synthétique indépendante du réseau de Kintambo.
+Le contrôle court SUMO vérifie séparément l'installation et la fermeture TraCI.
+Les fixtures natives protègent les contrats d'observation, sans constituer un
+second banc scientifique. Les tests natifs sont ignorés si SUMO manque ; un test
+ignoré ne valide pas cette propriété.
 
-## Limites et suite
-
-Les paramètres de trafic sont simulés et ne constituent pas une calibration
-du trafic réel de Kintambo. La calibration sur des données réelles constitue
-une perspective.
-
-Le réseau, les arrivées et le suivi des missions sont disponibles.
-Les phénomènes observés doivent être distingués d'un gridlock confirmé.
-Le diagnostic final de gridlock, la récupération autonome, l'environnement RL
-et Graph-MARL ne sont pas encore implémentés.
+Le socle représente des contraintes observées et leurs preuves, pas encore un
+diagnostic final, une récupération autonome ou Graph-MARL. Les conflits latéraux,
+les alternatives matériellement praticables et certaines causes inconnues restent
+des limites. La prochaine étape est une évaluation indépendante, puis un
+diagnostic temporel et physique validé avant la récupération.

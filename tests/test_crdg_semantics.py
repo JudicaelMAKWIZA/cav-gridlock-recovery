@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 import xml.etree.ElementTree as ET
 
-import networkx as nx
 import pytest
 
 from cav_recovery import crdg
@@ -38,6 +37,27 @@ def test_unqualified_native_leader_is_not_a_strong_dependency(scene):
                          halting_speed=.1, min_gap_m=2.5,
                          following={"A": crdg.Following("B", 0, 0, "unknown")})
     assert not g.has_edge("vehicle:A", "vehicle:B")
+
+
+def test_moving_vehicle_is_not_labelled_as_blocked_even_with_a_leader(scene):
+    scene["readings"]["A"]["speed"] = .1
+    scene["readings"]["B"] = vehicle("a", 100)
+    scene["leaders"]["A"] = ("B", 0)
+    scene["follow_speed"] = 0
+    graph = build(scene)
+    assert not graph.has_node("vehicle:A")
+    assert "A" not in graph.graph["waiting_states"]
+
+
+def test_moving_vehicle_does_not_trigger_native_blockage_queries(scene):
+    scene["readings"]["A"]["speed"] = 1
+    scene["readings"]["B"] = vehicle("a", 100, speed=1)
+    connection = SimpleNamespace(vehicle=Mock(), lane=Mock())
+    assert traffic_run.sample_following(connection, scene["readings"], {"A": ("B", 0)}, scene["lanes"],
+                                       scene["movements"], {}, halting_speed=.1, leader_decel=4.5) == {}
+    assert traffic_run.sample_junctions(connection, scene["readings"], scene["lanes"], scene["movements"],
+                                       {}, halting_speed=.1) == {}
+    assert not connection.vehicle.getFollowSpeed.called and not connection.vehicle.getJunctionFoes.called
 
 
 def test_connection_obstacle_is_not_named_longitudinal_leader(crossing):

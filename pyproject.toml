@@ -10,6 +10,9 @@ requires-python = ">=3.12"
 dependencies = [
     "eclipse-sumo==1.27.1",
     "traci==1.27.1",
+    "sumolib==1.27.1",
+    "sumo-data==1.27.1",
+    "pyproj==3.7.2",
     "networkx==3.7",
 ]
 
@@ -17,7 +20,10 @@ dependencies = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-cav_recovery = ["scenarios/kintambo/*.json", "scenarios/kintambo/*.gz", "scenarios/intersections/*.json", "crdg_view.html"]
+cav_recovery = ["scenarios/kintambo/*.json", "scenarios/kintambo/*.gz"]
+
+[project.scripts]
+cgr = "cav_recovery.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

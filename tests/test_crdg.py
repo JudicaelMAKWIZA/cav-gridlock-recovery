@@ -65,7 +65,7 @@ def test_motion_is_excluded_but_recent_physical_constraint_is_present(scene, spe
     assert bool(build(scene).number_of_edges()) is (speed < .1)
 
 
-def test_only_a_close_observed_halted_leader_creates_an_edge(scene):
+def test_native_limiting_follow_speed_creates_a_leader_edge(scene):
     scene["readings"]["A"]["lane_position"] = 91.499
     scene["readings"]["B"] = vehicle("a", 99)
     scene["leaders"]["A"] = ("B", 0.001)

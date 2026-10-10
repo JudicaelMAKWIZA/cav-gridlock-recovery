@@ -39,5 +39,44 @@
       {"route": "oua__ecuries", "count": 35, "start_s": 0, "headway_s": 1},
       {"route": "ecuries__oua", "count": 35, "start_s": 0, "headway_s": 1}
     ]
+  },
+  "junction_adverse": {
+    "same_demand_as": "crossing",
+    "aim": "Occupation des passages du noyau, variante adverse appariée à crossing",
+    "mechanism": "Les mêmes 96 missions concentrent quatre mouvements sur 3675784999, Magasin Nguma et Magasin OUA. keepClear est désactivé seulement sur leurs huit mouvements empruntés dans ce secteur. Les protections de collision, priorités et feux restent actifs. Cette condition adverse n'est pas le réseau canonique.",
+    "network_variant": {
+      "keep_clear": false,
+      "justification": "Comparer les engagements sans garantie de dégagement dans trois intersections connectées, avec les mêmes missions que crossing.",
+      "movements": [["-773653901", "-1053620734"], ["-956500885#0", "-957109397"], ["-956500885#1", "-956500885#0"], ["-957109397", "-957109399#0"], ["1053620734", "956500885#0"], ["956500885#0", "956500885#1"], ["957109397", "956500885#0"], ["957109399#0", "957109397"]]
+    }
+  },
+  "loop_nominal": {
+    "aim": "Dépendances réciproques visées sur la boucle réelle Yoseki/Transversale",
+    "mechanism": "96 missions finies parcourent la boucle depuis quatre entrées avant leur sortie. Les deux sections à une voie limitent la réception ; keepClear peut maintenir des espaces et éviter la fermeture.",
+    "evidence": "Présence, progression, occupations internes, permissions, réceptions et sorties sur plusieurs cycles. Un horizon ou une SCC ne vaut pas un deadlock.",
+    "sector": ["3675784999", "3675785000", "435841023", "435500469", "magasin_nguma"],
+    "drain_s": 450, "jitter_s": 0.2,
+    "routes": {
+      "ecuries__mondjiba_loop": ["580281996#0", "580281996#1", "578699820", "-956500885#1", "363410577", "-23386395#0", "680630199#6", "1053620734", "956500885#0", "956500885#1", "427630648#0", "427630648#1", "427630648#2", "427630648#3"],
+      "nguma__nguma_loop": ["680630199#5", "680630199#6", "1053620734", "956500885#0", "363410577", "-23386395#0", "-680630199#5"],
+      "oua__oua_loop": ["37366221#8", "37366221#9", "957109397", "956500885#0", "363410577", "-23386395#0", "680630199#6", "1053620734", "-957109397", "-37366221#9", "-37366221#8"],
+      "kasa_vubu__kasa_vubu_loop": ["422304669#0", "422304669#1", "957109399#0", "957109397", "956500885#0", "363410577", "-23386395#0", "680630199#6", "1053620734", "-957109397", "-957109399#0", "-422304669#1", "-422304669#0"]
+    },
+    "streams": [
+      {"route": "ecuries__mondjiba_loop", "exit": "mondjiba", "count": 24, "start_s": 0, "headway_s": 1},
+      {"route": "nguma__nguma_loop", "exit": "nguma", "count": 24, "start_s": 0, "headway_s": 1},
+      {"route": "oua__oua_loop", "exit": "oua", "count": 24, "start_s": 0, "headway_s": 1},
+      {"route": "kasa_vubu__kasa_vubu_loop", "exit": "kasa_vubu", "count": 24, "start_s": 0, "headway_s": 1}
+    ]
+  },
+  "loop_adverse": {
+    "same_demand_as": "loop_nominal",
+    "aim": "Occupation des carrefours malgré une réception encombrée, variante adverse déclarée",
+    "mechanism": "Même demande et mêmes routes que loop_nominal. Seules les connexions successives de la boucle désactivent keepClear avant simulation ; les véhicules peuvent s'engager sans dégagement aval. Ce n'est pas le réseau canonique ni un phénomène nominal spontané.",
+    "network_variant": {
+      "keep_clear": false,
+      "justification": "Éprouver un comportement défavorable d'entrée sans réception, sans modifier les règles de collision, priorité, feux ou suivi.",
+      "movements": [["363410577", "-23386395#0"], ["-23386395#0", "680630199#6"], ["680630199#6", "1053620734"], ["1053620734", "956500885#0"], ["956500885#0", "363410577"]]
+    }
   }
 }
