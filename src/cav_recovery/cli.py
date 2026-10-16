@@ -12,7 +12,7 @@ from .simulation.kintambo_scenarios import case_names, read_case
 from .simulation.traffic_run import run_traffic
 
 
-def add_run_options(parser, *, gui_default=False, delay=100):
+def add_run_options(parser, *, gui_default=False, delay=100, v2v_default=False):
     parser.add_argument("--demand", choices=("LOW", "MEDIUM", "HIGH", "STRESS"), default="LOW")
     parser.add_argument("--seed", type=int, default=1)
     display = parser.add_mutually_exclusive_group()
@@ -23,6 +23,21 @@ def add_run_options(parser, *, gui_default=False, delay=100):
     parser.add_argument("--crdg", action="store_true", help="Enregistrer les dépendances observées, sans diagnostic.")
     parser.add_argument("--crdg-live", action="store_true", help="Ancien nom ; --gui ouvre déjà INFO C-RDG.")
     parser.add_argument("--blockage-evidence", action="store_true", help="Enregistrer les épisodes physiques, sans diagnostic.")
+    detection = parser.add_mutually_exclusive_group()
+    detection.add_argument("--detect-obstructions", dest="detect_obstructions", action="store_true",
+                           help="Caractériser les obstructions et leurs incertitudes, sans confirmer un gridlock.")
+    detection.add_argument("--no-detect-obstructions", dest="detect_obstructions", action="store_false",
+                           help="Désactiver le détecteur dans un raccourci graphique.")
+    parser.set_defaults(detect_obstructions=None)
+    communication = parser.add_mutually_exclusive_group()
+    communication.add_argument("--v2v", dest="v2v", action="store_true",
+                               help="Échanger les états propres des CAV à portée, sans agir sur le trafic.")
+    communication.add_argument("--no-v2v", dest="v2v", action="store_false",
+                               help="Désactiver les échanges pour un essai témoin.")
+    parser.set_defaults(v2v=v2v_default)
+    parser.add_argument("--v2v-range-m", type=float, default=120.0, help="Portée directe en mètres (défaut : 120).")
+    parser.add_argument("--v2v-interval-s", type=float, default=1.0, help="Cadence d'émission en secondes (défaut : 1).")
+    parser.add_argument("--v2v-lifetime-s", type=float, default=2.0, help="Validité d'un message en secondes (défaut : 2).")
     parser.add_argument("--gui-delay-ms", type=int, default=delay, help="Délai graphique en millisecondes, sans changer le pas SUMO.")
     parser.add_argument("--close-on-end", action="store_true", help="Fermer à la fin plutôt que garder la vue inspectable.")
     parser.add_argument("--output-mode", choices=("full", "interactive"), default="full", help="full garde les traces fines ; interactive garde le bilan et les preuves consultées.")
@@ -101,6 +116,7 @@ def interactive_menu(*, runner=None):
             print("Diagnostic confirmé, récupération, entraînement et évaluation : non implémentés.")
             choice = input("Votre choix : ").strip()
             if choice == "0":
+                print("Menu fermé.")
                 return 0
             if choice in ("2", "3"):
                 if choice == "2":
@@ -108,7 +124,7 @@ def interactive_menu(*, runner=None):
                     main(["scenarios"], runner=runner)
                 else:
                     print("\nAIDE CAV GRIDLOCK RECOVERY\n"
-                          "1 : choisir un scénario et lancer la simulation.\n"
+                          "1 : choisir un scénario et lancer la simulation ; en GUI, le détecteur est proposé.\n"
                           "2 : lire les scénarios disponibles et leurs objectifs.\n"
                           "0 : quitter le menu principal.\n\n"
                           "cgr crossing : ouvrir SUMO et INFO, seed 1, délai 300 ms.\n"
@@ -138,6 +154,15 @@ def interactive_menu(*, runner=None):
                 print("Répondre oui ou non ; lancement annulé.")
                 continue
             gui = display in ("", "o", "oui")
+            if gui:
+                detection = input("Activer le détecteur ? [O/n] : ").strip().lower()
+                if detection not in ("", "o", "oui", "n", "non"):
+                    print("Répondre oui ou non ; lancement annulé.")
+                    continue
+                communication = input("Activer les échanges V2V ? [O/n] : ").strip().lower()
+                if communication not in ("", "o", "oui", "n", "non"):
+                    print("Répondre oui ou non ; lancement annulé.")
+                    continue
             delay = prompt_integer("Délai graphique en ms", 300) if gui else 100
             names_on = input("Afficher les noms des rues ? [o/N] : ").strip().lower() if gui else "n"
             if names_on not in ("", "o", "oui", "n", "non"):
@@ -146,6 +171,10 @@ def interactive_menu(*, runner=None):
             args = ["run", name, "--seed", str(seed), "--gui-delay-ms", str(delay)]
             if gui:
                 args.append("--gui")
+                if detection in ("", "o", "oui"):
+                    args.append("--detect-obstructions")
+                if communication in ("", "o", "oui"):
+                    args.append("--v2v")
             if names_on in ("o", "oui"):
                 args.append("--street-names")
             if name == "kintambo":
@@ -156,7 +185,12 @@ def interactive_menu(*, runner=None):
                 args.extend(["--demand", level])
             print(f"Lancement : {' '.join(['cgr', *args])} ; traces complètes conservées.")
             code = main(args, runner=runner)
-            print(f"Exécution terminée, code {code}. Retour au menu.")
+            if code == 4:
+                print("Démo fermée à votre demande. Retour au menu.")
+            elif code in (0, 3):
+                print("Démo fermée ; simulation terminée. Retour au menu.")
+            else:
+                print(f"Exécution interrompue (code {code}). Retour au menu.")
     except (EOFError, KeyboardInterrupt):
         print("\nMenu fermé.")
         return 0
@@ -182,7 +216,7 @@ def main(argv=None, *, legacy=False, runner=None):
         for name in ("kintambo", *case_names()):
             shortcut = commands.add_parser(name, help=f"Ouvrir {name} dans SUMO et INFO C-RDG.")
             shortcut.set_defaults(case=name)
-            add_run_options(shortcut, gui_default=True, delay=300)
+            add_run_options(shortcut, gui_default=True, delay=300, v2v_default=True)
         if not values:
             if sys.stdin.isatty():
                 return interactive_menu(runner=runner)
@@ -211,6 +245,8 @@ def main(argv=None, *, legacy=False, runner=None):
         case = args.kintambo_case
     else:
         case = None if args.case == "kintambo" else args.case
+    detect_obstructions = (args.detect_obstructions if args.detect_obstructions is not None
+                           else bool(args.gui and not legacy and args.command != "run"))
     output = args.output_dir or str(Path("outputs/simulation") / (case or "kintambo") /
                                    datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
     try:
@@ -218,6 +254,9 @@ def main(argv=None, *, legacy=False, runner=None):
                  street_names=args.street_names, gui_delay_ms=args.gui_delay_ms, config_path=args.config,
                  duration_s=args.duration_s, rate=args.rate, drain_horizon_s=args.drain_horizon_s,
                  crdg=args.crdg or not legacy, blockage_evidence=args.blockage_evidence,
+                 detect_obstructions=detect_obstructions,
+                 v2v=args.v2v, v2v_range_m=args.v2v_range_m,
+                 v2v_interval_s=args.v2v_interval_s, v2v_lifetime_s=args.v2v_lifetime_s,
                  scenario="kintambo", kintambo_case=case, crdg_scene_times=tuple(args.crdg_scene_at),
                  crdg_focus=args.crdg_focus, crdg_depth=args.crdg_depth,
                  crdg_live=args.gui or args.crdg_live, close_on_end=args.close_on_end, output_mode=args.output_mode)

@@ -19,8 +19,10 @@ from .vehicle_tracking import TrafficLedger, verify_trips, STEP_S
 from .kintambo_scenarios import read_case, case_missions, prepare_case_network
 from .sumo_snapshot import save_scene
 from .crdg_live import CrdgPanelLink, configure_live_view, local_sector, whole_network
+from .v2v import V2VExchange
 from .. import crdg as dependency_graph
 from ..blockage_observation import BlockageObservation
+from ..obstruction_detection import ObstructionDetector, service_cycles
 
 import xml.etree.ElementTree as ET
 
@@ -41,10 +43,11 @@ def code_provenance() -> dict:
     digest = hashlib.sha256()
     for name in ("road_network.py", "traffic_demand.py", "traffic_run.py",
                  "vehicle_tracking.py", "sumo_process.py", "sumo_snapshot.py",
-                 "kintambo_scenarios.py", "crdg_live.py", "crdg_panel.py", "sumo_view.py"):
+                 "kintambo_scenarios.py", "crdg_live.py", "crdg_panel.py", "sumo_view.py", "v2v.py"):
         digest.update(name.encode() + Path(__file__).with_name(name).read_bytes())
     digest.update(b"crdg.py" + (Path(__file__).parents[1] / "crdg.py").read_bytes())
     digest.update(b"blockage_observation.py" + (Path(__file__).parents[1] / "blockage_observation.py").read_bytes())
+    digest.update(b"obstruction_detection.py" + (Path(__file__).parents[1] / "obstruction_detection.py").read_bytes())
     digest.update(b"cli.py" + (Path(__file__).parents[1] / "cli.py").read_bytes())
     try:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
@@ -62,7 +65,9 @@ def write_manifest(output, prepared, result, output_mode):
     """Garde les entrées et l'état réel du run ; une erreur n'est pas un résultat positif."""
     inputs = ("network.net.xml", "traffic.rou.xml", "simulation.sumocfg", "view.xml", "scenario.json")
     write_json(output / "manifest.json", {
-        "format_version": 1, "method": "traffic_observation", "crdg_enabled": result["crdg_enabled"], "diagnostic": "not_implemented",
+        "format_version": 1, "method": "traffic_observation", "crdg_enabled": result["crdg_enabled"],
+        "v2v_enabled": result["v2v_enabled"], "v2v": result.get("v2v"),
+        "diagnostic": "obstruction_characterization" if result.get("obstruction_detection_enabled") else "not_implemented",
         "scenario": result.get("kintambo_case", "kintambo"), "seed": result["seed"],
         "configuration": prepared.get("configuration"), "code": result["code"],
         "sumo_version": result.get("sumo_version"), "traci_version": result.get("traci_version"),
@@ -316,10 +321,12 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                    gui: bool = False, gui_delay_ms: int = 100, street_names: bool = False, config_path=None,
                    duration_s: float | None = None, rate: float | None = None,
                    drain_horizon_s: float | None = None, crdg: bool = False,
-                   blockage_evidence: bool = False, scenario: str = "kintambo",
+                   blockage_evidence: bool = False, detect_obstructions: bool = False, scenario: str = "kintambo",
                    kintambo_case: str | None = None, crdg_scene_times: tuple = (),
                    crdg_focus: str | None = None, crdg_depth: int = 2, crdg_live: bool = False,
-                   close_on_end: bool = False, output_mode: str = "full") -> dict:
+                   close_on_end: bool = False, output_mode: str = "full",
+                   v2v: bool = False, v2v_range_m: float = 120.0,
+                   v2v_interval_s: float = 1.0, v2v_lifetime_s: float = 2.0) -> dict:
     """Prépare et suit le trafic sans arrêt imposé, changement de route ni assistance.
 
     À la limite de temps, un trafic non vidé reste incomplet, pas un gridlock
@@ -330,12 +337,17 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
         raise ValueError("Le délai graphique doit être un entier positif ou nul.")
     if type(close_on_end) is not bool or output_mode not in ("full", "interactive"):
         raise ValueError("Mode de fermeture ou de sortie invalide.")
+    if type(v2v) is not bool:
+        raise ValueError("Le mode V2V doit être activé ou désactivé explicitement.")
+    exchange = V2VExchange(range_m=v2v_range_m, interval_s=v2v_interval_s,
+                           lifetime_s=v2v_lifetime_s, step_s=STEP_S) if v2v else None
     if crdg_live and not gui:
         raise ValueError("INFO C-RDG animé demande --gui.")
     if (crdg_focus is not None or crdg_depth != 2) and not crdg_scene_times and not crdg_live:
         raise ValueError("Focus et voisinage demandent un instant de scène C-RDG.")
     if type(crdg_depth) is not int or crdg_depth not in (1, 2, 3):
         raise ValueError("Le voisinage doit valoir 1, 2 ou 3.")
+    blockage_evidence = blockage_evidence or detect_obstructions
     crdg = crdg or blockage_evidence or bool(crdg_scene_times) or crdg_live
     if scenario != "kintambo":
         raise ValueError("Les anciens carrefours indépendants sont retirés ; choisir un scénario Kintambo avec cgr scenarios.")
@@ -389,6 +401,8 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
               "network_sha256": hashlib.sha256((output / "network.net.xml").read_bytes()).hexdigest(),
               "step_s": STEP_S, "gui": gui, "status": "failed", "reason": None,
               "output_mode": output_mode, "crdg_enabled": crdg,
+              "v2v_enabled": v2v,
+              "obstruction_detection_enabled": detect_obstructions,
               "code": code_provenance(), "connection_closed": False, "process_stopped": False,
               "process_returncode": None, "forced_process_stop": False, "cleanup_errors": [],
               "collision_ids": [], "gridlock": "not_evaluated",
@@ -397,6 +411,7 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
               "max_halting": 0, "max_lane_occupancy_ratio": 0, "upstream_queue_samples": 0}
     connection = process = None
     panel = CrdgPanelLink(output, missions, focus=crdg_focus,
+                         detection_enabled=detect_obstructions, v2v_enabled=v2v,
                          sector_boundary=local_sector(output / "network.net.xml", prepared["network"]["view_boundary_m"]),
                          network_boundary=whole_network(output / "network.net.xml", prepared["network"]["view_boundary_m"])) if crdg_live else None
     if kintambo_case:
@@ -410,6 +425,7 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
     trails, dependency_history = {}, {}
     graph_summary, graph_peak = dependency_graph.empty_summary(), None
     evidence = BlockageObservation() if blockage_evidence else None
+    detector = None
     reader = (lambda connection: subscribed_readings(connection, include_length=True, include_visual=crdg_live)) if crdg else subscribed_readings
     with (output / "sumo.log").open("w", encoding="utf-8") as log, \
             (output / "timeline.csv").open("w", encoding="utf-8", newline="") as trace, \
@@ -417,7 +433,11 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
             (output / "observations.jsonl" if output_mode == "full" else Path(os.devnull)).open("w", encoding="utf-8") as observations, \
             ((output / "crdg.jsonl" if output_mode == "full" else Path(os.devnull)).open("w", encoding="utf-8") if crdg else nullcontext()) as graph_file, \
             ((output / "crdg_events.jsonl" if output_mode == "full" else Path(os.devnull)).open("w", encoding="utf-8") if crdg else nullcontext()) as event_file, \
-            ((output / "blockage_events.jsonl").open("w", encoding="utf-8") if evidence else nullcontext()) as evidence_file:
+            ((output / "blockage_events.jsonl").open("w", encoding="utf-8") if evidence else nullcontext()) as evidence_file, \
+            ((output / "obstruction_events.jsonl").open("w", encoding="utf-8") if detect_obstructions else nullcontext()) as detection_events, \
+            ((output / "obstructions.jsonl").open("w", encoding="utf-8") if detect_obstructions else nullcontext()) as detection_file, \
+            ((output / "v2v_events.jsonl").open("w", encoding="utf-8") if v2v else nullcontext()) as v2v_events, \
+            ((output / "v2v_snapshots.jsonl").open("w", encoding="utf-8") if v2v else nullcontext()) as v2v_snapshots:
         timeline = csv.DictWriter(trace, fieldnames=list(ledger.snapshot()))
         timeline.writeheader()
         lane_writer = csv.DictWriter(lane_file, fieldnames=["time_s", "lane", "length_m", "vehicles",
@@ -428,6 +448,9 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
             import traci
             if crdg:
                 graph_lanes, movements = dependency_graph.read_network(output / "network.net.xml")
+                if detect_obstructions:
+                    detector = ObstructionDetector(service_cycles(output / "network.net.xml", graph_lanes, movements),
+                                                   observation_interval_s=calculation)
             binary = require_binary("sumo-gui" if gui else "sumo")
             with socket.socket() as reservation:
                 reservation.bind(("127.0.0.1", 0))
@@ -471,10 +494,21 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                 connection.simulationStep()
                 result["collision_ids"].extend(connection.simulation.getCollidingVehiclesIDList())
                 timeline.writerow(ledger.observe(connection, reader))
+                if exchange:
+                    for event in exchange.observe(ledger.time_s, ledger.readings):
+                        v2v_events.write(json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
+                    if panel:
+                        panel.publish_v2v(exchange.snapshot())
+                    if ledger.time_s % exchange.interval_s == 0:
+                        v2v_snapshots.write(json.dumps(exchange.snapshot(), ensure_ascii=False,
+                                                       sort_keys=True, allow_nan=False) + "\n")
                 if evidence:
                     # Les arrivées validées ne doivent pas attendre le prochain graphe.
                     for event in evidence.record_arrivals(ledger.arrivals):
                         evidence_file.write(json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
+                if detector:
+                    for event in detector.record_arrivals(ledger.arrivals):
+                        detection_events.write(json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
                 vehicles = tls_states = None
                 if crdg:
                     dependency_graph.update_waiting(first_halted, ledger.readings, ledger.time_s,
@@ -519,8 +553,6 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                         event_file.write(json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
                     current = dependency_graph.snapshot(graph)
                     graph_peak = dependency_graph.record_snapshot(graph_summary, current, graph_peak)
-                    if panel:
-                        panel.observe(connection, graph, current, ledger.readings)
                     if ledger.time_s in scene_times:
                         saved = save_scene(connection, current, ledger.readings,
                                            output / "crdg_scenes" / f"{ledger.time_s:g}", crdg_focus, crdg_depth,
@@ -534,9 +566,20 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                         for event in evidence.observe(ledger.time_s, ledger.readings, current, graph_lanes, movements,
                                                       arrivals=ledger.arrivals, dependency_events=dependency_events):
                             evidence_file.write(json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
+                    if detector:
+                        for event in detector.observe(ledger.time_s, ledger.readings, current, evidence.current_evidence,
+                                                      graph_lanes, footprints=footprints):
+                            detection_events.write(json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
+                    if panel:
+                        detection = ({**detector.snapshot(), "completed_episodes": list(detector.summary()["episodes"]),
+                                      "street_names": {info["edge"]: info["street_name"] for info in graph_lanes.values()
+                                                       if info.get("street_name")}} if detector else None)
+                        panel.observe(connection, graph, current, ledger.readings, detection=detection)
                     if ledger.time_s % interval == 0:
                         graph_file.write(json.dumps(current, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
                         graph_summary["exported_sample_count"] = graph_summary.get("exported_sample_count", 0) + 1
+                        if detector:
+                            detection_file.write(json.dumps(detector.snapshot(), ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
                 if len(ledger.arrivals) == len(missions):
                     result["status"] = "completed"
                     break
@@ -544,11 +587,17 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
                 result["status"] = "horizon_reached"
                 result["reason"] = "Des missions restent présentes ou en attente à l'horizon."
             if gui and not close_on_end and result["status"] != "user_closed":
+                if panel and detector:
+                    # Les arrivées du dernier pas sont connues, même sans nouveau graphe.
+                    panel.detection = {**detector.snapshot(), "completed_episodes": list(detector.summary()["episodes"]),
+                                       "street_names": {info["edge"]: info["street_name"] for info in graph_lanes.values()
+                                                        if info.get("street_name")}}
                 result.update(counts=ledger.snapshot(), display_state="awaiting_close",
                               last_validated_state=ledger.last_validated_state)
                 write_json(output / "summary.json", result)
                 write_manifest(output, prepared, result, output_mode)
-                for stream in (trace, lane_file, observations, graph_file, event_file, evidence_file):
+                for stream in (trace, lane_file, observations, graph_file, event_file, evidence_file,
+                               detection_events, detection_file, v2v_events, v2v_snapshots):
                     if stream is not None:
                         stream.flush()
                 if panel:
@@ -605,9 +654,33 @@ def run_traffic(output_dir: str | Path, *, demand: str = "LOW", seed: int = 1,
         write_json(output / "blockage_summary.json", evidence_summary)
         result["blockage_evidence"] = {"enabled": True, "events": "blockage_events.jsonl",
                                       "summary": "blockage_summary.json"}
+    if detector:
+        with (output / "obstruction_events.jsonl").open("a", encoding="utf-8") as stream:
+            for event in detector.finish(ledger.time_s, result["status"], complete_drain=len(trips) == len(missions)):
+                stream.write(json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
+        write_json(output / "obstruction_summary.json", {**detector.summary(), "code": result["code"],
+                   "network_sha256": result["network_sha256"], "scenario_sha256": result["scenario_sha256"],
+                   "seed": seed, "run_status": result["status"]})
+        result["obstruction_detection"] = {"summary": "obstruction_summary.json", "events": "obstruction_events.jsonl",
+                                           "snapshots": "obstructions.jsonl"}
     result["failure_observation"] = ledger.failure_observation
     result["last_validated_state"] = ledger.last_validated_state
     result["remaining_ids"] = sorted(set(ledger.missions) - set(ledger.arrivals))
+    if exchange:
+        write_json(output / "v2v_final.json", exchange.snapshot())
+        write_json(output / "v2v_summary.json", {
+            "protocol_version": 1, "time_s": exchange.time_s, "run_status": result["status"],
+            "range_m": exchange.range_m, "interval_s": exchange.interval_s,
+            "lifetime_s": exchange.lifetime_s, "active_cav_final": len(exchange.local),
+            "max_active_cav": exchange.max_active, "max_communicating_pairs": exchange.max_pairs,
+            "counts": dict(exchange.counts), "coordinate_frame": "sumo_xy_m",
+            "observation_source": "traci_ego_emulation", "delivery": "direct_same_step_no_loss"})
+        result["v2v"] = {"protocol_version": 1, "range_m": exchange.range_m,
+                         "interval_s": exchange.interval_s, "lifetime_s": exchange.lifetime_s,
+                         "counts": dict(exchange.counts),
+                         "events": "v2v_events.jsonl", "snapshots": "v2v_snapshots.jsonl",
+                         "summary": "v2v_summary.json",
+                         "final": "v2v_final.json"}
     records = ledger.vehicle_records(trips)
     with (output / "vehicles.csv").open("w", encoding="utf-8", newline="") as stream:
         fields = list(records[0]) if records else [

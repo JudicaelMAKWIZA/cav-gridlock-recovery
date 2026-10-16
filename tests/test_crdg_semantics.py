@@ -219,6 +219,93 @@ def test_unknown_alternative_does_not_create_a_receiving_constraint(scene):
     assert g.graph["receiving_observations"][0]["lane_states"] == {"b_0": "unknown"}
 
 
+def uncertain_reception(scene, rear_m):
+    scene["readings"]["B"] = vehicle("b", rear_m + 5)
+    scene["readings"]["C"] = vehicle("c", 4, speed=1)
+    scene["lanes"]["c_0"] = {**scene["lanes"]["b_0"], "edge": "c"}
+    bodies = {"B": ([("b_0", rear_m)], []),
+              "C": ([("c_0", -1)], ["b_0"])}
+    return crdg.receiving_spaces(scene["readings"], scene["lanes"], bodies)
+
+
+def test_certain_occupant_blocks_even_when_another_body_path_is_unknown(scene):
+    spaces = uncertain_reception(scene, 5.5)
+    assert spaces["b_0"]["free_space_m"] is None
+    assert spaces["b_0"]["knowledge"] == "unknown"
+    assert spaces["b_0"]["max_free_space_m"] == 5.5
+    assert spaces["b_0"]["occupant_id"] == "B"
+    current = build(scene, spaces)
+    resource = "resource:receiving:a_0:b:b_0"
+    assert current.graph["receiving_observations"][0]["lane_states"] == {"b_0": "blocked"}
+    assert current.has_edge("vehicle:A", resource)
+    assert list(current.successors(resource)) == ["vehicle:B"]
+    assert current.nodes[resource]["lane_spaces"]["b_0"]["knowledge"] == "unknown"
+    assert current.nodes[resource]["max_free_space_m"] == 5.5
+
+
+def test_uncertain_other_body_cannot_turn_a_distant_occupant_into_a_blocker(scene):
+    spaces = uncertain_reception(scene, 10)
+    assert spaces["b_0"]["max_free_space_m"] == 10
+    current = build(scene, spaces)
+    assert current.graph["receiving_observations"][0]["lane_states"] == {"b_0": "unknown"}
+    assert current.number_of_edges() == 0
+
+
+def test_unknown_body_alone_is_not_a_confirmed_occupant(scene):
+    scene["readings"]["C"] = vehicle("c", 4, speed=1)
+    scene["lanes"]["c_0"] = {**scene["lanes"]["b_0"], "edge": "c"}
+    bodies = {"C": ([("c_0", -1)], ["b_0"])}
+    spaces = crdg.receiving_spaces(scene["readings"], scene["lanes"], bodies)
+    assert spaces["b_0"]["occupied"] is False
+    assert spaces["b_0"]["free_space_m"] is None
+    assert "max_free_space_m" not in spaces["b_0"]
+    assert build(scene, spaces).graph["receiving_observations"][0]["lane_states"] == {"b_0": "unknown"}
+
+
+def test_one_free_admissible_lane_prevents_an_unknown_bound_from_blocking_all(scene):
+    spaces = uncertain_reception(scene, 5.5)
+    scene["lanes"]["b_1"] = {**scene["lanes"]["b_0"]}
+    scene["movements"][("a_0", "b")].append({"lane": "b_1", "tls": "light", "link_index": 1})
+    scene["tls_states"]["light"] = "GG"
+    spaces["b_1"] = {"knowledge": "known", "free_space_m": 20, "occupied": False, "occupant_id": None}
+    current = build(scene, spaces)
+    assert current.graph["receiving_observations"][0]["lane_states"] == {"b_0": "blocked", "b_1": "free"}
+    assert current.number_of_edges() == 0
+
+
+def test_all_admissible_lanes_need_a_certain_blocker(scene):
+    spaces = uncertain_reception(scene, 5.5)
+    scene["lanes"]["b_1"] = {**scene["lanes"]["b_0"]}
+    scene["movements"][("a_0", "b")].append({"lane": "b_1", "tls": "light", "link_index": 1})
+    scene["tls_states"]["light"] = "GG"
+    spaces["b_1"] = {"knowledge": "unknown", "free_space_m": None,
+                     "occupied": True, "occupant_id": "D", "max_free_space_m": 4}
+    scene["readings"]["D"] = vehicle("b", 9)
+    scene["readings"]["D"]["lane"] = "b_1"
+    current = build(scene, spaces)
+    resource = "resource:receiving:a_0:b:b_0,b_1"
+    assert current.nodes[resource]["lane_states"] == {"b_0": "blocked", "b_1": "blocked"}
+    assert set(current.successors(resource)) == {"vehicle:B", "vehicle:D"}
+    spaces["b_1"].pop("max_free_space_m")
+    assert build(scene, spaces).number_of_edges() == 0
+
+
+def test_red_signal_does_not_promote_certain_downstream_occupancy(scene):
+    spaces = uncertain_reception(scene, 5.5)
+    scene["tls_states"]["light"] = "r"
+    current = build(scene, spaces)
+    assert current.graph["waiting_states"]["A"] == "signal"
+    assert current.number_of_edges() == 0
+
+
+def test_naturally_moving_vehicle_has_no_new_receiving_dependency(scene):
+    spaces = uncertain_reception(scene, 5.5)
+    scene["readings"]["A"]["speed"] = 1
+    current = build(scene, spaces)
+    assert current.number_of_edges() == 0
+    assert "A" not in current.graph["waiting_states"]
+
+
 def test_candidate_accepts_a_legal_later_lane_change_but_not_a_dead_end(scene):
     row = {**scene["readings"]["A"], "route": ["a", "b", "c"]}
     scene["lanes"]["b_1"] = {**scene["lanes"]["b_0"], "lateral": ["b_0"]}
@@ -238,6 +325,18 @@ def test_all_blockers_clear_needs_only_one_enclosed_blocker_to_remain_blocked():
     closed = crdg.closed_cycle_candidates(g)
     assert len(closed) == 1
     assert set(closed[0]["nodes"]) == {"vehicle:A", "X", "vehicle:B"}
+
+
+def test_closed_candidate_accepts_only_a_proven_bound_on_an_unknown_footprint():
+    g = alternatives_graph()
+    g.nodes["X"]["candidate_lanes"] = g.nodes["X"]["blocked_lanes"] = ["one"]
+    del g.nodes["X"]["lane_spaces"]["two"]
+    g.remove_node("vehicle:C")
+    space = g.nodes["X"]["lane_spaces"]["one"]
+    space.update(knowledge="unknown", free_space_m=None, max_free_space_m=5.5)
+    assert crdg.closed_cycle_candidates(g) == crdg.cycle_candidates(g)
+    del space["max_free_space_m"]
+    assert crdg.closed_cycle_candidates(g) == []
 
 
 def test_small_closed_group_survives_removal_of_an_escape_from_large_scc():

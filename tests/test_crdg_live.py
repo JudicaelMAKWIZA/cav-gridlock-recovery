@@ -91,6 +91,23 @@ def test_panel_frames_every_five_simulated_seconds_and_expiry_between(tmp_path):
     assert [frame["snapshot"]["time_s"] for frame in frames] == [5, 10]
 
 
+def test_detector_payload_is_transported_at_the_same_time_without_control_calls(tmp_path):
+    link, connection = CrdgPanelLink(tmp_path, missions(), detection_enabled=True), native()
+    readings = {m.vehicle_id: {} for m in missions()}
+    for stamp in (.5, 5, 5.5, 10):
+        snapshot = current(stamp)
+        link.observe(connection, graph_of(snapshot), snapshot, readings,
+                     detection={"time_s": stamp, "episodes": [], "completed_episodes": []})
+    frames = list(map(json.loads, (link.output_directory / "frames.jsonl").read_text().splitlines()))
+    assert [(frame["snapshot"]["time_s"], frame["detection"]["time_s"]) for frame in frames] == [(5, 5), (10, 10)]
+    assert {call[0] for call in connection.vehicle.method_calls} <= {"getColor", "getParameter", "setColor", "setParameter"}
+    link.freeze("horizon_reached", 10.5, {})
+    frame = json.loads((link.directory / "frame.json").read_text())
+    clock = json.loads((link.directory / "clock.json").read_text())
+    assert frame["detection"]["time_s"] == 10 and frame["detection"]["run_status"] == "horizon_reached"
+    assert clock["present"] == [] and clock["inactive_edges"]
+
+
 def test_selection_does_not_change_native_ids_or_other_roles(tmp_path):
     link, connection = CrdgPanelLink(tmp_path, missions(), focus="south_000001"), native()
     snapshot = current()

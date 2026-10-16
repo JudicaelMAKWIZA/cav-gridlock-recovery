@@ -14,6 +14,8 @@ def test_shortcut_opens_current_gui_with_explicit_defaults(name, tmp_path):
     assert cli.main([name, "--output-dir", str(tmp_path)], runner=runner) == 0
     args = runner.call_args.kwargs
     assert args["kintambo_case"] == name and args["gui"] and args["crdg_live"]
+    assert args["detect_obstructions"]
+    assert args["v2v"]
     assert args["seed"] == 1 and args["gui_delay_ms"] == 300 and not args["close_on_end"]
 
 
@@ -22,6 +24,24 @@ def test_shortcut_can_override_gui_seed_and_delay(tmp_path):
     assert cli.main(["crossing", "--no-gui", "--seed", "2", "--gui-delay-ms", "10", "--output-dir", str(tmp_path)], runner=runner) == 3
     args = runner.call_args.kwargs
     assert not args["gui"] and not args["crdg_live"] and args["seed"] == 2 and args["gui_delay_ms"] == 10
+    assert not args["detect_obstructions"]
+
+
+@pytest.mark.parametrize("command,enabled", [
+    (["junction_adverse", "--no-detect-obstructions"], False),
+    (["junction_adverse", "--no-gui", "--detect-obstructions"], True),
+    (["run", "junction_adverse", "--gui"], False),
+    (["run", "junction_adverse", "--gui", "--detect-obstructions"], True),
+])
+def test_detection_choice_preserves_advanced_run_defaults(command, enabled, tmp_path):
+    runner = Mock(return_value={"status": "completed", "counts": {}})
+    assert cli.main([*command, "--output-dir", str(tmp_path)], runner=runner) == 0
+    assert runner.call_args.kwargs["detect_obstructions"] is enabled
+
+
+def test_detection_flags_cannot_be_combined():
+    with pytest.raises(SystemExit):
+        cli.main(["junction_adverse", "--detect-obstructions", "--no-detect-obstructions"])
 
 
 def test_no_arguments_without_a_terminal_never_waits_for_input(monkeypatch, capsys):
@@ -36,16 +56,75 @@ def test_no_arguments_without_a_terminal_never_waits_for_input(monkeypatch, caps
 def test_menu_lists_real_cases_and_runs_the_same_pipeline(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
     names = ("kintambo", *cli.case_names())
-    values = iter(["2", "", "3", "", "1", str(names.index("crossing") + 1), "", "", "", "", "0"])
+    values = iter(["2", "", "3", "", "1", str(names.index("crossing") + 1), "", "", "", "", "", "", "0"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(values))
     runner = Mock(return_value={"status": "completed", "counts": {}})
     assert cli.main([], runner=runner) == 0
     runner.assert_called_once()
     args = runner.call_args.kwargs
     assert args["kintambo_case"] == "crossing" and args["gui"] and args["seed"] == 1
+    assert args["detect_obstructions"]
+    assert args["v2v"]
     assert args["gui_delay_ms"] == 300 and args["output_mode"] == "full"
     text = capsys.readouterr().out
     assert all(name in text for name in names) and "non implémentés" in text
+    assert "Démo fermée ; simulation terminée. Retour au menu." in text
+
+
+@pytest.mark.parametrize("display,choice", [
+    ("", "n"),
+    ("n", None),
+])
+def test_menu_can_leave_detector_off(monkeypatch, capsys, display, choice):
+    monkeypatch.setattr(cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    replies = ["1", "1", "", display]
+    if choice is not None:
+        replies.append(choice)
+    if display != "n":
+        replies.extend(["", "", ""])
+    replies.extend(["", "0"])
+    prompts = []
+
+    def reply(prompt):
+        prompts.append(prompt)
+        return replies.pop(0)
+
+    monkeypatch.setattr("builtins.input", reply)
+    runner = Mock(return_value={"status": "completed", "counts": {}})
+    assert cli.main([], runner=runner) == 0
+    assert not runner.call_args.kwargs["detect_obstructions"]
+    assert ("Activer le détecteur" in " ".join(prompts)) is (display != "n")
+    assert "Menu fermé." in capsys.readouterr().out
+
+
+def test_menu_reports_explicit_demo_close_then_quits_cleanly(monkeypatch, capsys):
+    monkeypatch.setattr(cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    values = iter(["1", "1", "", "", "", "", "", "", "", "0"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(values))
+    runner = Mock(return_value={"status": "user_closed", "counts": {}})
+    assert cli.main([], runner=runner) == 0
+    output = capsys.readouterr().out
+    assert runner.call_args.kwargs["detect_obstructions"]
+    assert "Démo fermée à votre demande. Retour au menu." in output
+    assert output.count("1. Lancer SUMO") == 2
+    assert output.rstrip().endswith("Menu fermé.")
+
+
+@pytest.mark.parametrize("command,enabled", [
+    (["junction_adverse"], True),
+    (["junction_adverse", "--no-v2v"], False),
+    (["run", "junction_adverse", "--gui"], False),
+    (["run", "junction_adverse", "--gui", "--v2v"], True),
+])
+def test_v2v_choice_keeps_the_same_execution(command, enabled, tmp_path):
+    runner = Mock(return_value={"status": "completed", "counts": {}})
+    assert cli.main([*command, "--output-dir", str(tmp_path)], runner=runner) == 0
+    assert runner.call_args.kwargs["v2v"] is enabled
+
+
+def test_v2v_flags_cannot_be_combined():
+    with pytest.raises(SystemExit):
+        cli.main(["junction_adverse", "--v2v", "--no-v2v"])
 
 
 @pytest.mark.parametrize("choice,title,content", [

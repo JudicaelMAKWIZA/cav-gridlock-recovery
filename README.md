@@ -67,13 +67,18 @@ cgr run kintambo --demand LOW --seed 1
 `cgr` ouvre un menu en français : simulation, liste des scénarios, aide et
 retour/quitter. Les scénarios et l'aide restent affichés jusqu'à Entrée pour
 revenir au menu. Il propose seed, affichage et délai explicites ; sans terminal
-interactif, il affiche l'aide et n'attend aucune saisie. Diagnostic confirmé,
-récupération, entraînement et évaluation restent non implémentés.
+interactif, il affiche l'aide et n'attend aucune saisie. En mode graphique, le
+menu propose d'activer le détecteur d'obstructions et les échanges V2V (oui par défaut). Diagnostic
+confirmé, récupération, entraînement et évaluation restent non implémentés.
 
 Les raccourcis `cgr <scénario>` ouvrent SUMO et INFO par défaut, seed 1 et délai
-300 ms. Modifier avec `--seed`, `--gui-delay-ms` ou `--no-gui`. Les commandes
-avancées `cgr run …` gardent leur comportement : GUI seulement avec `--gui`,
-délai par défaut 100 ms. Le menu et les raccourcis utilisent le même pipeline.
+300 ms. Le détecteur y est activé avec la GUI ; `--no-detect-obstructions` le
+désactive. Le transport V2V y est aussi actif ; `--no-v2v` le désactive.
+Modifier aussi avec `--seed`, `--gui-delay-ms` ou `--no-gui` ; sans GUI,
+le détecteur n'est activé que sur demande explicite. Les commandes avancées
+`cgr run …` gardent leur comportement : GUI seulement avec `--gui`, détecteur
+seulement avec `--detect-obstructions`, V2V seulement avec `--v2v`, délai par défaut 100 ms. Le menu et les
+raccourcis utilisent le même pipeline.
 Le relais prépare le PATH de `.venv` et travaille depuis le dépôt ; les sorties
 par défaut y restent sous `outputs/simulation`. Les chemins relatifs d'options
 sont donc relatifs au dépôt lorsqu'on utilise ce relais.
@@ -153,7 +158,41 @@ fenêtre supplémentaire ne recouvre SUMO. Couleurs et alias y sont conservés ;
 les flèches des relations restent dans le graphe INFO, pas sur les chaussées.
 INFO peut être agrandi ou réduit avec les bords de fenêtre ou la poignée en
 bas à droite. Les barres de défilement donnent accès au contenu sur un petit
-écran. Le graphe reste présent, même en pause. Le mode **Détecteur** reste désactivé.
+écran. Le graphe reste présent, même en pause.
+
+Quand le détecteur est activé, le bouton **Détecteur** montre d'abord les passages
+dont une contrainte est identifiée, puis les immobilisations à vérifier ; les
+attentes ordinaires restent consultables. Un blocage local identifié concerne les
+véhicules indiqués, pas nécessairement toute la file proche. **Afficher** choisit
+les **Gênés**, les **Arrêtés**, ceux qui **Ont avancé**, ceux **Encore ici** ou
+**Tous** les membres. Choisir une situation cadre les véhicules encore présents
+dans SUMO. Les dates, distances, mouvements et incertitudes sont dans
+**Détails**, avec les données techniques sur demande. Un progrès ancien n'est
+pas une reprise actuelle. Les anciens suivis sont indiqués : la carte montre
+toujours les positions actuelles, sans rejouer le passé.
+Le graphe conserve uniquement les dépendances qualifiées, sans ajouter de faux
+arcs. Les résultats sont actualisés toutes les 5 secondes simulées et restent
+datés en pause. Un passage dégagé ne signifie pas que tout le réseau est rétabli.
+Une fin à l'horizon garde l'issue inconnue. La vérification tripinfo et le bilan
+définitif ont lieu après la fermeture contrôlée, pas dans la fenêtre encore ouverte.
+
+Tous les véhicules présents sont supposés CAV. Avec `--v2v`, chacun annonce son
+état propre aux voisins situés à portée ; les véhicules non insérés ne participent
+pas. **Communications V2V** dans INFO montre les échanges, les voisins et les
+informations reçues ou périmées pour un CAV choisi. Les distances des autres
+véhicules n'y sont indiquées que comme diagnostic du transport, pas comme
+connaissance embarquée. Par défaut, la portée est de 120 m, l'émission toutes
+les 1 s et la validité de 2 s ; `--v2v-range-m`, `--v2v-interval-s` et
+`--v2v-lifetime-s` les règlent. Il s'agit d'un échange applicatif idéal sans
+perte ni simulation radio, qui n'agit pas sur la conduite.
+
+```bash
+cgr run clearance --gui --v2v --seed 1
+```
+
+```bash
+cgr run junction_adverse --gui --detect-obstructions --drain-horizon-s 900 --gui-delay-ms 100
+```
 
 Une fin normale ou à l'horizon reste inspectable. **Fermer la démo** dans INFO
 C-RDG ferme proprement les ressources. `--close-on-end` permet une fermeture
@@ -164,6 +203,8 @@ automatique explicitement demandée. Les erreurs restent des erreurs avec logs.
 `manifest.json` conserve configuration, seed, version, empreintes, mode de sortie
 et statut. `summary.json`, `vehicles.csv`, `timeline.csv`, `tripinfo.xml` et
 `sumo.log` distinguent programmés, départs, arrivées, actifs et insertions retardées.
+Avec V2V, `v2v_events.jsonl`, `v2v_snapshots.jsonl`, `v2v_final.json` et
+`v2v_summary.json` gardent les échanges et les états informationnels datés.
 Une collision, téléportation, disparition ou destination modifiée invalide le run.
 Aucun véhicule n'est supprimé pour obtenir un succès.
 
@@ -176,6 +217,17 @@ fermé ne sont pas un diagnostic de gridlock. Le C-RDG ne commande pas le trafic
 Une reprise individuelle ne prouve pas la libération du groupe. Les épisodes
 ouverts à l'horizon sont censurés. Une voie légale ou un vert ne prouve pas la
 possibilité matérielle de passage ; les inconnues restent inconnues.
+
+`cgr run junction_adverse --detect-obstructions --drain-horizon-s 900` ajoute un
+suivi déterministe des blocages locaux et des arrêts, sans fenêtre obligatoire ni action
+sur le trafic. `obstructions.jsonl`, `obstruction_events.jsonl` et
+`obstruction_summary.json` séparent attentes normales, faible progression prolongée,
+contraintes identifiées ou inconnues, reprises partielles et résolution locale vérifiée.
+Les cohortes sont locales aux carrefours ; elles ne sont pas des groupes causalement
+fermés. La persistance est décrite par rapport à un cycle de service connu, pas
+comme une preuve de permanence ou de nécessité d'intervention. Ce mode reste une
+première caractérisation à valider scientifiquement, pas un diagnostic de gridlock.
+
 `--crdg-scene-at <secondes>` conserve un état SUMO natif au même instant,
 sans nouveau pas et sans dessiner de flèches sur les routes.
 
@@ -196,8 +248,8 @@ Les fixtures natives protègent les contrats d'observation, sans constituer un
 second banc scientifique. Les tests natifs sont ignorés si SUMO manque ; un test
 ignoré ne valide pas cette propriété.
 
-Le socle représente des contraintes observées et leurs preuves, pas encore un
-diagnostic final, une récupération autonome ou Graph-MARL. Les conflits latéraux,
-les alternatives matériellement praticables et certaines causes inconnues restent
-des limites. La prochaine étape est une évaluation indépendante, puis un
-diagnostic temporel et physique validé avant la récupération.
+Le socle représente des contraintes observées et propose une première
+caractérisation déterministe des obstructions. Sa validation scientifique
+indépendante reste à compléter. Aucun diagnostic final de gridlock, récupération
+autonome ou Graph-MARL n'est validé. Les conflits latéraux, les alternatives
+matériellement praticables et certaines causes inconnues restent des limites.

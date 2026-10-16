@@ -115,6 +115,9 @@ def receiving_spaces(readings: dict, lanes: dict, footprints: dict | None = None
         spaces[lane] = {"free_space_m": None if lane in unknown else max(0, rear),
                         "occupied": bool(present), "occupant_id": item,
                         "knowledge": "unknown" if lane in unknown else "known"}
+        if lane in unknown and item is not None:
+            # Un occupant connu borne l'espace, même si une autre carrosserie est incertaine.
+            spaces[lane]["max_free_space_m"] = max(0, rear)
         if item is not None:
             body = (footprints or {}).get(item, ([(readings[item]["lane"],
                                                  readings[item]["lane_position"] - readings[item]["length"])], []))[0]
@@ -368,9 +371,14 @@ def build_graph(readings: dict, spaces: dict, lanes: dict, movements: dict,
                            leader_gap_m=native_following.gap_m, follow_speed_m_per_s=native_following.follow_speed,
                            evidence="native_follow_speed" if kind == "leader" else "native_connection_obstacle")
         candidates = admissible_lanes(row, available_service, lanes, movements) if target else []
-        lane_states = {lane: ("unknown" if spaces[lane].get("knowledge") == "unknown"
-                             else "blocked" if spaces[lane]["occupied"] and spaces[lane]["free_space_m"] < required
-                             else "free" if spaces[lane]["free_space_m"] >= required else "unknown") for lane in candidates}
+        lane_states = {}
+        for lane in candidates:
+            space = spaces[lane]
+            available = space.get("free_space_m") if space.get("knowledge") != "unknown" else None
+            bound = available if available is not None else space.get("max_free_space_m")
+            lane_states[lane] = ("blocked" if space["occupied"] and bound is not None and bound < required
+                                 else "free" if available is not None and available >= required
+                                 else "unknown")
         if not info["internal"] and near_end and target and served:
             graph.graph["receiving_observations"].append({"vehicle_id": item, "lane_states": lane_states})
         if (not info["internal"] and near_end and target and served and candidates
@@ -382,7 +390,8 @@ def build_graph(readings: dict, spaces: dict, lanes: dict, movements: dict,
                            release_mode="one_candidate_free",
                            current_lane=row["lane"], next_edge=target, candidate_lanes=candidates,
                            blocked_lanes=candidates, required_space_m=required,
-                           max_free_space_m=max(spaces[lane]["free_space_m"] for lane in candidates),
+                           max_free_space_m=max(spaces[lane].get("free_space_m") if spaces[lane].get("free_space_m") is not None
+                                                else spaces[lane]["max_free_space_m"] for lane in candidates),
                            lane_states=lane_states,
                            street_name=lanes[candidates[0]]["street_name"], service=service,
                            lane_spaces={lane: spaces[lane].copy() for lane in candidates})
@@ -502,9 +511,9 @@ def resource_held(graph: nx.DiGraph, item: str, component: set) -> bool:
             space = data.get("lane_spaces", {}).get(lane, {})
             occupant = "vehicle:" + space["occupant_id"] if space.get("occupant_id") else None
             edge = graph.get_edge_data(item, occupant, {}) if occupant else {}
-            if (space.get("knowledge") == "unknown" or not space.get("occupied")
-                    or space.get("free_space_m") is None
-                    or space.get("free_space_m", math.inf) >= data["required_space_m"]
+            available = space.get("free_space_m") if space.get("knowledge") != "unknown" else None
+            bound = available if available is not None else space.get("max_free_space_m")
+            if (not space.get("occupied") or bound is None or bound >= data["required_space_m"]
                     or occupant not in component or edge.get("edge_type") != "occupied_by"
                     or lane not in edge.get("lanes", [])):
                 return False

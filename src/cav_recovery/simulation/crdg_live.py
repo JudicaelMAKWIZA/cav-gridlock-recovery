@@ -129,7 +129,8 @@ def _enter_pressed():
 class CrdgPanelLink:
     """Garde les fichiers d'échange et les couleurs d'origine de cette exécution."""
 
-    def __init__(self, output, missions, *, focus=None, sector_boundary=None, network_boundary=None):
+    def __init__(self, output, missions, *, focus=None, sector_boundary=None, network_boundary=None,
+                 detection_enabled=False, v2v_enabled=False):
         self.output_directory = Path(output) / "info_crdg"
         self.output_directory.mkdir()
         # Les clics ne doivent pas attendre des écritures synchronisées par OneDrive.
@@ -148,6 +149,7 @@ class CrdgPanelLink:
         self.command_sent_ns = None
         self.original, self.colours, self.resource_ids, self.group_ids = {}, {}, {}, {}
         self.last_frame = self.current = None
+        self.detection = None
         self.labels = {}
         self.original_labels = {}
         self.label_mode = "selected"
@@ -159,7 +161,9 @@ class CrdgPanelLink:
         atomic_json(self.directory / "ids.json", self.aliases)
         atomic_json(self.output_directory / "ids.json", self.aliases)
         atomic_json(self.directory / "control.json", {"focus": focus, "highlighted": [], "paused": False,
-                                                       "close_requested": False, "labels": "selected"})
+                                                       "close_requested": False, "labels": "selected",
+                                                       "detection_enabled": detection_enabled,
+                                                       "v2v_enabled": v2v_enabled})
         atomic_json(self.directory / "clock.json", {"time_s": 0, "status": "starting", "inactive_edges": []})
 
     def start(self):
@@ -353,12 +357,13 @@ class CrdgPanelLink:
                 return
             time.sleep(0.1)
 
-    def observe(self, connection, graph, current, readings):
+    def observe(self, connection, graph, current, readings, *, detection=None):
         started = time.perf_counter()
         if not self.control():
             self.restore(connection, readings)
             return
         self.current = current
+        self.detection = detection
         self.graph = graph
         self.apply_controls(connection, readings, current["time_s"])
         for row in current["nodes"]:
@@ -371,7 +376,7 @@ class CrdgPanelLink:
                 self.group_ids.setdefault(key, f"G{len(self.group_ids) + 1:03d}")
                 group["id"] = self.group_ids[key]
             self.last_frame = {"snapshot": current, "groups": groups, "resources": dict(self.resource_ids),
-                               "aliases": self.aliases}
+                               "aliases": self.aliases, "detection": detection}
             atomic_json(self.directory / "frame.json", self.last_frame)
             with (self.output_directory / "frames.jsonl").open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(self.last_frame, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
@@ -389,6 +394,10 @@ class CrdgPanelLink:
                     "render_time_s": None})
         self.stats["cpu_s"] += time.perf_counter() - started
 
+    def publish_v2v(self, state):
+        """Transmet au panneau une copie datée ; il ne choisit aucun destinataire."""
+        atomic_json(self.directory / "v2v.json", state)
+
     def freeze(self, status, time_s, readings):
         if self.frozen_at == (status, time_s):
             return
@@ -405,12 +414,21 @@ class CrdgPanelLink:
                 self.group_ids.setdefault(key, f"G{len(self.group_ids) + 1:03d}")
                 group["id"] = self.group_ids[key]
             self.last_frame = {"snapshot": self.current, "groups": groups, "resources": dict(self.resource_ids),
-                               "aliases": self.aliases}
+                               "aliases": self.aliases,
+                               "detection": {**self.detection, "run_status": status, "run_end_s": time_s}
+                               if self.detection is not None else None}
             atomic_json(self.directory / "frame.json", self.last_frame)
         frozen = {"time_s": time_s, "status": status, "readings": readings, "snapshot": self.current,
                   "aliases": self.aliases}
         atomic_json(self.directory / "frozen.json", frozen)
         atomic_json(self.output_directory / f"inspection_{time_s:g}.json", frozen)
+        clock = json.loads((self.directory / "clock.json").read_text(encoding="utf-8"))
+        clock["present"] = sorted(readings)
+        expired = {edge_key(edge) for edge in (self.current or {}).get("edges", [])
+                   if any(node.startswith("vehicle:") and node.removeprefix("vehicle:") not in readings
+                          for node in (edge["source"], edge["target"]))}
+        clock["inactive_edges"] = sorted(set(clock.get("inactive_edges", [])) | expired)
+        atomic_json(self.directory / "clock.json", clock)
 
     def status(self, status, time_s, *, reason=None, counts=None):
         path = self.directory / "clock.json"

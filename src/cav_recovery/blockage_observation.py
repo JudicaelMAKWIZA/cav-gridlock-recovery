@@ -39,6 +39,7 @@ class BlockageObservation:
         self.sequence = 0
         self.last_time = None
         self.longest = None
+        self.current_evidence = {}
 
     def _start(self, item, row, time_s, previous_time):
         self.sequence += 1
@@ -184,6 +185,7 @@ class BlockageObservation:
         previous_time = self.last_time
         self.last_time = time_s
         self.counts["observations"] += 1
+        self.current_evidence = {}
         events = []
         observed_episodes = self.last_episode.copy()
         nodes = {row["id"]: row for row in snapshot["nodes"]}
@@ -226,6 +228,9 @@ class BlockageObservation:
             if distance is not None and length is not None:
                 episode["without_vehicle_length_progress_s"] = time_s - episode["progress_measurement_since_s"]
             evidence = self._evidence(item, row, episode, snapshot, nodes, outgoing, receiving, lanes, movements, readings)
+            evidence["physical_episode_id"] = episode["episode_id"]
+            evidence["low_progress_age_s"] = 0 if progressed else episode["without_vehicle_length_progress_s"]
+            self.current_evidence[item] = evidence
             ages = [r["dependency_age_s"] for r in evidence["dependencies"] if "dependency_age_s" in r]
             if ages:
                 episode["max_dependency_age_s"] = max(ages + [episode["max_dependency_age_s"] or 0])
