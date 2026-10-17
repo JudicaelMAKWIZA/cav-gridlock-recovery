@@ -1,4 +1,4 @@
-"""Commande commune pour lancer et consulter les scénarios Kintambo."""
+"""Commande commune ; les exécuteurs MetaDrive et SUMO restent indépendants."""
 
 import argparse
 from datetime import datetime
@@ -9,7 +9,12 @@ import shutil
 import sys
 
 from .simulation.kintambo_scenarios import case_names, read_case
-from .simulation.traffic_run import run_traffic
+
+
+def run_traffic(*args, **kwargs):
+    # MetaDrive peut se lancer sans charger TraCI ni l'interface SUMO.
+    from .simulation.traffic_run import run_traffic as execute
+    return execute(*args, **kwargs)
 
 
 def add_run_options(parser, *, gui_default=False, delay=100, v2v_default=False):
@@ -198,7 +203,10 @@ def interactive_menu(*, runner=None):
 
 def main(argv=None, *, legacy=False, runner=None):
     values = list(sys.argv[1:] if argv is None else argv)
-    parser = argparse.ArgumentParser(prog="cgr", description="Observer le trafic Kintambo et ses dépendances, sans récupération.")
+    if not legacy and values[:1] == ["metadrive"]:
+        from .metadrive.cli import main as metadrive_main
+        return metadrive_main(values[1:], runner=runner)
+    parser = argparse.ArgumentParser(prog="cgr", description="Lancer MetaDrive 2D ou le banc historique SUMO/Kintambo.")
     if legacy:
         add_run_options(parser)
         parser.add_argument("--scenario", default="kintambo", help="Compatibilité : seul Kintambo est conservé.")
@@ -206,6 +214,7 @@ def main(argv=None, *, legacy=False, runner=None):
         parser.add_argument("--crdg-gui", action="store_true", help=argparse.SUPPRESS)
     else:
         commands = parser.add_subparsers(dest="command", required=True)
+        commands.add_parser("metadrive", help="Lancer le socle MetaDrive 2D, indépendant de SUMO.")
         commands.add_parser("scenarios", help="Lister les scénarios disponibles et leurs hypothèses.")
         run = commands.add_parser("run", help="Préparer le réseau, lancer SUMO et garder les résultats.")
         run.add_argument("case", choices=("kintambo", *case_names()))

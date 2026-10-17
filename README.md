@@ -4,9 +4,92 @@ Ce projet étudie la détection et la récupération de blocages collectifs de
 véhicules connectés et automatisés. La récupération après formation du blocage
 est l'objectif principal ; la prévention reste secondaire.
 
-## Réseau et trafic
+## MetaDrive : socle principal en cours d'intégration
 
-Le banc principal utilise une topologie dérivée d'OpenStreetMap autour de
+Le nouveau socle utilise MetaDrive avec une vue **2D top-down uniquement**.
+Le banc SUMO/Kintambo et ses commandes restent disponibles indépendamment.
+Il n'y a pas de co-simulation. D01 complet et la récupération autonome ne sont
+pas encore portés vers MetaDrive ; aucune scène ne prouve un gridlock collectif.
+
+Installation sous Ubuntu 24.04/WSL2, Python 3.12, dans un environnement séparé
+de l'environnement SUMO historique :
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-metadrive.txt
+python -m pip install -e '.[metadrive]'
+python -m pip install -r requirements.txt
+```
+
+MetaDrive est épinglé au commit
+`fe54b03327b14bcfc17a9a04b60c8abbee4d7ab1` (version déclarée 0.4.3), avec
+Panda3D 1.10.16. Ne pas utiliser le paquet PyPI 0.4.3 à la place de cette
+source. Une source locale propre à ce SHA peut être installée avec
+`pip install --no-deps -e /chemin/source-metadrive`, puis
+`pip install --no-deps -e .` ; conserver ses assets natifs. Sur une installation
+neuve sans assets, l'outil natif `python -m metadrive.pull_asset` les prépare.
+Aucun fichier du moteur installé n'est modifié par le projet.
+
+```bash
+cgr metadrive scenarios
+cgr metadrive run crossing --headless --seed 1
+cgr metadrive run crossing_three --gui --seed 1 --horizon-s 100 --gui-delay-ms 100
+cgr metadrive run convergence --headless --output-dir outputs/metadrive/mon-essai
+cgr metadrive run crossing --policy courtesy_wait --horizon-s 20
+```
+
+`crossing` et `convergence` reprennent deux dispositions préparées sur une
+intersection native non signalée. `crossing_three` ajoute un suiveur : trois
+CAV, destinations initiales explicites et stables. La politique par défaut
+`scheduled_passage` utilise une courtoisie et un passage central programmé
+après 10 s, protégés par un garde physique ; ce n'est ni une décision D01,
+ni une récupération coopérative autonome. `courtesy_wait` garde la courtoisie
+symétrique, qui peut immobiliser des véhicules capables de passer : ce n'est
+pas une vérité terrain de deadlock.
+
+Le pas physique est **0,02 s**, la décision **0,1 s**. `--horizon-s` termine
+l'observation sans changer les missions ; les présents restent censurés.
+`--gui-delay-ms` ralentit seulement l'affichage. La fenêtre montre les voies,
+des voitures orientées à l'échelle des corps physiques et les libellés stables
+V0/V1/V2 ; Échap ou sa fermeture interrompt le run
+proprement. Elle ferme aussi à la fin du run. Il n'existe pas encore de panneau
+INFO/D01 MetaDrive. Sans affichage WSLg/X11, utiliser `--headless`.
+
+Les sorties vont dans un nouveau dossier `outputs/metadrive/` : configuration,
+missions, géométrie, correspondance `vehicle_labels.json`, `observations.jsonl`,
+`physics.jsonl` (empreintes, distances, pénétrations et contacts aux sous-pas),
+commandes demandées/acceptées, capteurs, événements, messages V2V, C-RDG,
+`summary.json` et empreintes `manifest.json`. Collision, sortie de chaussée,
+changement de destination ou disparition injustifiée font échouer le run.
+Une arrivée native est corroborée dans le corridor de destination initial.
+
+La garde de développement réserve une marge entre carrosseries de 1 m, un pas
+de réaction et une distance de freinage, y compris pour les autres CAV en
+mouvement. Elle reste globale et échantillonnée ; elle ne certifie pas toutes
+les manœuvres. Les traversées commencent avec un espacement corrigé. Pour
+`crossing_three`, seed 1, prévoir `--horizon-s 100` : les trois arrivées se
+terminent à 90,1 s ; l'horizon par défaut de 90 s conserve le dernier présent
+comme censuré. Le rendu ne modifie pas la physique.
+
+Les rayons LiDAR et de chaussée restent des mesures locales sans identité
+automatique des voisins. V2V livre seulement des états propres datés à portée
+(30 m, période 1 s, validité 2 s), sans simulation radio. Le garde et le C-RDG
+minimal utilisent explicitement une instrumentation **globale de développement**,
+pas une connaissance distribuée des CAV. Le graphe représente un chemin assigné
+occupé dans les 0,5 m vérifiés, pas toutes les possibilités de manœuvre ni la
+cause certaine de tout arrêt. Les alternatives non vérifiées restent inconnues.
+Il calcule à 0,1 s, exporte les graphes à 1 s et conserve les événements entre
+exports. Les SCC/candidats restent structurels, pas des diagnostics.
+
+`--no-sensors`, `--no-v2v` et `--no-crdg` permettent les témoins séparés.
+Pour vérifier le socle natif : `python -m pytest -q tests/test_metadrive.py
+tests/test_metadrive_cli.py`. Sans MetaDrive, ses tests natifs sont ignorés,
+pas validés. La suite SUMO existante est conservée sans changement de sens.
+
+## Banc SUMO historique — réseau et trafic
+
+Le banc SUMO utilise une topologie dérivée d'OpenStreetMap autour de
 Kintambo Magasin, Kinshasa. Le réseau actif conserve les avenues, approches
 et liaisons proches du noyau. L'extrait source est fourni, utilisable hors ligne.
 Les voies, vitesses et feux sont des hypothèses de simulation, pas une calibration
@@ -22,7 +105,7 @@ Même configuration et même seed reproduisent les missions. `LOW`, `MEDIUM`,
 `sampled_s` garde le tirage ; `scheduled_s` l'arrondit vers le haut à la
 milliseconde. SUMO peut retarder l'insertion réelle.
 
-## Installation
+## Installation SUMO
 
 Python ≥ 3.12, SUMO/TraCI 1.27.1 et NetworkX sont nécessaires.
 
@@ -37,7 +120,7 @@ Sous PowerShell : `.venv\Scripts\Activate.ps1`. Pour la démonstration graphique
 il faut un affichage compatible avec SUMO-GUI et Tkinter ; sous Ubuntu/WSLg,
 installer `python3-tk` si nécessaire. Aucun navigateur ni serveur n'est requis.
 
-## Commande officielle
+## Commandes SUMO conservées
 
 Pour utiliser `cgr` depuis n'importe quel dossier d'un terminal Ubuntu/WSL,
 faire une seule fois depuis le dépôt, après l'installation :
@@ -123,7 +206,7 @@ Les mécanismes figurent dans [cases.json](src/cav_recovery/scenarios/kintambo/c
 
 ## SUMO animé et INFO C-RDG
 
-SUMO reste la vue physique principale. Le panneau reçoit les groupes du réseau
+Dans ce banc, SUMO est la vue physique. Le panneau reçoit les groupes du réseau
 toutes les **5 secondes simulées** ; l'heure SUMO, l'heure du graphe et son âge
 sont affichés. Des relations connues comme disparues sont grisées entre exports.
 Tous les groupes sont accessibles, avec filtres de suivi, réception, carrefour
