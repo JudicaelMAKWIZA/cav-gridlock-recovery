@@ -46,3 +46,12 @@ def test_help_does_not_import_metadrive_native(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "cav_recovery.metadrive.native", None)
     assert cli.main(["metadrive", "scenarios"]) == 0
+
+
+@pytest.mark.parametrize("scene", ["intersection_approaches", "lane_merge", "shared_passage"])
+def test_physical_scenes_default_to_driving_and_support_global_intervention(scene):
+    runner = Mock(return_value=result())
+    assert cli.main(["metadrive", "run", scene], runner=runner) == 0
+    assert runner.call_args.kwargs["policy"] == "road_following"
+    assert cli.main(["metadrive", "run", scene, "--policy", "global_clearance"], runner=runner) == 0
+    assert runner.call_args.kwargs["policy"] == "global_clearance"

@@ -203,6 +203,9 @@ def interactive_menu(*, runner=None):
 
 def main(argv=None, *, legacy=False, runner=None):
     values = list(sys.argv[1:] if argv is None else argv)
+    if not legacy and values[:1] == ["dataset"]:
+        from .dataset.cli import main as dataset_main
+        return dataset_main(values[1:])
     if not legacy and values[:1] == ["metadrive"]:
         from .metadrive.cli import main as metadrive_main
         return metadrive_main(values[1:], runner=runner)
@@ -215,6 +218,7 @@ def main(argv=None, *, legacy=False, runner=None):
     else:
         commands = parser.add_subparsers(dest="command", required=True)
         commands.add_parser("metadrive", help="Lancer le socle MetaDrive 2D, indépendant de SUMO.")
+        commands.add_parser("dataset", help="Générer et qualifier les épisodes physiques MetaDrive.")
         commands.add_parser("scenarios", help="Lister les scénarios disponibles et leurs hypothèses.")
         run = commands.add_parser("run", help="Préparer le réseau, lancer SUMO et garder les résultats.")
         run.add_argument("case", choices=("kintambo", *case_names()))

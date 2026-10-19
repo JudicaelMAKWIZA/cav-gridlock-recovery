@@ -277,6 +277,7 @@ def test_real_small_run_has_identical_missions_and_physics_with_and_without_crdg
 
 
 def test_static_connections_are_passenger_legal():
+    pytest.importorskip("sumolib", reason="Historical SUMO network reader; install the optional sumo dependencies.")
     path = Path(__file__).parent / "fixtures/sumo_smoke/network.net.xml"
     lanes, movements = crdg.read_network(path)
     assert lanes["approach_0"]["length_m"] > 0

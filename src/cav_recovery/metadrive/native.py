@@ -13,6 +13,7 @@ from metadrive.component.sensors.distance_detector import SideDetector, LaneLine
 from . import METADRIVE_COMMIT
 from .control import BrakeVehicle  # Enregistre le véhicule avant la création de l'environnement.
 from .observation import Mission, body, observe
+from .scenes import PHYSICAL_SCENES, agents_for
 
 
 CASES = {
@@ -29,12 +30,13 @@ CASES["crossing_three"] = {**CASES["crossing"], "agent2": dict(
 
 
 def make_env(case, *, sensors=True):
-    if case not in CASES:
+    if case not in CASES and case not in PHYSICAL_SCENES:
         raise ValueError(f"Scène MetaDrive inconnue : {case}")
-    config = dict(num_agents=len(CASES[case]), num_scenarios=10, allow_respawn=False, delay_done=0,
+    agents = agents_for(case, CASES)
+    config = dict(num_agents=len(agents), num_scenarios=10, allow_respawn=False, delay_done=0,
                   horizon=1000000, traffic_density=0, log_level=40, decision_repeat=5,
                   physics_world_step_size=0.02, force_seed_spawn_manager=True, use_render=False,
-                  agent_configs=CASES[case], vehicle_config=dict(vehicle_model="cgr_independent_brake", enable_reverse=True))
+                  agent_configs=agents, vehicle_config=dict(vehicle_model="cgr_independent_brake", enable_reverse=True))
     if sensors:
         config["sensors"] = dict(lidar=(Lidar,), side_detector=(SideDetector,), lane_line_detector=(LaneLineDetector,))
         config["vehicle_config"].update(lidar=dict(num_lasers=72, distance=40, num_others=0),
@@ -43,6 +45,16 @@ def make_env(case, *, sensors=True):
     else:
         config["vehicle_config"].update(lidar=dict(num_lasers=0, num_others=0),
                                         side_detector=dict(num_lasers=0), lane_line_detector=dict(num_lasers=0))
+    if case == "lane_merge":
+        from metadrive.envs.marl_envs.marl_bottleneck import MultiAgentBottleneckEnv
+        config["map_config"] = dict(bottle_lane_num=2, lane_num=2, neck_lane_num=1, neck_length=20, exit_length=60)
+        return MultiAgentBottleneckEnv(config)
+    if case == "shared_passage":
+        from metadrive.component.road_network import Road
+        from .passage import SharedPassageEnv
+        config["spawn_roads"] = [Road("west", "east"), Road("east", "west")]
+        config["map_config"] = dict(lane_num=1, exit_length=70, lane_width=3.4)
+        return SharedPassageEnv(config)
     return MultiAgentIntersectionEnv(config)
 
 
@@ -184,12 +196,13 @@ def configuration_record(env, seed):
     from pathlib import Path
     import subprocess
     from urllib.parse import unquote, urlparse
+    from urllib.request import url2pathname
 
     metadata = importlib.metadata.distribution("metadrive-simulator")
     direct = json.loads(metadata.read_text("direct_url.json") or "{}")
     revision = direct.get("vcs_info", {}).get("commit_id")
     if not revision and direct.get("url", "").startswith("file:"):
-        source = Path(unquote(urlparse(direct["url"]).path))
+        source = Path(url2pathname(urlparse(direct["url"]).path))
         result = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], capture_output=True, text=True)
         if result.returncode == 0:
             revision = result.stdout.strip()

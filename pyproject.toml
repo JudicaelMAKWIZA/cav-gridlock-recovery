@@ -8,15 +8,17 @@ version = "0.1.0"
 description = "Système autonome de détection et de résolution active des conflits routiers dans un réseau de véhicules connectés et automatisés."
 requires-python = ">=3.12"
 dependencies = [
+    "networkx==3.7",
+]
+
+[project.optional-dependencies]
+sumo = [
     "eclipse-sumo==1.27.1",
     "traci==1.27.1",
     "sumolib==1.27.1",
     "sumo-data==1.27.1",
     "pyproj==3.7.2",
-    "networkx==3.7",
 ]
-
-[project.optional-dependencies]
 metadrive = [
     "metadrive-simulator @ git+https://github.com/metadriverse/metadrive.git@fe54b03327b14bcfc17a9a04b60c8abbee4d7ab1",
     "Panda3D==1.10.16",

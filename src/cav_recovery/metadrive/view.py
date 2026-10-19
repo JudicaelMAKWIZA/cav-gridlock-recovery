@@ -9,10 +9,10 @@ from .observation import body
 
 
 class TopDownView(TopDownRenderer):
-    def __init__(self, *, window=True, labels=None):
+    def __init__(self, *, window=True, labels=None, camera_position=(85, -10), scaling=6):
         self.user_closed = False
-        super().__init__(window=window, screen_size=(1000, 760), camera_position=(85, -10),
-                         scaling=6, show_agent_name=False, num_stack=1,
+        super().__init__(window=window, screen_size=(1000, 760), camera_position=camera_position,
+                         scaling=scaling, show_agent_name=False, num_stack=1,
                          draw_target_vehicle_trajectory=False)
         self.labels = dict(labels) if labels is not None else {
             key: f"V{index}" for index, key in enumerate(sorted(self.engine.agents))}

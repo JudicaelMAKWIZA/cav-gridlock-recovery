@@ -4,9 +4,11 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 import sys
+import os
+from .scenes import PHYSICAL_SCENES, PHYSICAL_POLICIES
 
 
-SCENARIOS = ("crossing", "convergence", "crossing_three")
+SCENARIOS = ("crossing", "convergence", "crossing_three", *PHYSICAL_SCENES)
 
 
 def main(argv=None, *, runner=None):
@@ -22,8 +24,8 @@ def main(argv=None, *, runner=None):
     run.set_defaults(gui=False)
     run.add_argument("--gui-delay-ms", type=int, default=30, help="Délai par décision affichée, sans changer la physique.")
     run.add_argument("--horizon-s", type=float, default=90, help="Horizon simulé, multiple de 0,1 s.")
-    run.add_argument("--policy", choices=("courtesy_wait", "scheduled_passage"), default="scheduled_passage",
-                     help="Courtoisie seule ou passage central programmé après 10 s ; pas de récupération autonome.")
+    run.add_argument("--policy", choices=("courtesy_wait", "scheduled_passage", *PHYSICAL_POLICIES), default=None,
+                     help="M01 : courtesy_wait/scheduled_passage. Expériences physiques : road_following/global_clearance (état global).")
     run.add_argument("--output-dir", type=Path, help="Dossier absent ou vide.")
     run.add_argument("--no-sensors", dest="sensors", action="store_false", help="Témoin sans rayons de capteurs.")
     run.add_argument("--no-v2v", dest="v2v", action="store_false", help="Témoin sans transport applicatif.")
@@ -33,15 +35,18 @@ def main(argv=None, *, runner=None):
         print("crossing : deux CAV sur mouvements perpendiculaires ; scène F02 préparée.")
         print("convergence : deux CAV convergent vers la même sortie ; scène F02 préparée.")
         print("crossing_three : traversée et suiveur supplémentaire, trois missions natives.")
+        for name, scene in PHYSICAL_SCENES.items():
+            print(f"{name} : {scene['geometry']} ; {scene['formation']}. {scene['hypothesis']}")
         print("Aucun cas n'est présenté comme un gridlock spontané ou une détection D01 portée.")
         return 0
-    output = args.output_dir or Path("outputs/metadrive") / args.scenario / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    output = args.output_dir or Path(os.environ.get("CGR_OUTPUT_ROOT", "outputs")) / "metadrive" / args.scenario / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     try:
         if runner is None:
             from .run import run_metadrive
             runner = run_metadrive
         result = runner(output, case=args.scenario, seed=args.seed, horizon_s=args.horizon_s,
-                        gui=args.gui, gui_delay_ms=args.gui_delay_ms, policy=args.policy,
+                        gui=args.gui, gui_delay_ms=args.gui_delay_ms,
+                        policy=args.policy or ("road_following" if args.scenario in PHYSICAL_SCENES else "scheduled_passage"),
                         sensors=args.sensors, v2v=args.v2v, crdg=args.crdg)
     except ImportError as error:
         print(f"MetaDrive indisponible : installer les dépendances MetaDrive épinglées. Détail : {error}", file=sys.stderr)

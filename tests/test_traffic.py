@@ -255,7 +255,7 @@ def test_real_light_traffic_drains(tmp_path):
 
 
 def fake_run(monkeypatch, tmp_path, frames, gui=False, cleanup_error=False):
-    import traci
+    traci = pytest.importorskip("traci", reason="Optional client for historical mocked SUMO runner tests.")
     connection = Connection(frames)
     connection.lane = SimpleNamespace(getIDList=lambda: [])
     connection.gui = SimpleNamespace(setBoundary=Mock(), setSchema=Mock())

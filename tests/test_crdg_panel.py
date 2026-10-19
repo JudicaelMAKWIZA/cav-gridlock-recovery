@@ -33,6 +33,10 @@ def resize(panel, width, height):
 def panel(tmp_path):
     if not os.environ.get("DISPLAY") and os.name != "nt":
         pytest.skip("Affichage Tk absent ; interface réelle non vérifiée.")
+    if os.name == "nt":
+        import ctypes
+        if ctypes.windll.user32.GetSystemMetrics(1) < 860:
+            pytest.skip("Historical 760px Tk client layout needs a taller Windows desktop.")
     atomic_json(tmp_path / "ids.json", {"a": "V001", "b": "V002", "c": "V003", "d": "V004"})
     atomic_json(tmp_path / "control.json", {"focus": None, "highlighted": [], "paused": True,
                                             "labels": "selected", "v2v_enabled": True})

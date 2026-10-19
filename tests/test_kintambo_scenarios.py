@@ -138,10 +138,10 @@ def test_native_scene_export_preserves_traffic_and_reloads_the_same_state(tmp_pa
     import json
     import math
     import shutil
-    import traci
     from cav_recovery.simulation.road_network import require_binary
     if not shutil.which("sumo") or not shutil.which("netconvert"):
         pytest.skip("SUMO absent ; scènes réelles non validées.")
+    traci = pytest.importorskip("traci", reason="Historical SUMO integration client.")
     off, on = tmp_path / "off", tmp_path / "on"
     a = run_traffic(off, kintambo_case="clearance", seed=1, crdg=True)
     b = run_traffic(on, kintambo_case="clearance", seed=1, crdg_scene_times=(20.5, 20.5))

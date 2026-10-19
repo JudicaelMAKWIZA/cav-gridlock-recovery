@@ -17,6 +17,7 @@ from .native import (CASES, SensorReadings, SubstepEvidence, configuration_recor
                      make_env, mission_at_destination, missions_for)
 from .observation import observe, terminal_event
 from .relations import build_graph
+from .scenes import PHYSICAL_SCENES, PHYSICAL_POLICIES, agents_for
 
 
 def write_json(path, value):
@@ -79,15 +80,26 @@ def commands_for(env, followers, time_s, priority, policy):
 
 
 def run_metadrive(output, *, case="crossing", seed=1, horizon_s=90.0, gui=False,
-                  gui_delay_ms=30, policy="scheduled_passage", sensors=True, v2v=True, crdg=True):
-    """Le passage programmé est une démonstration centrale, pas une récupération validée."""
+                  gui_delay_ms=30, policy=None, sensors=True, v2v=True, crdg=True):
+    """Démonstrations M01 et expériences physiques à contrôleur global explicite."""
     validate_options(seed, horizon_s, gui_delay_ms)
-    if case not in CASES or policy not in ("courtesy_wait", "scheduled_passage"):
+    physical_case = case in PHYSICAL_SCENES
+    policy = policy or ("road_following" if physical_case else "scheduled_passage")
+    if (case not in CASES and not physical_case) or policy not in (
+            PHYSICAL_POLICIES if physical_case else ("courtesy_wait", "scheduled_passage")):
         raise ValueError("Scène ou politique inconnue.")
+    scheduled = agents_for(case, CASES)
     output = Path(output)
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         raise ValueError("Choisir un dossier de sortie absent ou vide.")
     output.mkdir(parents=True, exist_ok=True)
+    package = Path(__file__).parents[1]
+    inputs = [Path(__file__).with_name(name) for name in
+              ("__init__.py", "observation.py", "control.py", "native.py", "cooperation.py", "relations.py", "run.py", "cli.py", "view.py", "scenes.py")]
+    inputs += [package / "crdg.py", package / "simulation/v2v.py", package / "cli.py"]
+    if physical_case:
+        inputs += [Path(__file__).with_name(name) for name in ("passage.py", "physical.py", "maneuvers.py")]
+    code_hashes = {path.relative_to(package).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs}
     begin = time.perf_counter()
     env = proof = captured = None
     view = None
@@ -98,24 +110,33 @@ def run_metadrive(output, *, case="crossing", seed=1, horizon_s=90.0, gui=False,
                  v2v_s=0.0, graph_s=0.0, render_s=0.0, control_s=0.0)
     exchange = MetaDriveExchange(range_m=30, interval_s=1, lifetime_s=2, step_s=0.1) if v2v else None
     graph_counts = dict(observations=0, with_dependencies=0, max_edges=0, structural_cycles=0, closed_path_candidates=0)
-    config, lanes, last_image = None, [], None
+    config, lanes, last_image, image_stage = None, [], None, None
     closed = False
-    labels = {key: f"V{index}" for index, key in enumerate(sorted(CASES[case]))}
+    labels = {key: f"V{index}" for index, key in enumerate(sorted(scheduled))}
+    controller, certificate = None, None
+    progress = {key: dict(travelled_m=0., reverse_distance_m=0., halted_s=0., last_position=None) for key in scheduled}
     with ExitStack() as stack:
         streams = {name: stack.enter_context((output / (name + ".jsonl")).open("x", encoding="utf-8"))
-                   for name in ("observations", "physics", "commands", "crdg", "crdg_events", "sensors", "v2v", "events")}
+                   for name in ("observations", "physics", "commands", "crdg", "crdg_events", "sensors", "v2v", "events")
+                   + (("physical_reference",) if physical_case else ())}
         try:
             from metadrive.policy.idm_policy import IDMPolicy
 
             env = make_env(case, sensors=sensors)
             env.reset(seed=seed)
             missions = missions_for(env)
-            if set(missions) != set(CASES[case]):
+            native_ids = {key: vehicle.id for key, vehicle in env.agents.items()}
+            if set(missions) != set(scheduled):
                 raise RuntimeError("Les identités initiales diffèrent des missions programmées.")
-            if any(m.destination != CASES[case][key]["destination"]
-                   or m.origin_lane != tuple(CASES[case][key]["spawn_lane_index"]) for key, m in missions.items()):
+            if any(m.destination != scheduled[key]["destination"]
+                   or m.origin_lane != tuple(scheduled[key]["spawn_lane_index"]) for key, m in missions.items()):
                 raise RuntimeError("Une mission native diffère de la mission programmée avant reset.")
             lanes, surface = geometry(env)
+            if case == "shared_passage":
+                # Exact lane union: the order argument must not use M01's 5 cm envelope tolerance.
+                from shapely.geometry import LineString
+                from shapely.ops import unary_union
+                surface = unary_union([LineString(lane["centers"]).buffer(lane["width_m"]/2, cap_style=2) for lane in lanes])
             config = configuration_record(env, seed)
             write_json(output / "configuration.json", config)
             write_json(output / "missions.json", {key: asdict(m) for key, m in missions.items()})
@@ -126,16 +147,34 @@ def run_metadrive(output, *, case="crossing", seed=1, horizon_s=90.0, gui=False,
             proof.record(0.0)
             captured = SensorReadings(env) if sensors else None
             followers = {key: IDMPolicy(vehicle, seed) for key, vehicle in env.agents.items()}
+            if physical_case:
+                from .maneuvers import FeasibilityController
+                from .physical import physical_snapshot, passage_certificate
+                controller = FeasibilityController(case, policy, surface)
+                write_json(output / "scenario.json", PHYSICAL_SCENES[case])
             if gui:
                 from .view import TopDownView
-                view = TopDownView(labels=labels)
+                if physical_case:
+                    xmin, ymin, xmax, ymax = surface.bounds
+                    view = TopDownView(labels=labels, camera_position=((xmin+xmax)/2, (ymin+ymax)/2),
+                                       scaling=min(7, 900/(xmax-xmin+10), 650/(ymax-ymin+10)))
+                else:
+                    view = TopDownView(labels=labels)
                 env.engine.top_down_renderer = view
             readings = observe(env, 0, missions)
+            if physical_case:
+                write_line(streams["physical_reference"], physical_snapshot(env, readings, surface, missions, 0))
+                if case == "shared_passage":
+                    certificate = passage_certificate(readings, surface)
+                    write_json(output / "forward_only_certificate.json", certificate)
+                for key, row in readings.items():
+                    progress[key]["last_position"] = row["position_xy_m"]
             write_line(streams["observations"], dict(time_s=0, vehicles=readings))
             setup_s = time.perf_counter() - begin
             for step in range(round(horizon_s / 0.1)):
                 start = time.perf_counter()
-                actions, desired, commands, priority = commands_for(env, followers, time_s, priority, policy)
+                actions, desired, commands, priority = (controller.commands(env, followers, time_s) if physical_case
+                                                       else commands_for(env, followers, time_s, priority, policy))
                 costs["control_s"] += time.perf_counter() - start
                 before = observe(env, time_s, missions, desired)
                 write_line(streams["commands"], dict(time_s=time_s, commands=commands))
@@ -144,6 +183,30 @@ def run_metadrive(output, *, case="crossing", seed=1, horizon_s=90.0, gui=False,
                 time_s = round((step + 1) * 0.1, 8)
                 start = time.perf_counter()
                 readings = observe(env, time_s, missions)
+                if physical_case:
+                    for key, vehicle in env.agents.items():
+                        mission = missions[key]
+                        if (vehicle.id != native_ids[key] or tuple(vehicle.navigation.checkpoints) != mission.checkpoints
+                                or tuple(vehicle.navigation.final_lane.index) != mission.final_lane
+                                or tuple(vehicle.config["spawn_lane_index"]) != mission.origin_lane):
+                            raise RuntimeError(f"Identité ou route initiale modifiée : {key}")
+                    # Include final substep poses of native arrivals before their permitted removal.
+                    for key, row in proof.last_readings.items():
+                        metric = progress[key]
+                        distance = math.dist(row["position_xy_m"], metric["last_position"])
+                        metric["travelled_m"] += distance
+                        if row["signed_speed_mps"] < -.05:
+                            metric["reverse_distance_m"] += distance
+                        if math.hypot(*row["velocity_xy_mps"]) < .1:
+                            metric["halted_s"] += .1
+                            first_halted.setdefault(key, time_s)
+                        else:
+                            first_halted.pop(key, None)
+                        metric["last_position"] = row["position_xy_m"]
+                    for key in set(first_halted) - set(readings):
+                        first_halted.pop(key)
+                    if step == 0 or (step+1) % 10 == 0 or not readings:
+                        write_line(streams["physical_reference"], physical_snapshot(env, readings, surface, missions, time_s))
                 write_line(streams["observations"], dict(time_s=time_s, vehicles=readings))
                 costs["observation_s"] += time.perf_counter() - start
                 for key in sorted(before):
@@ -206,6 +269,11 @@ def run_metadrive(output, *, case="crossing", seed=1, horizon_s=90.0, gui=False,
                         from PIL import Image
                         import numpy as np
                         Image.fromarray(np.asarray(last_image)).save(output / f"topdown_{time_s:g}s.png")
+                    if physical_case and controller.stage != image_stage:
+                        from PIL import Image
+                        import numpy as np
+                        image_stage = controller.stage
+                        Image.fromarray(np.asarray(last_image)).save(output / f"topdown_stage_{image_stage}_{time_s:g}s.png")
                     if view.user_closed:
                         status = "user_closed"
                         break
@@ -251,8 +319,8 @@ def run_metadrive(output, *, case="crossing", seed=1, horizon_s=90.0, gui=False,
                     errors.append(dict(event="close_error", detail=str(error)))
         summary = dict(schema_version="cgr-metadrive-run-1", scenario=case, seed=seed, policy=policy,
             preparation="native_legal_lane_initial_poses_not_spontaneous_gridlock", status=status,
-            scheduled=len(CASES[case]), departed=len(missions), arrived=arrived, active=sorted(readings),
-            pending=len(CASES[case]) - len(missions), simulation_time_s=time_s,
+            scheduled=len(scheduled), departed=len(missions), arrived=arrived, active=sorted(readings),
+            pending=len(scheduled) - len(missions), simulation_time_s=time_s,
             horizon_s=horizon_s, physics_step_s=0.02, decision_interval_s=0.1,
             collision_contacts=proof.contacts if proof else [], outside_surface=proof.outside if proof else [],
             minimum_body_gap_m=proof.minimum_gap_m if proof else None, events=events, errors=errors,
@@ -271,12 +339,21 @@ def run_metadrive(output, *, case="crossing", seed=1, horizon_s=90.0, gui=False,
             physical_episodes_open_censored=[dict(vehicle_id=key, last_observed_s=time_s,
                 first_halted_s=first_halted.get(key)) for key in readings],
             scientific_status="prepared_movement_interaction_absolute_blockage_unknown_no_D01_port_no_gridlock")
+        if physical_case:
+            summary.update(preparation=PHYSICAL_SCENES[case]["formation"], progress=progress,
+                forward_only_certificate=certificate, controller_stage=controller.stage if controller else None,
+                scientific_status="physical_feasibility_experiment_no_D01_global_control",
+                recovery_admissibility=("joint_missions_completed_without_integrity_failure" if status == "completed" and not errors
+                                        else "failed_not_admissible" if errors else "partial_execution_joint_completion_unverified"),
+                still_open=bool(readings), dynamic_limits="fixed low speed commands; no real vehicle calibration; 0.02s sampled integrity")
+            if case in ("shared_passage", "lane_merge"):
+                summary["guard_safety_model"] = dict(minimum_sampled_gap_m=.7, road_margin_m=.15,
+                    wheelbase_reference_m=2.7, braking_deceleration_mps2=BRAKING_DECELERATION_MPS2,
+                    reaction_time_s=REACTION_TIME_S, minimum_lookahead_m=.35,
+                    scope="kinematic_sampled_global_sweep_with_neighbor_stopping_reserve_not_universal_safety")
         write_json(output / "summary.json", summary)
-    inputs = [Path(__file__).with_name(name) for name in
-              ("__init__.py", "observation.py", "control.py", "native.py", "cooperation.py", "relations.py", "run.py", "cli.py", "view.py")]
-    package = Path(__file__).parents[1]
-    inputs += [package / "crdg.py", package / "simulation/v2v.py", package / "cli.py"]
-    manifest = dict(code={str(path.relative_to(package)): hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs},
+    manifest = dict(code=code_hashes,
+                    code_changed_during_run=any(hashlib.sha256(path.read_bytes()).hexdigest() != code_hashes[path.relative_to(package).as_posix()] for path in inputs),
                     outputs={path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(output.iterdir()) if path.is_file()})
     write_json(output / "manifest.json", manifest)
     return summary
