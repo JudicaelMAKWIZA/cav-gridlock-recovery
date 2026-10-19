@@ -108,7 +108,8 @@ def adapt(value):
     _times(mission, t, "mission")
     for key in ("version", "origin", "destination", "movement_id"):
         _text(mission[key], key)
-    _equal(type(mission["demand_forward"]).__name__, "bool", "demand type")
+    if type(mission["demand_forward"]) is not bool:
+        raise InputError("demand_forward must be boolean")
     route = mission["own_route_xy_m"]
     if not isinstance(route, list) or not 2 <= len(route) <= 10000:
         raise InputError("own route: 2..10000 points required")
@@ -203,6 +204,12 @@ def adapt(value):
             b = _number(expired["valid_until_s"], "expiry")
             if a > b + EPS_TIME or b >= t - EPS_TIME:
                 raise InputError("expiry not yet observed")
+    # Receipt list order carries no causal information in the ideal transport.
+    # Canonicalize detached containers, never the caller's objects.
+    if box is not None:
+        value={**value,"v2v":{**box,
+            "received":sorted(box["received"],key=lambda e:e["message"]["sender_id"]),
+            "expired":sorted(box["expired"],key=lambda e:e["sender_id"])}}
     return LocalInput(freeze(value))
 
 

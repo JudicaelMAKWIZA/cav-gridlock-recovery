@@ -3,6 +3,8 @@ import json
 import math
 import pytest
 
+pytest.importorskip("shapely", reason="install the d01 extra for planar evidence tests")
+
 from cav_recovery.d01.observer import EgoObserver, Config
 from cav_recovery.d01.inputs import InputError
 from d01_fixtures import packet, fixture_a, fixture_b, fixture_c
@@ -181,3 +183,48 @@ def test_incomplete_own_history_is_not_padded_with_future_or_other_ego():
     observer=EgoObserver();p=packet();observer.update(p)
     assert len(observer.history)==1 and observer.last_output["effect_window"] is None
     assert observer.last_output["action"] is None
+
+
+def test_history_of_confirmation_and_closed_occupants_survives_loss_and_censor():
+    observer,out=run(fixture_a())
+    observer.update(packet(30.6))
+    p=packet(30.8);p["v2v"]["received"]=[]
+    lost=observer.update(p)
+    assert lost["status"]=="UNKNOWN" and len(lost["historical_confirmations"])==1
+    closed=next(e for e in lost["events"] if e["kind"]=="OBSERVATION_LOST")
+    assert closed["occupant_intervals"][0]["start_s"]==.4
+    assert closed["occupant_intervals"][0]["end_s"]==30.4
+    censored=observer.finish(30.8)
+    assert len(censored["historical_confirmations"])==1
+    with pytest.raises(InputError):observer.update(packet(31.))
+
+
+def test_rotated_coordinate_frame_and_forward_ray_have_same_physical_result():
+    rows=fixture_a()
+    for p in rows:
+        for key in ("own_route_xy_m",):
+            p["mission"][key]=[[-y,x] for x,y in p["mission"][key]]
+        p["map"]["drivable_polygons_xy_m"]=[[[-y,x] for x,y in q] for q in p["map"]["drivable_polygons_xy_m"]]
+        p["ego"]["heading_rad"]=math.pi/2
+        m=p["v2v"]["received"][0]["message"];m["position_xy_m"]=[0.,5.];m["heading_rad"]=math.pi/2
+    _,out=run(rows)
+    assert out[-1]["status"]=="CONFIRMED_OBSTRUCTION"
+    q=out[-1]["anonymous_obstacles"][0]["position_xy_m"]
+    assert q==pytest.approx([0.,2.74251])
+
+
+def test_non_nominal_reverse_and_insufficient_followup_are_explicit():
+    p=packet();p["ego"]["signed_speed_mps"]=-.1
+    assert EgoObserver().update(p)["reason"]=="NON_NOMINAL_REVERSE"
+    observer,out=run(fixture_a()[:100])
+    assert not any(r["status"]=="CONFIRMED_OBSTRUCTION" for r in out)
+    assert observer.finish(20.2)["reason"]=="CENSORED"
+
+
+def test_received_record_order_does_not_change_diagnostic_or_caller_input():
+    p=packet();peer=copy.deepcopy(p["v2v"]["received"][0]);m=peer["message"]
+    m.update(sender_id="V2",message_id="V2:1",position_xy_m=[5.,4.])
+    p["v2v"]["received"].append(peer);q=copy.deepcopy(p)
+    q["v2v"]["received"].reverse();before=copy.deepcopy(q)
+    assert EgoObserver().update(p)==EgoObserver().update(q)
+    assert q==before

@@ -12,6 +12,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+d01 = [
+    "shapely==2.2.0",
+]
 sumo = [
     "eclipse-sumo==1.27.1",
     "traci==1.27.1",

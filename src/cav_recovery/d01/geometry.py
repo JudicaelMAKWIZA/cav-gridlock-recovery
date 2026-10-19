@@ -66,6 +66,8 @@ class MovementGeometry:
             arc+=math.dist(a,b)
             if station<arc<station+distance:stations.add(arc)
         poses=[at(s) for s in sorted(stations)]
+        straight=all(abs(math.atan2(math.sin(h-tangent),math.cos(h-tangent)))<1e-10 for _,h in poses)
+        if straight:poses=[poses[0],poses[-1]]
         bodies=[footprint(p,h,ego["length_m"],ego["width_m"]) for p,h in poses]
         own=footprint(ego["position_xy_m"],ego["heading_rad"],ego["length_m"],ego["width_m"])
         # Inner witness: actual footprints at specified future route positions.
@@ -79,7 +81,9 @@ class MovementGeometry:
             outer.append(a.union(b).convex_hull.buffer(radius*dh+pose_error(ego["length_m"],ego["width_m"])))
         if not self.surface.covers(unary_union([own,*outer])):
             raise GeometryError("MOVEMENT_ROAD_ADMISSIBILITY_UNKNOWN")
-        sweep=unary_union(bodies)
+        # For straight translation the hull is the exact continuous sweep,
+        # not a shortcut across a turning trajectory.
+        sweep=bodies[0].union(bodies[-1]).convex_hull if straight else unary_union(bodies)
         self.result=dict(own=own,sweep=sweep,required=sweep.difference(own),station_m=station,
                          distance_m=distance,error_m=pose_error(ego["length_m"],ego["width_m"]))
         self.pose_key=pose
@@ -95,8 +99,10 @@ def body_evidence(message, geometry):
     if overlap.area<=0:return None
     return dict(sender_id=message["sender_id"],message_id=message["message_id"],
                 observed_at_s=message["observed_at_s"],intersection_area_m2=overlap.area,
-                intersection_xy_m=[list(p) for p in overlap.convex_hull.exterior.coords],
-                error_bound_m=error),overlap
+                intersection_envelope_xy_m=[list(p) for p in overlap.convex_hull.exterior.coords],
+                position_xy_m=list(message["position_xy_m"]),heading_rad=message["heading_rad"],
+                length_m=message["length_m"],width_m=message["width_m"],
+                source=message["source"],confidence=message["confidence"],error_bound_m=error),overlap
 
 
 def anonymous_returns(data, geometry):

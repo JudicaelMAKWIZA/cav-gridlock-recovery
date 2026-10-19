@@ -31,6 +31,8 @@ class Config:
             raise ValueError("K04 requires 5 Hz updates and 0.4 s proof appointments")
         if self.persistence_s<self.effect_s or self.history_s<self.persistence_s+self.effect_s:
             raise ValueError("history must cover persistence plus effect window")
+        if abs(self.effect_s/.2-round(self.effect_s/.2))>EPS_TIME:
+            raise ValueError("effect window must align with the 5 Hz observation grid")
 
 
 class EgoObserver:
@@ -43,7 +45,7 @@ class EgoObserver:
         self.events=deque(maxlen=256)
         self.confirmations=deque(maxlen=64)
         self.seen=OrderedDict()
-        self.time_s=self.ego_id=self.mission_signature=self.identity=None
+        self.time_s=self.ego_id=self.mission_signature=None
         self.series_start=self.effect_start=self.anchor=None
         self.last_proof=None
         self.occupants=[]
@@ -51,6 +53,7 @@ class EgoObserver:
         self.confirmed_at=None
         self.last_output=None
         self.resumed=False
+        self.finished=False
 
     def _event(self, kind, t, **fields):
         event=dict(kind=kind,available_at_s=t,**fields)
@@ -59,7 +62,11 @@ class EgoObserver:
 
     def _break(self,t,reason,kind="OBSERVATION_LOST"):
         if self.series_start is not None:
-            self._event(kind,t,reason=reason,proof_start_s=self.series_start,last_covered_s=self.last_proof)
+            closed=copy.deepcopy(self.occupants)
+            for row in closed:
+                if row["end_s"] is None:row["end_s"]=row["proof_times_s"][-1]
+            self._event(kind,t,reason=reason,proof_start_s=self.series_start,last_covered_s=self.last_proof,
+                        resource_bounds_xy_m=list(self.anchor.bounds),occupant_intervals=closed)
         self.series_start=self.effect_start=self.anchor=self.last_proof=None
         self.proofs.clear();self.occupants=[];self.confirmed_at=None
         self.lost=kind=="OBSERVATION_LOST"
@@ -86,6 +93,8 @@ class EgoObserver:
             temporal_scope="sampled_0.4s",proof_origin_s=self.config.proof_origin_s,
             current_CAV_occupancy_proven=bool(current),current_occupants=plain(current),anonymous_obstacles=plain(anonymous),
             freshness=plain(freshness),effect_window=copy.deepcopy(effect),
+            own_state=plain(data["ego"]),own_controls=plain(data["own_controls"]),
+            own_effect_samples=[dict(observed_at_s=q,mission_progress_m=p,signed_speed_mps=v) for q,p,v in self.history],
             coverage=dict(series_start_s=self.series_start,last_covered_s=self.last_proof,
                 effect_start_s=self.effect_start,proof_times_s=[r["time_s"] for r in proof_rows],
                 appointments=copy.deepcopy(proof_rows),continuous_between_samples=False,
@@ -101,6 +110,7 @@ class EgoObserver:
 
     def update(self, packet):
         # Always validate the public boundary; LocalInput cannot bypass it.
+        if self.finished:raise InputError("observer is censored; use a new instance for another run")
         data=adapt(packet).data;t=data["decision_at_s"];ego=data["ego"];mission=data["mission"]
         if self.ego_id is not None and data["ego_id"]!=self.ego_id:
             raise InputError("one observer cannot consume another ego")
@@ -155,7 +165,9 @@ class EgoObserver:
             except GeometryError:
                 contradiction=True;continue
             if evidence is not None:
-                row,overlap=evidence;current.append(row);overlaps.append(overlap)
+                row,overlap=evidence
+                row.update(received_at_s=entry["received_at_s"],available_at_s=box["available_at_s"])
+                current.append(row);overlaps.append(overlap)
         if box is not None:
             freshness.extend(dict(sender_id=e["sender_id"],message_id=e["message_id"],state="expired",valid_until_s=e["valid_until_s"]) for e in box["expired"])
         if contradiction:
@@ -217,12 +229,15 @@ class EgoObserver:
         return self._output(data,status,reason,geometry=geometry,anonymous=anonymous,current=current,freshness=freshness,effect=effect)
 
     def finish(self, at_s, reason="horizon"):
-        if self.last_output is None or not math.isfinite(at_s) or at_s<self.time_s-EPS_TIME:
+        if self.finished or self.last_output is None or not math.isfinite(at_s) or at_s<self.time_s-EPS_TIME:
             raise InputError("invalid censor time")
-        self._event("CENSORED",at_s,reason=reason)
+        had_series=self.series_start is not None
+        self._break(at_s,reason,kind="CENSORED")
+        if not had_series:self._event("CENSORED",at_s,reason=reason)
         result=copy.deepcopy(self.last_output)
         result.update(status="UNKNOWN",reason="CENSORED",emitted_at_s=at_s,current_CAV_occupancy_proven=False,
-                      current_occupants=[],events=copy.deepcopy(list(self.events)))
-        self._break(at_s,reason,kind="CENSORED")
+                      current_occupants=[],events=copy.deepcopy(list(self.events)),
+                      freshness=[dict(row,state="not_current_at_censor") for row in result["freshness"]])
+        self.finished=True
         self.last_output=copy.deepcopy(result)
         return result

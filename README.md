@@ -642,3 +642,48 @@ L'étude de capacité utilise uniquement les traces existantes : elle ne lance
 aucun épisode à 80–100 CAV et présente ses projections CPU/RAM comme des
 hypothèses à vérifier. Ces analyses issues de l'oracle restent hors des entrées
 des futurs modèles.
+
+## Observateur individuel expérimental D01-F01
+
+`cav_recovery.d01.observer.EgoObserver` reçoit un paquet `F01-input-1` pour
+un seul CAV : état et commandes propres, mission/route, carte statique,
+16 distances LiDAR et messages V2V effectivement reçus. La liste blanche
+imbriquée rejette les champs privilégiés. Le noyau fonctionne sans démarrer
+MetaDrive et ne dispose d'aucune interface d'action, d'oracle ou de lecture
+du dataset. Il produit `NO_ALERT`, `SUSPECTED`, `CONFIRMED_OBSTRUCTION` ou
+`UNKNOWN`, avec preuves et événements individuels inspectables.
+
+Le noyau seul s'installe avec `python -m pip install -e ".[d01]"` (Shapely,
+sans installer MetaDrive). L'exécuteur natif utilise l'environnement MetaDrive
+Windows déjà décrit plus haut ; aucune dépendance CUDA ou PyTorch n'est requise.
+
+Le contrat expérimental `K04_APPROVED` traite l'ego à 5 Hz et exige une
+occupation contemporaine à chaque rendez-vous de 0,4 s. Une confirmation porte
+sur une persistance **échantillonnée**, sans garantie d'occupation entre les
+mesures. Une pose V2V ancienne n'est jamais actualisée par son TTL. Une lacune
+décisive rompt la preuve ; les confirmations antérieures restent historiques.
+Les seuils initiaux (5 s d'effet, 30 s de persistance, balayage de 1,2 longueur)
+sont des paramètres de prototype, pas une calibration embarquée définitive.
+Les rayons seuls ne reconstituent ni les contours ni l'identité des véhicules.
+
+Un exécuteur natif distinct permet les petites expériences de non-interférence
+sous Windows, avec l'observateur **désactivé par défaut** :
+
+```powershell
+python -m cav_recovery.d01.native --help
+python -m cav_recovery.d01.native --output D:\cav-recovery-data\d01-off --vehicles 4 --horizon 12
+python -m cav_recovery.d01.native --output D:\cav-recovery-data\d01-on --vehicles 4 --horizon 12 --observer
+python -m pytest tests/test_d01_inputs.py tests/test_d01_observer.py tests/test_d01_native.py -q
+```
+
+Choisir des dossiers nouveaux, séparés du corpus figé. L'exécuteur réutilise
+les géométries natives et le conducteur historique M01 pour comparer les
+commandes, poses, missions, arrivées et contrôles d'intégrité avec/sans D01.
+Il ne constitue pas un rejeu du conducteur de production M02. La charge proposée
+va jusqu'à 30 CAV ; les coûts CPU/mémoire et les dépassements sont journalisés.
+Les diagnostics et entrées locales sont des traces expérimentales privées.
+
+Cette intégration indépendante ne modifie aucun module inclus dans l'empreinte
+historique du pipeline M02, ni ses données, partitions ou annotations.
+F01 n'implémente ni détection collective, ni TCN, ni nouveau C-RDG, ni politique
+Graph-MARL ou récupération.
