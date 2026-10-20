@@ -186,7 +186,9 @@ class TopDownView(TopDownRenderer):
         if self._vehicle_font is None:
             if not pygame.font.get_init():
                 pygame.font.init()
-            self._vehicle_font = pygame.font.Font(None, 21)
+            self._vehicle_font = pygame.font.Font(
+                None, getattr(self, "label_font_size", 21)
+            )
         placed = []
         bodies = {
             key: pygame.Rect(
@@ -197,34 +199,63 @@ class TopDownView(TopDownRenderer):
             )
             for key, points in footprints.items()
         }
+        self.label_positions = {}
+        self.label_body_rects = bodies
         for key, vehicle in sorted(self.engine.agents.items()):
             x, y = self._frame_canvas.pos2pix(*vehicle.position)
             x, y = x - offset[0], y - offset[1]
             label = self._vehicle_font.render(
-                self.labels[key], True, (24, 33, 41), (248, 250, 249)
+                self.labels[key],
+                True,
+                (24, 33, 41),
+                (255, 233, 151)
+                if getattr(self, "selected", None) == key
+                else (248, 250, 249),
             )
-            for dx, dy in ((18, -25), (18, 15), (-38, -25), (-38, 15), (18, -43)):
-                rect = label.get_rect(
-                    topleft=(
-                        min(
-                            max(viewport.left, x + dx),
-                            viewport.right - label.get_width(),
-                        ),
-                        min(
-                            max(viewport.top, y + dy),
-                            viewport.bottom - label.get_height(),
-                        ),
-                    )
-                )
-                if not any(
-                    rect.colliderect(other) for other in placed + list(bodies.values())
-                ):
-                    break
+            rect = self._near_label(label, bodies[key], viewport, placed, bodies)
             placed.append(rect)
+            self.label_positions[key] = rect
             clipped = bodies[key].clipline((x, y), rect.center)
             start = clipped[1] if clipped else (x, y)
             pygame.draw.line(self.screen_canvas, (224, 230, 234), start, rect.center, 1)
             self.screen_canvas.blit(label, rect)
+
+    @staticmethod
+    def _near_label(surface, body_rect, viewport, placed, bodies):
+        """Cherche une place proche du corps en pénalisant d'abord les recouvrements."""
+        candidates = []
+        for shift in (0, -6, 6, -12, 12):
+            candidates.extend(
+                (
+                    surface.get_rect(
+                        midbottom=(body_rect.centerx + shift, body_rect.top - 2)
+                    ),
+                    surface.get_rect(
+                        midleft=(body_rect.right + 2, body_rect.centery + shift)
+                    ),
+                    surface.get_rect(
+                        midtop=(body_rect.centerx + shift, body_rect.bottom + 2)
+                    ),
+                    surface.get_rect(
+                        midright=(body_rect.left - 2, body_rect.centery + shift)
+                    ),
+                )
+            )
+
+        def score(rect):
+            overlap = sum(
+                rect.clip(other).width * rect.clip(other).height
+                for other in placed + list(bodies.values())
+            )
+            return overlap * 1000 + math.dist(rect.center, body_rect.center)
+
+        candidates = [rect.clamp(viewport) for rect in candidates]
+        for rect in candidates:
+            if not any(
+                rect.colliderect(other) for other in placed + list(bodies.values())
+            ):
+                return rect
+        return min(candidates, key=score)
 
     def _add_text(self, text):
         import pygame

@@ -156,3 +156,129 @@ def test_global_display_reference_is_optional_and_keeps_its_past(tmp_path):
         session.reference_stats["source"]
         == "independent_native_reference_for_display_only"
     )
+
+
+def display_frame(view, at_s=1.0):
+    """Données de présentation contrôlées ; aucune qualification scientifique simulée."""
+    diagnostics = {}
+    for key in view.engine.agents:
+        diagnostics[key] = dict(
+            status="NO_ALERT",
+            reason="PROGRESSING",
+            destination="a1_sink",
+            own_state=dict(signed_speed_mps=1.0),
+            own_controls=dict(requested_speed_mps=3.0, accepted_speed_mps=1.0),
+            coverage=dict(series_start_s=None, effect_start_s=None, proof_times_s=[]),
+            events=[],
+        )
+    keys = list(diagnostics)
+    edge = dict(
+        state="CURRENT",
+        requester=keys[0],
+        blocker=keys[1],
+        level="SUSPECTED",
+        resource_wkt="POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))",
+    )
+    return dict(
+        at_s=at_s,
+        diagnostics=diagnostics,
+        graphs={key: dict(groups=[], edges=[edge]) for key in diagnostics},
+        deliveries=[],
+        measurements={},
+        costs_ms={},
+        independent_reference=None,
+    )
+
+
+@pytest.mark.parametrize("size", [(800, 600), (960, 540), (1248, 616)])
+def test_all_views_and_buttons_fit_after_resize(view, size):
+    view._resize(size)
+    frame = display_frame(view)
+    for name in ("traffic", "graph", "v2v", "d01", "resources"):
+        view._action(name)
+        view.inspect(frame)
+        screen = view.screen_canvas.get_rect()
+        assert screen.contains(view.scene_rect) and screen.contains(view.panel_rect)
+        assert all(screen.contains(rect) for rect in view.buttons.values())
+        assert view._screen_size == size
+    view._action("details")
+    assert view.panel_rect.width == 0 and view.scene_rect.width == size[0]
+
+
+def test_traffic_is_free_of_diagnostic_arrows_and_labels_stay_near_cars(
+    view, monkeypatch
+):
+    frame = display_frame(view)
+    view._action("traffic")
+    monkeypatch.setattr(
+        view, "_arrow", lambda *args: pytest.fail("flèche sur le trafic")
+    )
+    view.inspect(frame)
+    assert view.active_view == "traffic" and view.label_font_size == 17
+    assert all(
+        view.label_body_rects[key].inflate(40, 40).colliderect(rect)
+        for key, rect in view.label_positions.items()
+    )
+
+
+def test_view_shortcuts_toggle_dedicated_content_and_tab_selects(view, monkeypatch):
+    view.frame = display_frame(view)
+    view.selected = next(iter(view.frame["diagnostics"]))
+    view.no_window = False
+    for key, name in (
+        (pygame.K_g, "graph"),
+        (pygame.K_v, "v2v"),
+        (pygame.K_d, "d01"),
+        (pygame.K_r, "resources"),
+    ):
+        event = pygame.event.Event(pygame.KEYDOWN, key=key, unicode="")
+        monkeypatch.setattr(pygame.event, "get", lambda: [event])
+        view._handle_event()
+        assert view.active_view == name
+        view._handle_event()
+        assert view.active_view == "traffic"
+    before = view.selected
+    monkeypatch.setattr(
+        pygame.event,
+        "get",
+        lambda: [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_TAB, unicode="\t")],
+    )
+    view._handle_event()
+    assert before != view.selected and view.manual_selection
+
+
+def test_d01_plot_keeps_only_past_samples_and_does_not_duplicate_paused_frame(view):
+    for tick in range(310):
+        view.frame = display_frame(view, tick * 0.2)
+        view._remember_d01()
+    view._remember_d01()
+    assert all(
+        len(rows) == 301 and rows[-1]["at_s"] == view.frame["at_s"]
+        for rows in view.d01_history.values()
+    )
+
+
+def test_graph_uses_available_space_before_paginating(view):
+    view._resize((1248, 616))
+    frame = display_frame(view)
+    owner = next(iter(frame["diagnostics"]))
+    template = frame["graphs"][owner]["edges"][0]
+    frame["graphs"][owner]["edges"] = [
+        dict(template, requester=f"agent{index}", blocker=f"agent{index + 1}")
+        for index in range(0, 16, 2)
+    ]
+    view.selected = owner
+    view.manual_selection = True
+    view._action("graph")
+    view.inspect(frame)
+    assert len(view.graph_nodes) == 16
+    assert "diagram_prev" not in view.buttons
+
+
+def test_initial_window_reserves_space_for_windows_frame_and_taskbar():
+    from cav_recovery.experiments.layout import available_size
+
+    width, height = available_size()
+    desktop_width, desktop_height = pygame.display.get_desktop_sizes()[0]
+    assert width <= desktop_width - 32
+    assert height <= desktop_height - 64

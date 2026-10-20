@@ -1,6 +1,7 @@
 """Inspection 2D interactive ; les commandes de la vue n'agissent pas sur les CAV."""
 
 from functools import lru_cache
+from collections import defaultdict, deque
 import math
 from pathlib import Path
 import time
@@ -9,6 +10,8 @@ from shapely import wkt
 
 from ..metadrive.view import TopDownView
 from .presentation import french, label, save_capture, source_stamp, wrapped
+from .layout import available_size, rectangles
+from . import chrome, diagrams
 
 COLORS = {
     "NO_ALERT": (67, 190, 130),
@@ -31,15 +34,22 @@ def resource_polygons(text):
 class ExperimentView(TopDownView):
     """Vue locale reçue, indépendante de la référence globale d'inspection."""
 
-    def __init__(self, *, window=True, output=None, context=None):
+    def __init__(self, *, window=True, output=None, context=None, screen_size=None):
         import pygame
 
         self.frame = None
         self.selected = None
         self.manual_selection = False
         self.v2v_mode = 0
-        self.show_graph = True
-        self.show_resources = True
+        self.active_view = "traffic"
+        self.show_graph = False
+        self.show_resources = False
+        self.show_details = True
+        self.diagram_page = 0
+        self.graph_nodes = {}
+        self.d01_history = defaultdict(lambda: deque(maxlen=301))
+        self.label_font_size = 17
+        self.zoom = 1.0
         self.show_reference = False
         self.show_help = False
         self.paused = False
@@ -59,17 +69,23 @@ class ExperimentView(TopDownView):
         self.dirty = True
         self.recent_links = {}
         self.displayed_links = []
-        self.scene_rect = pygame.Rect(0, 56, 1080, 790)
+        size = screen_size or (available_size() if window else (1200, 720))
+        self.scene_rect, self.panel_rect, self.footer_rect = rectangles(size)
         super().__init__(
             window=window,
             camera_position=(20, 0),
             scaling=4.5,
-            screen_size=(1440, 900),
+            screen_size=size,
             film_size=(1600, 1600),
         )
         self.clock = pygame.time.Clock()
         self.deadline = time.monotonic()
+        pygame.font.init()
+        self.panel_font = pygame.font.Font(None, 21)
+        self.small_font = pygame.font.Font(None, 18)
+        self._layout()
         if not self.no_window:
+            self._screen_canvas = pygame.display.set_mode(size, pygame.RESIZABLE)
             pygame.display.set_caption("CAV Recovery — inspection MetaDrive")
             pygame.key.set_repeat()
 
@@ -80,6 +96,66 @@ class ExperimentView(TopDownView):
     @property
     def frames_per_second(self):
         return 5 * RATES[self.rate_index]
+
+    @property
+    def playback_rate(self):
+        return RATES[self.rate_index]
+
+    def header_text(self):
+        at = self.frame["at_s"] if self.frame else 0
+        count = len(self.frame["diagnostics"]) if self.frame else 0
+        return (
+            f"{self.context.get('scenario', 'MetaDrive')} · graine "
+            f"{self.context.get('seed', '—')} · {at:.1f} s · {count} CAV actifs"
+        )
+
+    def _layout(self):
+        width, _ = self.screen_canvas.get_size()
+        lines = max(
+            1, len(list(wrapped(self.header_text(), self.panel_font, width - 24)))
+        )
+        self.navigation_y = 12 + lines * 22
+        self.scene_rect, self.panel_rect, self.footer_rect = rectangles(
+            self.screen_canvas.get_size(), title_lines=lines, details=self.show_details
+        )
+        self._fit_map()
+        self.dirty = True
+
+    def _fit_map(self):
+        xmin, xmax, ymin, ymax = self.map.road_network.get_bounding_box()
+        self.position = ((xmin + xmax) / 2, (ymin + ymax) / 2)
+        self.scaling = self.zoom * min(
+            self.scene_rect.width / max(1, xmax - xmin + 12),
+            self.scene_rect.height / max(1, ymax - ymin + 12),
+        )
+        for canvas in (self._background_canvas, self._frame_canvas):
+            canvas.scaling = self.scaling
+            canvas.move_display_window_to(self.position)
+        self._draw_roads()
+
+    def _resize(self, size):
+        import pygame
+
+        self._screen_size = tuple(size)
+        if self.no_window:
+            self._screen_canvas = pygame.Surface(size)
+        elif self.screen_canvas.get_size() != tuple(size):
+            self._screen_canvas = pygame.display.set_mode(size, pygame.RESIZABLE)
+        self._layout()
+
+    def _remember_d01(self):
+        for key, diagnostic in self.frame["diagnostics"].items():
+            history = self.d01_history[key]
+            if history and history[-1]["at_s"] >= self.frame["at_s"]:
+                continue
+            history.append(
+                dict(
+                    at_s=self.frame["at_s"],
+                    status=diagnostic["status"],
+                    speed=diagnostic["own_state"]["signed_speed_mps"],
+                    requested=diagnostic["own_controls"]["requested_speed_mps"],
+                )
+            )
 
     def _pixel(self, point):
         cx, cy = self._frame_canvas.pos2pix(*self.position)
@@ -135,67 +211,34 @@ class ExperimentView(TopDownView):
         return links[:4] if self.v2v_mode == 1 else links
 
     def _draw(self, *args, **kwargs):
+        self.buttons.clear()
+        self.graph_nodes = {}
+        if self.active_view != "v2v":
+            self.displayed_links = []
         if self.frame:
             for key, diagnostic in self.frame["diagnostics"].items():
                 self.labels[key] = label(key)
                 self.colors[key] = COLORS[diagnostic["status"]]
-        super()._draw(*args, **kwargs)
-        if not self.frame:
-            return
-        import pygame
+        if self.active_view == "traffic" or not self.frame:
+            super()._draw(*args, **kwargs)
+            if self.selected in self.engine.agents:
+                import pygame
 
-        self.screen_canvas.set_clip(self.scene_rect)
-        graph = self.frame["graphs"].get(self.selected, {})
-        packet = self.frame["measurements"].get(self.selected, {})
-        plan = packet.get("own_controls", {}).get("planned_path_xyh_m", [])
-        if len(plan) >= 2:
-            pygame.draw.lines(
-                self.screen_canvas,
-                (116, 222, 238),
-                False,
-                [self._pixel(pose[:2]) for pose in plan],
-                2,
-            )
-        self.displayed_links = self._useful_links(graph)
-        for sender, recipient in self.displayed_links:
-            self._arrow(
-                self._pixel(self.engine.agents[sender].position),
-                self._pixel(self.engine.agents[recipient].position),
-                (67, 149, 245),
-                1,
-            )
-        for edge in graph.get("edges", []):
-            if edge["state"] != "CURRENT":
-                continue
-            color = COLORS[
-                "CONFIRMED_OBSTRUCTION" if edge["level"] == "CONFIRMED" else "SUSPECTED"
-            ]
-            if self.show_resources:
-                for polygon in resource_polygons(edge["resource_wkt"]):
-                    pygame.draw.polygon(
-                        self.screen_canvas,
-                        color,
-                        [self._pixel(point) for point in polygon],
-                        2,
-                    )
-            if (
-                self.show_graph
-                and edge["requester"] in self.engine.agents
-                and edge["blocker"] in self.engine.agents
-            ):
-                self._arrow(
-                    self._pixel(self.engine.agents[edge["requester"]].position),
-                    self._pixel(self.engine.agents[edge["blocker"]].position),
-                    color,
+                pygame.draw.circle(
+                    self.screen_canvas,
+                    (242, 247, 255),
+                    self._pixel(self.engine.agents[self.selected].position),
+                    12,
+                    1,
                 )
-        if self.selected in self.engine.agents:
-            pygame.draw.circle(
-                self.screen_canvas,
-                (242, 247, 255),
-                self._pixel(self.engine.agents[self.selected].position),
-                15,
-                2,
-            )
+            return
+        self.screen_canvas.set_clip(self.scene_rect)
+        if self.active_view in ("graph", "v2v"):
+            diagrams.draw_network(self, communication=self.active_view == "v2v")
+        elif self.active_view == "d01":
+            diagrams.draw_d01(self)
+        elif self.active_view == "resources":
+            diagrams.draw_resources(self, resource_polygons)
         self.screen_canvas.set_clip(None)
 
     def _tell(self, message):
@@ -282,7 +325,7 @@ class ExperimentView(TopDownView):
             (f"D01 + rapports + graphe : {elapsed:.1f} ms", False),
             ("COMMUNICATION V2V", True),
             (
-                f"Traits : {V2V_MODES[self.v2v_mode]} ({len(self.displayed_links)})",
+                f"Vue V2V : {V2V_MODES[self.v2v_mode]} ({len(self.displayed_links)} liens)",
                 False,
             ),
             ("Livraisons des 0,6 dernières secondes ; canaux regroupés.", False),
@@ -330,119 +373,11 @@ class ExperimentView(TopDownView):
         self.screen_canvas.blit(image, image.get_rect(center=rect.center))
 
     def _add_text(self, text):
-        if not self.frame:
-            return
-        import pygame
-
-        if self.panel_font is None:
-            self.panel_font = pygame.font.Font(None, 23)
-            self.small_font = pygame.font.Font(None, 20)
-        screen = self.screen_canvas
-        pygame.draw.rect(screen, (23, 32, 48), (1080, 0, 360, 900))
-        pygame.draw.rect(screen, (23, 32, 48), (0, 0, 1080, 56))
-        pygame.draw.rect(screen, (23, 32, 48), (0, 846, 1080, 54))
-        scenario = self.context.get("scenario", "scénario non renseigné")
-        seed = self.context.get("seed", "—")
-        heading = (
-            f"{scenario} | graine {seed} | t = {self.frame['at_s']:.1f} s | "
-            f"{len(self.frame['diagnostics'])} CAV actifs"
-        )
-        screen.blit(self.panel_font.render(heading, True, (240, 246, 253)), (16, 18))
-        state = "PAUSE" if self.paused else "EN COURS"
-        self._button("pause", state + " · Espace", (1092, 12, 224, 32), self.paused)
-        self._button("help", "? / F1", (1324, 12, 104, 32), self.show_help)
-        self._button(
-            "v2v",
-            "V · V2V : " + V2V_MODES[self.v2v_mode],
-            (1092, 52, 336, 30),
-            self.show_v2v,
-        )
-        self._button(
-            "graph",
-            "G · C-RDG : " + ("visible" if self.show_graph else "masqué"),
-            (1092, 88, 164, 30),
-            self.show_graph,
-        )
-        self._button(
-            "resources",
-            "R · Ressources : " + ("oui" if self.show_resources else "non"),
-            (1264, 88, 164, 30),
-            self.show_resources,
-        )
-        self._button("slower", "−", (1092, 126, 42, 30))
-        self._button("faster", "+", (1222, 126, 42, 30))
-        screen.blit(
-            self.small_font.render(
-                f"×{RATES[self.rate_index]:g}", True, (240, 246, 253)
-            ),
-            (1154, 133),
-        )
-        self._button("capture", "S · Capture", (1272, 126, 156, 30))
-        panel = pygame.Rect(1092, 170, 336, 684)
-        rows = []
-        y = 0
-        for message, title in self._panel_lines():
-            if title:
-                y += 12
-            for line in wrapped(message, self.panel_font, panel.width - 10):
-                rows.append((y, line, title))
-                y += 23
-        self.max_scroll = max(0, y - panel.height)
-        self.scroll = min(self.scroll, self.max_scroll)
-        screen.set_clip(panel)
-        for y, line, title in rows:
-            color = (131, 214, 226) if title else (229, 235, 244)
-            screen.blit(
-                self.panel_font.render(line, True, color),
-                (panel.x, panel.y + y - self.scroll),
-            )
-        screen.set_clip(None)
-        hint = (
-            "Molette / Pg↑ Pg↓ : défiler"
-            if self.max_scroll
-            else "F1 : légende et commandes"
-        )
-        screen.blit(self.small_font.render(hint, True, (168, 185, 204)), (1092, 873))
-        notice = (
-            self.notice
-            if time.monotonic() < self.notice_until
-            else ("Clic / Tab : sélection | Espace : pause | Échap : fermer la vue")
-        )
-        screen.blit(self.small_font.render(notice, True, (246, 220, 152)), (16, 854))
-        suffix = " (modifications locales)" if self.stamp["dirty"] else ""
-        screen.blit(
-            self.small_font.render(
-                "Commit : " + self.stamp["commit"] + suffix, True, (178, 197, 215)
-            ),
-            (16, 877),
-        )
-        if self.show_help:
-            self._legend()
+        if self.frame:
+            chrome.draw_chrome(self)
 
     def _legend(self):
-        import pygame
-
-        box = pygame.Rect(36, 82, 650, 302)
-        pygame.draw.rect(self.screen_canvas, (23, 32, 48), box, border_radius=8)
-        lines = [
-            "LÉGENDE ET COMMANDES — F1 pour fermer",
-            "Vert : pas d'alerte | jaune : suspicion | rouge : confirmé",
-            "Gris : information insuffisante (abstention du détecteur)",
-            "Cyan : mouvement demandé | contour : ressource occupée",
-            "Flèche jaune/rouge : demandeur → bloqueur (vue locale)",
-            "Bleu : livraison V2V récente, liée à l'ego sélectionné",
-            "V : masqué → utile reçu (4 max.) → tous liés à l'ego",
-            "G : graphe | R : ressources | I : référence globale facultative",
-            "Clic / Tab : choisir | Espace : pause / reprise",
-            "+ / − (AZERTY ou pavé numérique) : cadence cible",
-            "S : capture PNG + provenance | molette / Pg↑ Pg↓ : panneau",
-            "Échap : ferme la vue ; le calcul finit sans fenêtre.",
-        ]
-        for index, line in enumerate(lines):
-            self.screen_canvas.blit(
-                self.panel_font.render(line, True, (234, 241, 249)),
-                (52, 98 + index * 23),
-            )
+        chrome.draw_legend(self)
 
     def _action(self, action):
         if action == "close":
@@ -454,20 +389,35 @@ class ExperimentView(TopDownView):
             self.paused = not self.paused
             self.deadline = time.monotonic()
             self._tell("Simulation en pause." if self.paused else "Simulation reprise.")
-        elif action == "v2v":
-            self.v2v_mode = (self.v2v_mode + 1) % len(V2V_MODES)
+        elif action in ("traffic", "graph", "v2v", "d01", "resources"):
+            self.active_view = "traffic" if self.active_view == action else action
+            self.show_graph = self.active_view == "graph"
+            self.show_resources = self.active_view == "resources"
+            self.v2v_mode = 1 if self.active_view == "v2v" else 0
+            self.diagram_page = 0
+            title = {
+                "traffic": "Circulation",
+                "graph": "Graphe C-RDG",
+                "v2v": "Échanges V2V",
+                "d01": "Historique D01",
+                "resources": "Ressources étayées",
+            }[self.active_view]
+            self._tell("Vue : " + title)
+        elif action == "v2v_filter" and self.active_view == "v2v":
+            self.v2v_mode = 2 if self.v2v_mode == 1 else 1
             self._tell("V2V : " + V2V_MODES[self.v2v_mode])
-        elif action in ("graph", "resources", "reference", "help"):
+        elif action in ("diagram_prev", "diagram_next"):
+            self.diagram_page += -1 if action == "diagram_prev" else 1
+        elif action == "details":
+            self.show_details = not self.show_details
+            self._layout()
+        elif action in ("reference", "help"):
             field = {
-                "graph": "show_graph",
-                "resources": "show_resources",
                 "reference": "show_reference",
                 "help": "show_help",
             }[action]
             setattr(self, field, not getattr(self, field))
             title = {
-                "graph": "C-RDG",
-                "resources": "Ressources",
                 "reference": "Référence globale (prochain pas)",
                 "help": "Légende",
             }[action]
@@ -508,14 +458,28 @@ class ExperimentView(TopDownView):
             return
         import pygame
 
-        for event in pygame.event.get():
+        events = pygame.event.get()
+        sizes = [event.size for event in events if event.type == pygame.VIDEORESIZE]
+        if sizes:
+            self._resize(sizes[-1])
+        for event in events:
             if event.type == pygame.QUIT:
                 self._action("close")
                 return
+            if event.type == pygame.VIDEORESIZE:
+                continue
             if event.type in (pygame.WINDOWEXPOSED, pygame.WINDOWRESTORED):
                 self.dirty = True
             elif event.type == pygame.MOUSEWHEEL:
-                self.scroll = max(0, min(self.max_scroll, self.scroll - event.y * 60))
+                if self.active_view == "traffic" and self.scene_rect.collidepoint(
+                    pygame.mouse.get_pos()
+                ):
+                    self.zoom = max(0.75, min(3, self.zoom * 1.15**event.y))
+                    self._fit_map()
+                else:
+                    self.scroll = max(
+                        0, min(self.max_scroll, self.scroll - event.y * 60)
+                    )
                 self.dirty = True
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 button = next(
@@ -528,6 +492,20 @@ class ExperimentView(TopDownView):
                 )
                 if button:
                     self._action(button)
+                elif self.frame and self.active_view != "traffic":
+                    node = next(
+                        (
+                            key
+                            for key, rect in self.graph_nodes.items()
+                            if rect.collidepoint(event.pos)
+                        ),
+                        None,
+                    )
+                    if node in self.frame["diagnostics"]:
+                        self.selected = node
+                        self.manual_selection = True
+                        self.diagram_page = 0
+                        self._tell("Véhicule sélectionné : " + label(node))
                 elif self.frame and self.scene_rect.collidepoint(event.pos):
                     candidates = [
                         (math.dist(event.pos, self._pixel(vehicle.position)), key)
@@ -564,6 +542,12 @@ class ExperimentView(TopDownView):
                         pygame.K_TAB: "next",
                         pygame.K_F1: "help",
                         pygame.K_i: "reference",
+                        pygame.K_d: "d01",
+                        pygame.K_t: "traffic",
+                        pygame.K_p: "details",
+                        pygame.K_u: "v2v_filter",
+                        pygame.K_LEFT: "diagram_prev",
+                        pygame.K_RIGHT: "diagram_next",
                     }.get(event.key)
                 if action:
                     self._action(action)
@@ -594,6 +578,8 @@ class ExperimentView(TopDownView):
             graph=self.show_graph,
             resources=self.show_resources,
             reference=self.show_reference,
+            view=self.active_view,
+            window_size=self.screen_canvas.get_size(),
             authentic_pygame_frame=True,
         )
         try:
@@ -626,6 +612,7 @@ class ExperimentView(TopDownView):
         if self.closed:
             return False
         self._remember_deliveries()
+        self._remember_d01()
         self._redraw()
         if self.no_window:
             return True
