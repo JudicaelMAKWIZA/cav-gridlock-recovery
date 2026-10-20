@@ -3,7 +3,11 @@
 from dataclasses import dataclass
 import math
 
-from metadrive.component.vehicle.vehicle_type import StaticDefaultVehicle, vehicle_type, vehicle_class_to_type
+from metadrive.component.vehicle.vehicle_type import (
+    StaticDefaultVehicle,
+    vehicle_type,
+    vehicle_class_to_type,
+)
 
 from .observation import body, rectangle, signed_speed
 
@@ -35,7 +39,9 @@ class BrakeVehicle(StaticDefaultVehicle):
     def _apply_throttle_brake(self, value):
         super()._apply_throttle_brake(value)
         if self.explicit_brake:
-            force = min(self.config["max_brake_force"], 2 + self.brake_gain * self.speed)
+            force = min(
+                self.config["max_brake_force"], 2 + self.brake_gain * self.speed
+            )
             for wheel in range(4):
                 self.system.applyEngineForce(0, wheel)
                 self.system.setBrake(force, wheel)
@@ -52,15 +58,23 @@ class DriveCommand:
     steering: float = 0.0
 
     def __post_init__(self):
-        if not math.isfinite(self.target_speed_mps) or not math.isfinite(self.steering) or abs(self.steering) > 1:
+        if (
+            not math.isfinite(self.target_speed_mps)
+            or not math.isfinite(self.steering)
+            or abs(self.steering) > 1
+        ):
             raise ValueError("Commande de conduite invalide.")
 
 
 def apply_command(vehicle, command):
     speed = signed_speed(vehicle)
     target = command.target_speed_mps
-    braking = (abs(target) < 1e-8 or speed * target < -0.001
-               or (target > 0 and speed > target + 0.05) or (target < 0 and speed < target - 0.05))
+    braking = (
+        abs(target) < 1e-8
+        or speed * target < -0.001
+        or (target > 0 and speed > target + 0.05)
+        or (target < 0 and speed < target - 0.05)
+    )
     vehicle.explicit_brake = braking
     vehicle.enable_reverse = target < 0 and not braking
     force = -1.0 if braking else max(-0.4, min(0.4, 0.35 * (target - speed)))
@@ -80,7 +94,11 @@ def path_poses(vehicle, distance, spacing=0.2):
     # La navigation peut garder le raccord précédent alors que le centre est déjà sur le suivant.
     if longitude > lane.length and next_lanes:
         end = lane.position(lane.length, 0)
-        matching = [candidate for candidate in next_lanes if math.dist(candidate.position(0, 0), end) <= 0.1]
+        matching = [
+            candidate
+            for candidate in next_lanes
+            if math.dist(candidate.position(0, 0), end) <= 0.1
+        ]
         if len(matching) != 1:
             return [], False
         candidate = matching[0]
@@ -99,16 +117,26 @@ def path_poses(vehicle, distance, spacing=0.2):
             offsets.append(used)
         for offset in offsets:
             s = longitude + offset
-            poses.append((tuple(map(float, lane.position(s, 0))), float(lane.heading_theta_at(s))))
+            poses.append(
+                (
+                    tuple(map(float, lane.position(s, 0))),
+                    float(lane.heading_theta_at(s)),
+                )
+            )
         remaining -= used
         if remaining <= 1e-8:
             return poses, True
         if not next_lanes:
             break
         end = lane.position(lane.length, 0)
-        distances = [(math.dist(candidate.position(0, 0), end), candidate) for candidate in next_lanes]
+        distances = [
+            (math.dist(candidate.position(0, 0), end), candidate)
+            for candidate in next_lanes
+        ]
         distances.sort(key=lambda pair: pair[0])
-        if distances[0][0] > 0.1 or (len(distances) > 1 and abs(distances[0][0] - distances[1][0]) < 1e-7):
+        if distances[0][0] > 0.1 or (
+            len(distances) > 1 and abs(distances[0][0] - distances[1][0]) < 1e-7
+        ):
             break
         lane, longitude, next_lanes = distances[0][1], 0.0, None
     return poses, False
@@ -127,7 +155,17 @@ def guard_blockers(vehicle_id, env, distance):
     if not poses or not complete:
         return [], False
     margin = (MINIMUM_CLEARANCE_M + PATH_TOLERANCE_M) / 2
-    sweep = unary_union([rectangle(xy, heading, vehicle.LENGTH, vehicle.WIDTH, margin) for xy, heading in poses])
-    return sorted(key for key, other in env.agents.items()
-                  if key != vehicle_id and sweep.intersects(body(other).buffer(
-                      margin + stopping_distance(math.hypot(*other.velocity))))), True
+    sweep = unary_union(
+        [
+            rectangle(xy, heading, vehicle.LENGTH, vehicle.WIDTH, margin)
+            for xy, heading in poses
+        ]
+    )
+    return sorted(
+        key
+        for key, other in env.agents.items()
+        if key != vehicle_id
+        and sweep.intersects(
+            body(other).buffer(margin + stopping_distance(math.hypot(*other.velocity)))
+        )
+    ), True

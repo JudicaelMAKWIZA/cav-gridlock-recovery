@@ -1,4 +1,5 @@
-﻿"""Private interactive gallery of exact native poses; no simulator rerun or video."""
+"""Produit une galerie privée des poses natives sans rejeu moteur ni vidéo."""
+
 import argparse
 from collections import Counter
 import hashlib
@@ -7,7 +8,7 @@ from pathlib import Path
 import os
 from cav_recovery.dataset.pipeline import records, read_rows, write_json
 
-HTML = r'''<!doctype html><html lang="fr"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Carrefour dense — inspection privée</title>
+HTML = r"""<!doctype html><html lang="fr"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Carrefour dense — inspection privée</title>
 <style>*{box-sizing:border-box}body{margin:0;background:#edf2f5;color:#182b38;font:16px/1.5 system-ui}header,main{max-width:1650px;margin:auto;padding:18px}h1{margin:4px 0}button,select,input{font:inherit;padding:8px;border:1px solid #8ca3b2;border-radius:5px;background:white}button{cursor:pointer}canvas{display:block;width:100%;height:auto;background:#dfebe4;border-radius:8px}.bar{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:10px 0}#seek{flex:1;min-width:250px}#evidence{background:white;padding:18px;border-left:5px solid #367b97}a{color:#075f85}#stats{font-variant-numeric:tabular-nums}small{color:#48606e}details{padding:12px;background:white}table{border-collapse:collapse;font-size:13px}td,th{padding:6px;border-bottom:1px solid #ccd7df;text-align:left}</style>
 <header><small>CAV RECOVERY · GALERIE PRIVÉE · POSES NATIVES</small><h1>Un carrefour, des arrivées et des interactions</h1><p>Rendu à l'échelle physique. Orange : occupation candidate actuelle ; rouge : effet persistant confirmé à cet instant. Les classes finales sont rétrospectives. Aucun modèle entraîné.</p><div class="bar"><label>Classe <select id="classFilter"><option value="all">Toutes</option><option>POSITIVE_CONFIRMED</option><option>NEGATIVE_CONFIRMED</option><option>UNKNOWN_OR_CENSORED</option></select></label><label>Épisode <select id="episode"></select></label></div></header>
 <main><canvas id="scene" width="1600" height="1000" aria-label="Rejeu du carrefour à l'échelle, silhouettes et identifiants des CAV"></canvas><div class="bar"><button id="play">Lire</button><button id="back">−5 s</button><button id="next">+5 s</button><label>Vitesse <select id="rate"><option>1</option><option>2</option><option>5</option><option>10</option></select></label><input type="range" id="seek" min="0" max="110" step="0.1" value="0" aria-label="Instant simulé"><output id="clock"></output></div><div class="bar"><label><input type="checkbox" id="paths" checked> Trajectoires actives</label><label><input type="checkbox" id="relations" checked> Relations physiques actuelles</label></div><p id="stats"></p><section id="evidence"></section><details><summary>Chronologie et preuves de qualification</summary><div id="events"></div></details><p><small>Les carrosseries utilisent leurs longueurs et largeurs natives. Le rendu choisit une pose enregistrée à 10 Hz, sans interpolation ni changement de pose. Le contrôleur observe un voisinage idéal de 30 m, sans occlusion ; l'oracle global est réservé à l'annotation. Une alternative possible ne supprime pas la contrainte sur le mouvement initial. Les alternatives non vérifiées et la nécessité d'intervention restent inconnues.</small></p></main>
@@ -24,85 +25,204 @@ let drawnLabels=0;ctx.font='bold 15px system-ui';function overlap(a,b){return a[
 canvas.dataset.visibleLabels=drawnLabels;canvas.dataset.visibleVehicles=Object.keys(frame.states).length;ctx.fillStyle='#f9fcff';ctx.fillRect(1130,0,470,1000);ctx.textAlign='left';ctx.fillStyle='#183044';ctx.font='bold 25px system-ui';ctx.fillText(`${frame.t.toFixed(1)} s · ${Object.keys(frame.states).length} CAV`,1150,45);ctx.font='16px system-ui';ctx.fillText(s.family+' · '+s.lane_width+' m/voie',1150,78);ctx.fillText('Courbes, carrosseries et route à la même échelle',1150,110);ctx.fillText('Orange : candidate · rouge : confirmée',1150,145);ctx.fillText('Dépendances physiques actuelles',1150,192);relevant.slice(0,28).forEach((v,i)=>ctx.fillText(v,1150,225+i*24));if(relevant.length>28)ctx.fillText(`+ ${relevant.length-28} autres relations`,1150,925);ctx.fillStyle='#203e50';ctx.fillRect(30,950,10*scale,4);ctx.fillText('10 m',30,940);el('clock').value=frame.t.toFixed(1)+' s';el('seek').value=time;el('stats').textContent=`Épisode ${s.id} — ${Object.keys(frame.states).length} actifs visibles — ${relevant.length} relations géométriques actuelles — ${s.scopes.join(', ')||'aucune portée persistante qualifiée'}`;}
 function tick(stamp){if(playing){time+=Math.min(.2,(stamp-last)/1000)*Number(el('rate').value);if(time>=Number(el('seek').max)){time=Number(el('seek').max);playing=false;el('play').textContent='Lire'}draw()}last=stamp;requestAnimationFrame(tick)}
 el('classFilter').onchange=filter;el('episode').onchange=load;el('play').onclick=()=>{if(time>=Number(el('seek').max))time=0;playing=!playing;el('play').textContent=playing?'Pause':'Lire'};el('seek').oninput=e=>{time=Number(e.target.value);draw()};el('back').onclick=()=>{time=Math.max(0,time-5);draw()};el('next').onclick=()=>{time=Math.min(Number(el('seek').max),time+5);draw()};el('paths').onchange=draw;el('relations').onchange=draw;filter();requestAnimationFrame(tick);
-</script></html>'''
+</script></html>"""
 
 
 def polygons(geometry):
     if geometry.is_empty:
         return []
-    if geometry.geom_type=='Polygon':
-        return [list(map(list,geometry.exterior.coords))]
-    return [ring for g in geometry.geoms for ring in polygons(g)] if hasattr(geometry,'geoms') else []
+    if geometry.geom_type == "Polygon":
+        return [list(map(list, geometry.exterior.coords))]
+    return (
+        [ring for g in geometry.geoms for ring in polygons(g)]
+        if hasattr(geometry, "geoms")
+        else []
+    )
 
 
 def build(root, output, count=16):
     from shapely import wkt
-    root=Path(root);output=Path(output)
+
+    root = Path(root)
+    output = Path(output)
     if output.exists() and any(output.iterdir()):
-        raise ValueError('Gallery output must be empty')
-    output.mkdir(parents=True,exist_ok=True)
-    splits=json.loads((root/'splits.json').read_text())['episodes'] if (root/'splits.json').exists() else {}
-    remaining=[]
-    enriched={}
-    if (root/'scientific-summary.json').exists():
-        enriched={r['id']:r for r in json.loads((root/'scientific-summary.json').read_text())['episode_evidence']}
-    for folder,row in records(root):
-        if row['integrity']['errors']:
+        raise ValueError("Gallery output must be empty")
+    output.mkdir(parents=True, exist_ok=True)
+    splits = (
+        json.loads((root / "splits.json").read_text())["episodes"]
+        if (root / "splits.json").exists()
+        else {}
+    )
+    remaining = []
+    enriched = {}
+    if (root / "scientific-summary.json").exists():
+        enriched = {
+            r["id"]: r
+            for r in json.loads((root / "scientific-summary.json").read_text())[
+                "episode_evidence"
+            ]
+        }
+    for folder, row in records(root):
+        if row["integrity"]["errors"]:
             continue
-        spec=json.loads((folder/'spec.json').read_text())
-        coverage={row['label'],row['family'],f"density:{spec['density_level']}",*[f'scope:{s}' for s in row['scopes']]}
-        if any(len(e['blockers'])>1 and len({(o['start_s'],o['end_s']) for o in e['occupant_intervals']})>1
-               for e in row['events']):coverage.add('successive_occupants')
-        if row['traffic']['peak_active']>=24:coverage.add('dense:'+row['label'])
-        if any(not e['right_censored'] for e in row['events']):coverage.add('resolved_constraint')
-        if row['integrity']['all_arrived']:coverage.add('all_arrived')
-        evidence=enriched.get(row['id'],{})
-        if evidence.get('acyclic_confirmed_component'):coverage.add('acyclic_confirmed_dependencies')
-        if evidence.get('acyclic_union_of_confirmed_dependencies'):coverage.add('entire_confirmed_graph_acyclic')
-        if len(evidence.get('simultaneous_confirmed_mechanisms',[]))>=2:coverage.add('coexisting_confirmed_mechanisms')
-        if evidence.get('peak_unaffected_moving_while_confirmed',0)>0:coverage.add('unaffected_traffic_during_obstruction')
-        remaining.append((folder,row,spec,coverage))
-    selected=[];covered=set()
-    while remaining and len(selected)<count:
-        entry=max(remaining,key=lambda x:(len(x[3]-covered),x[1]['traffic']['peak_active']))
-        selected.append(entry);remaining.remove(entry);covered.update(entry[3])
-    scenes=[];sources={}
-    for folder,row,spec,_ in selected:
-        meta=json.loads((folder/'metadata.json').read_text());surface=wkt.loads(meta['surface_wkt'])
-        ps=surface.geoms if hasattr(surface,'geoms') else [surface]
-        native=[f for i,f in enumerate(read_rows(folder/'physics.jsonl.gz')) if i%5==0]
-        refs=[]
-        for f in read_rows(folder/'reference.jsonl.gz'):
-            refs.append(dict(t=f['time_s'],witnesses=[dict(a=w['requester'],b=w['blocker'],resource=w['resource']['id'],
-                mechanism=w.get('mechanism'),polygons=polygons(wkt.loads(w['resource']['polygon_wkt'])))
-                for w in f['witnesses'] if w['road_admissible']]))
-        scenes.append(dict(id=row['id'],label=row['label'],family=row['family'],reason=row['reason'],
-            scopes=row['scopes'],events=row['events'],partition=splits.get(row['id'],'development'),
-            surface=[[list(map(list,p.exterior.coords)),*[list(map(list,r.coords)) for r in p.interiors]] for p in ps],
-            bounds=list(surface.bounds),lane_width=spec['topology']['lane_width_m'],
-            lanes=[r['points'] for r in spec['roads'] if r['kind'] in ('in','out')],
-            vehicles={k:[v['length_m'],v['width_m']] for k,v in meta['vehicles'].items()},
-            dimensions=', '.join(f'{a:.3f} × {b:.3f} m' for a,b in sorted({(v['length_m'],v['width_m']) for v in meta['vehicles'].values()})),
-            routes={k:[p for lane in lanes for p in lane['points']] for k,lanes in meta['route_lanes'].items()},
-            frames=[dict(t=f['time_s'],states={k:v[:3] for k,v in f['states'].items()}) for f in native],references=refs,
-            proofs=os.path.relpath(folder,output).replace(os.sep,'/'),
-            limits='Référence spatiale du mouvement ; alternatives non évaluées. Validation scientifique humaine encore requise.',
-            **{k:row['traffic'][k] for k in ('peak_active','total_introduced','arrived')}))
-        sources[row['id']]={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.iterdir() if p.is_file()}
-    payload=json.dumps(scenes,separators=(',',':'),ensure_ascii=False).replace('<','\\u003c')
-    (output/'index.html').write_text(HTML.replace('__DATA__',payload),encoding='utf-8')
-    report=dict(episodes=len(scenes),coverage=sorted(covered),labels=dict(Counter(s['label'] for s in scenes)),
+        spec = json.loads((folder / "spec.json").read_text())
+        coverage = {
+            row["label"],
+            row["family"],
+            f"density:{spec['density_level']}",
+            *[f"scope:{s}" for s in row["scopes"]],
+        }
+        if any(
+            len(e["blockers"]) > 1
+            and len({(o["start_s"], o["end_s"]) for o in e["occupant_intervals"]}) > 1
+            for e in row["events"]
+        ):
+            coverage.add("successive_occupants")
+        if row["traffic"]["peak_active"] >= 24:
+            coverage.add("dense:" + row["label"])
+        if any(not e["right_censored"] for e in row["events"]):
+            coverage.add("resolved_constraint")
+        if row["integrity"]["all_arrived"]:
+            coverage.add("all_arrived")
+        evidence = enriched.get(row["id"], {})
+        if evidence.get("acyclic_confirmed_component"):
+            coverage.add("acyclic_confirmed_dependencies")
+        if evidence.get("acyclic_union_of_confirmed_dependencies"):
+            coverage.add("entire_confirmed_graph_acyclic")
+        if len(evidence.get("simultaneous_confirmed_mechanisms", [])) >= 2:
+            coverage.add("coexisting_confirmed_mechanisms")
+        if evidence.get("peak_unaffected_moving_while_confirmed", 0) > 0:
+            coverage.add("unaffected_traffic_during_obstruction")
+        remaining.append((folder, row, spec, coverage))
+    selected = []
+    covered = set()
+    while remaining and len(selected) < count:
+        entry = max(
+            remaining,
+            key=lambda x: (len(x[3] - covered), x[1]["traffic"]["peak_active"]),
+        )
+        selected.append(entry)
+        remaining.remove(entry)
+        covered.update(entry[3])
+    scenes = []
+    sources = {}
+    for folder, row, spec, _ in selected:
+        meta = json.loads((folder / "metadata.json").read_text())
+        surface = wkt.loads(meta["surface_wkt"])
+        ps = surface.geoms if hasattr(surface, "geoms") else [surface]
+        native = [
+            f
+            for i, f in enumerate(read_rows(folder / "physics.jsonl.gz"))
+            if i % 5 == 0
+        ]
+        refs = []
+        for f in read_rows(folder / "reference.jsonl.gz"):
+            refs.append(
+                dict(
+                    t=f["time_s"],
+                    witnesses=[
+                        dict(
+                            a=w["requester"],
+                            b=w["blocker"],
+                            resource=w["resource"]["id"],
+                            mechanism=w.get("mechanism"),
+                            polygons=polygons(wkt.loads(w["resource"]["polygon_wkt"])),
+                        )
+                        for w in f["witnesses"]
+                        if w["road_admissible"]
+                    ],
+                )
+            )
+        scenes.append(
+            dict(
+                id=row["id"],
+                label=row["label"],
+                family=row["family"],
+                reason=row["reason"],
+                scopes=row["scopes"],
+                events=row["events"],
+                partition=splits.get(row["id"], "development"),
+                surface=[
+                    [
+                        list(map(list, p.exterior.coords)),
+                        *[list(map(list, r.coords)) for r in p.interiors],
+                    ]
+                    for p in ps
+                ],
+                bounds=list(surface.bounds),
+                lane_width=spec["topology"]["lane_width_m"],
+                lanes=[
+                    r["points"] for r in spec["roads"] if r["kind"] in ("in", "out")
+                ],
+                vehicles={
+                    k: [v["length_m"], v["width_m"]]
+                    for k, v in meta["vehicles"].items()
+                },
+                dimensions=", ".join(
+                    f"{a:.3f} × {b:.3f} m"
+                    for a, b in sorted(
+                        {
+                            (v["length_m"], v["width_m"])
+                            for v in meta["vehicles"].values()
+                        }
+                    )
+                ),
+                routes={
+                    k: [p for lane in lanes for p in lane["points"]]
+                    for k, lanes in meta["route_lanes"].items()
+                },
+                frames=[
+                    dict(
+                        t=f["time_s"], states={k: v[:3] for k, v in f["states"].items()}
+                    )
+                    for f in native
+                ],
+                references=refs,
+                proofs=os.path.relpath(folder, output).replace(os.sep, "/"),
+                limits="Référence spatiale du mouvement ; alternatives non évaluées. Validation scientifique humaine encore requise.",
+                **{
+                    k: row["traffic"][k]
+                    for k in ("peak_active", "total_introduced", "arrived")
+                },
+            )
+        )
+        sources[row["id"]] = {
+            p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in folder.iterdir()
+            if p.is_file()
+        }
+    payload = json.dumps(scenes, separators=(",", ":"), ensure_ascii=False).replace(
+        "<", "\\u003c"
+    )
+    (output / "index.html").write_text(
+        HTML.replace("__DATA__", payload), encoding="utf-8"
+    )
+    report = dict(
+        episodes=len(scenes),
+        coverage=sorted(covered),
+        labels=dict(Counter(s["label"] for s in scenes)),
         render_script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        source_files_sha256=sources,native_sample_s=.1,interpolation=False,physical_graphical_scale_equal=True,
-        index_sha256=hashlib.sha256((output/'index.html').read_bytes()).hexdigest())
-    write_json(output/'manifest.json',report)
+        source_files_sha256=sources,
+        native_sample_s=0.1,
+        interpolation=False,
+        physical_graphical_scale_equal=True,
+        index_sha256=hashlib.sha256((output / "index.html").read_bytes()).hexdigest(),
+    )
+    write_json(output / "manifest.json", report)
     return report
 
 
-if __name__=='__main__':
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('dataset',type=Path)
-    parser.add_argument('--output-dir',required=True,type=Path);parser.add_argument('--count',type=int,default=16)
-    args=parser.parse_args()
-    if args.count<1:parser.error('Count must be positive')
-    result=build(args.dataset,args.output_dir,args.count)
-    print(json.dumps({k:v for k,v in result.items() if k!='source_files_sha256'},indent=2))
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("dataset", type=Path)
+    parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--count", type=int, default=16)
+    args = parser.parse_args()
+    if args.count < 1:
+        parser.error("Count must be positive")
+    result = build(args.dataset, args.output_dir, args.count)
+    print(
+        json.dumps(
+            {k: v for k, v in result.items() if k != "source_files_sha256"}, indent=2
+        )
+    )

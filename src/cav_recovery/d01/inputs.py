@@ -1,4 +1,4 @@
-"""Strict, immutable, one-ego boundary. This module performs no I/O."""
+"""Entrée stricte et immuable d’un seul CAV, sans accès aux fichiers."""
 
 from dataclasses import dataclass
 import math
@@ -10,7 +10,7 @@ FRAME = "metadrive_local_xy_m"
 
 
 class InputError(ValueError):
-    """Malformed, privileged, future or unsupported observation."""
+    """Observation mal formée, privilégiée, future ou non prise en charge."""
 
 
 def _keys(value, fields, name):
@@ -19,7 +19,11 @@ def _keys(value, fields, name):
 
 
 def _number(value, name, low=None, high=None):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+    ):
         raise InputError(f"{name}: finite number required")
     if (low is not None and value < low) or (high is not None and value > high):
         raise InputError(f"{name}: outside supported range")
@@ -59,7 +63,7 @@ def freeze(value):
 
 
 def plain(value):
-    """Independent serializable snapshot, including immutable parsed inputs."""
+    """Copie sérialisable indépendante, y compris pour les entrées immuables."""
     if isinstance(value, Mapping):
         return {k: plain(v) for k, v in value.items()}
     if isinstance(value, (tuple, list)):
@@ -81,19 +85,26 @@ class LocalInput:
 
 
 def adapt(value):
-    """Validate all nested keys before constructing a detached immutable input.
+    """Valide chaque champ avant de construire une entrée immuable détachée.
 
-    Invalid input is explicitly rejected, never silently made into a negative.
-    Missing LiDAR/V2V is represented by null; missing essential ego/navigation
-    fields is an input error. A valid old measurement remains dated and old.
-    """
-    _keys(value, "schema_version contract_id ego_id decision_at_s ego mission map lidar own_controls v2v", "input")
+    Une donnée invalide est refusée, jamais transformée en résultat négatif.
+    LiDAR ou V2V absents sont représentés par null ; l’absence d’une mesure
+    propre essentielle est une erreur. Une mesure ancienne conserve sa date."""
+    _keys(
+        value,
+        "schema_version contract_id ego_id decision_at_s ego mission map lidar own_controls v2v",
+        "input",
+    )
     _equal(value["schema_version"], "F01-input-1", "schema")
     _equal(value["contract_id"], "K04_APPROVED", "contract")
     _text(value["ego_id"], "ego_id")
     t = _number(value["decision_at_s"], "decision")
     ego = value["ego"]
-    _keys(ego, "observed_at_s available_at_s position_xy_m heading_rad signed_speed_mps velocity_xy_mps acceleration_xy_mps2 mission_progress_m length_m width_m", "ego")
+    _keys(
+        ego,
+        "observed_at_s available_at_s position_xy_m heading_rad signed_speed_mps velocity_xy_mps acceleration_xy_mps2 mission_progress_m length_m width_m",
+        "ego",
+    )
     _times(ego, t, "ego")
     for key in ("position_xy_m", "velocity_xy_mps"):
         _vector(ego[key], 2, key)
@@ -104,7 +115,11 @@ def adapt(value):
     for key in ("length_m", "width_m"):
         _number(ego[key], key, 0.01, 30)
     mission = value["mission"]
-    _keys(mission, "observed_at_s available_at_s version origin destination own_route_xy_m movement_id demand_forward", "mission")
+    _keys(
+        mission,
+        "observed_at_s available_at_s version origin destination own_route_xy_m movement_id demand_forward",
+        "mission",
+    )
     _times(mission, t, "mission")
     for key in ("version", "origin", "destination", "movement_id"):
         _text(mission[key], key)
@@ -116,7 +131,11 @@ def adapt(value):
     for point in route:
         _vector(point, 2, "own route point")
     road = value["map"]
-    _keys(road, "observed_at_s available_at_s version coordinate_frame drivable_polygons_xy_m lane_width_m rule_context", "map")
+    _keys(
+        road,
+        "observed_at_s available_at_s version coordinate_frame drivable_polygons_xy_m lane_width_m rule_context",
+        "map",
+    )
     _times(road, t, "map")
     _text(road["version"], "map version")
     _equal(road["coordinate_frame"], FRAME, "frame")
@@ -132,16 +151,30 @@ def adapt(value):
         for point in polygon:
             _vector(point, 2, "map point")
     controls = value["own_controls"]
-    _keys(controls, "observed_at_s available_at_s requested_speed_mps accepted_speed_mps native_action", "own_controls")
+    _keys(
+        controls,
+        "observed_at_s available_at_s requested_speed_mps accepted_speed_mps native_action",
+        "own_controls",
+    )
     _times(controls, t, "controls")
     for key in ("requested_speed_mps", "accepted_speed_mps"):
         _number(controls[key], key)
     _vector(controls["native_action"], 2, "native action", -1, 1)
     lidar = value["lidar"]
     if lidar is not None:
-        _keys(lidar, "observed_at_s available_at_s source num_lasers range_m height_m phase_offset_rad normalized_ranges missing", "lidar")
+        _keys(
+            lidar,
+            "observed_at_s available_at_s source num_lasers range_m height_m phase_offset_rad normalized_ranges missing",
+            "lidar",
+        )
         _times(lidar, t, "lidar")
-        for key, expected in (("source", "native_lidar"), ("num_lasers", 16), ("range_m", 30.0), ("height_m", 1.2), ("phase_offset_rad", 0.0)):
+        for key, expected in (
+            ("source", "native_lidar"),
+            ("num_lasers", 16),
+            ("range_m", 30.0),
+            ("height_m", 1.2),
+            ("phase_offset_rad", 0.0),
+        ):
             if key in ("range_m", "height_m", "phase_offset_rad"):
                 _number(lidar[key], key)
                 if abs(lidar[key] - expected) > 1e-12:
@@ -162,14 +195,28 @@ def adapt(value):
         available = _number(box["available_at_s"], "box availability")
         if available > t + EPS_TIME:
             raise InputError("future mailbox")
-        if any(not isinstance(box[k], list) or len(box[k]) > 256 for k in ("received", "expired")):
+        if any(
+            not isinstance(box[k], list) or len(box[k]) > 256
+            for k in ("received", "expired")
+        ):
             raise InputError("bounded mailbox lists required")
         senders = set()
         for entry in box["received"]:
             _keys(entry, "received_at_s message", "received entry")
             m = entry["message"]
-            _keys(m, "protocol_version message_id sender_id sequence_number observed_at_s sent_at_s valid_until_s state_schema_version coordinate_frame position_xy_m heading_rad signed_speed_mps length_m width_m intended_destination progress_delta_m progress_kind progress_window_s source confidence", "message")
-            for key, expected in (("protocol_version", 1), ("state_schema_version", "cgr-metadrive-state-1"), ("coordinate_frame", FRAME), ("progress_kind", "unsigned_distance_not_mission_progress"), ("source", "metadrive_ego_emulation_not_radio"), ("confidence", "simulated_exact_ego")):
+            _keys(
+                m,
+                "protocol_version message_id sender_id sequence_number observed_at_s sent_at_s valid_until_s state_schema_version coordinate_frame position_xy_m heading_rad signed_speed_mps length_m width_m intended_destination progress_delta_m progress_kind progress_window_s source confidence",
+                "message",
+            )
+            for key, expected in (
+                ("protocol_version", 1),
+                ("state_schema_version", "cgr-metadrive-state-1"),
+                ("coordinate_frame", FRAME),
+                ("progress_kind", "unsigned_distance_not_mission_progress"),
+                ("source", "metadrive_ego_emulation_not_radio"),
+                ("confidence", "simulated_exact_ego"),
+            ):
                 _equal(m[key], expected, key)
             for key in ("message_id", "sender_id", "intended_destination"):
                 _text(m[key], key)
@@ -178,13 +225,21 @@ def adapt(value):
             senders.add(m["sender_id"])
             if type(m["sequence_number"]) is not int or m["sequence_number"] < 1:
                 raise InputError("positive sequence required")
-            if m["message_id"] != f'{m["sender_id"]}:{m["sequence_number"]}':
+            if m["message_id"] != f"{m['sender_id']}:{m['sequence_number']}":
                 raise InputError("message ID/sequence mismatch")
-            times = [m["observed_at_s"], m["sent_at_s"], entry["received_at_s"], available]
+            times = [
+                m["observed_at_s"],
+                m["sent_at_s"],
+                entry["received_at_s"],
+                available,
+            ]
             for x in times:
                 _number(x, "message time")
             until = _number(m["valid_until_s"], "valid until")
-            if any(a > b + EPS_TIME for a, b in zip(times, times[1:])) or entry["received_at_s"] > until + EPS_TIME:
+            if (
+                any(a > b + EPS_TIME for a, b in zip(times, times[1:]))
+                or entry["received_at_s"] > until + EPS_TIME
+            ):
                 raise InputError("invalid message chronology")
             _vector(m["position_xy_m"], 2, "message position")
             for key in ("heading_rad", "signed_speed_mps"):
@@ -197,19 +252,30 @@ def adapt(value):
             if (m["progress_delta_m"] is None) != (m["progress_window_s"] is None):
                 raise InputError("delta and its window must be missing together")
         for expired in box["expired"]:
-            _keys(expired, "sender_id message_id last_received_at_s valid_until_s", "expired")
+            _keys(
+                expired,
+                "sender_id message_id last_received_at_s valid_until_s",
+                "expired",
+            )
             for k in ("sender_id", "message_id"):
                 _text(expired[k], k)
             a = _number(expired["last_received_at_s"], "last receipt")
             b = _number(expired["valid_until_s"], "expiry")
             if a > b + EPS_TIME or b >= t - EPS_TIME:
                 raise InputError("expiry not yet observed")
-    # Receipt list order carries no causal information in the ideal transport.
-    # Canonicalize detached containers, never the caller's objects.
+    # L’ordre des messages reçus ne porte pas d’information causale dans ce transport idéal.
+    # La normalisation porte sur des copies, jamais sur les objets de l’appelant.
     if box is not None:
-        value={**value,"v2v":{**box,
-            "received":sorted(box["received"],key=lambda e:e["message"]["sender_id"]),
-            "expired":sorted(box["expired"],key=lambda e:e["sender_id"])}}
+        value = {
+            **value,
+            "v2v": {
+                **box,
+                "received": sorted(
+                    box["received"], key=lambda e: e["message"]["sender_id"]
+                ),
+                "expired": sorted(box["expired"], key=lambda e: e["sender_id"]),
+            },
+        }
     return LocalInput(freeze(value))
 
 
@@ -217,4 +283,8 @@ def message_age(entry, decision_at_s):
     m = entry["message"]
     if decision_at_s > m["valid_until_s"] + EPS_TIME:
         return "expired"
-    return "current" if abs(decision_at_s - m["observed_at_s"]) <= EPS_TIME else "historical"
+    return (
+        "current"
+        if abs(decision_at_s - m["observed_at_s"]) <= EPS_TIME
+        else "historical"
+    )

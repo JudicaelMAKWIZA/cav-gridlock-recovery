@@ -15,13 +15,6 @@ dependencies = [
 d01 = [
     "shapely==2.2.0",
 ]
-sumo = [
-    "eclipse-sumo==1.27.1",
-    "traci==1.27.1",
-    "sumolib==1.27.1",
-    "sumo-data==1.27.1",
-    "pyproj==3.7.2",
-]
 metadrive = [
     "metadrive-simulator @ git+https://github.com/metadriverse/metadrive.git@fe54b03327b14bcfc17a9a04b60c8abbee4d7ab1",
     "Panda3D==1.10.16",
@@ -35,12 +28,11 @@ metadrive = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.setuptools.package-data]
-cav_recovery = ["scenarios/kintambo/*.json", "scenarios/kintambo/*.gz"]
-
 [project.scripts]
 cgr = "cav_recovery.cli:main"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
+testpaths = ["tests/unit", "tests/communication"]
+pythonpath = ["src", "."]
+
+markers = ["scientific: contrôles longs avec génération de jeux de test", "integration: moteur MetaDrive natif"]

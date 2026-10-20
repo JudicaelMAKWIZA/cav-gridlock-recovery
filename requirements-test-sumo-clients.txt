@@ -1,3 +1,0 @@
-# Optional historical mocked tests only; no SUMO engine or data package.
-sumolib==1.27.1
-traci==1.27.1

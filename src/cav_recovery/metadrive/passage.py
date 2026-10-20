@@ -1,9 +1,8 @@
-"""A native MetaDrive road block: two directions share one physical strip.
+"""Bloc routier natif où deux directions partagent une même bande.
 
-The west bay is drivable in both directions during the clearance experiment.
-Road edges are admissibility boundaries, checked at every Bullet substep; they
-are not claimed to be impenetrable walls. No vehicle pose is edited after reset.
-"""
+La baie ouest est parcourable dans les deux sens pendant cet essai historique.
+Les limites de chaussée sont vérifiées aux sous-pas Bullet ; elles ne sont
+pas présentées comme des murs infranchissables. Aucune pose n’est modifiée."""
 
 from metadrive.component.block.base_block import BaseBlock
 from metadrive.component.lane.straight_lane import StraightLane
@@ -16,10 +15,10 @@ from metadrive.constants import PGLineType
 from metadrive.component.pg_space import ParameterSpace
 
 
-PASSAGE_LENGTH_M = 70.
+PASSAGE_LENGTH_M = 70.0
 PASSAGE_WIDTH_M = 3.4
-BAY_END_X_M = 22.
-BAY_CENTER_Y_M = 3.
+BAY_END_X_M = 22.0
+BAY_CENTER_Y_M = 3.0
 
 
 class PassageBlock(BaseBlock):
@@ -35,10 +34,23 @@ class PassageBlock(BaseBlock):
         for start, end, a, b in (
             ("west", "east", (0, 0), (PASSAGE_LENGTH_M, 0)),
             ("east", "west", (PASSAGE_LENGTH_M, 0), (0, 0)),
-            ("bay_west", "bay_east", (0, BAY_CENTER_Y_M), (BAY_END_X_M, BAY_CENTER_Y_M)),
+            (
+                "bay_west",
+                "bay_east",
+                (0, BAY_CENTER_Y_M),
+                (BAY_END_X_M, BAY_CENTER_Y_M),
+            ),
         ):
-            self.block_network.add_lane(start, end, StraightLane(a, b, width=PASSAGE_WIDTH_M,
-                                        line_types=(PGLineType.NONE, PGLineType.NONE)))
+            self.block_network.add_lane(
+                start,
+                end,
+                StraightLane(
+                    a,
+                    b,
+                    width=PASSAGE_WIDTH_M,
+                    line_types=(PGLineType.NONE, PGLineType.NONE),
+                ),
+            )
         self._respawn_roads = [Road("west", "east"), Road("east", "west")]
         return True
 
@@ -55,7 +67,11 @@ class PassageMap(PGMap):
 
 class PassageMapManager(PGMapManager):
     def reset(self):
-        road_map = self.spawn_object(PassageMap, map_config=self.engine.global_config["map_config"], random_seed=None)
+        road_map = self.spawn_object(
+            PassageMap,
+            map_config=self.engine.global_config["map_config"],
+            random_seed=None,
+        )
         self.load_map(road_map)
         road_map.spawn_roads = self.engine.global_config["spawn_roads"]
 

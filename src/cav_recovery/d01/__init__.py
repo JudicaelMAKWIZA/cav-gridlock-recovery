@@ -1,4 +1,4 @@
-"""Experimental individual observer; no simulator, oracle or action interface."""
+"""Détection individuelle expérimentale, séparée du simulateur et des actions."""
 
 from .inputs import InputError, LocalInput, adapt
 

@@ -1,3 +1,3 @@
-"""Reproducible physical dataset production, independent of future model outputs."""
+"""Production physique reproductible, indépendante des sorties des futurs modèles."""
 
 SCHEMA = "cgr-physical-dataset-1"
