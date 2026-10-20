@@ -48,7 +48,18 @@ def draw_chrome(view):
     view._button("details", "P · Infos", (396, y, 88, 28), view.show_details)
     view._button("help", "? / F1", (492, y, 72, 28), view.show_help)
     if view.active_view == "v2v":
-        view._button("v2v_filter", "U · Filtre", (572, y, 88, 28), view.v2v_mode == 1)
+        if view.inspected_message is not None:
+            view._button("v2v_presentation", "L · Retour", (572, y, 98, 28))
+            view._button("raw_packet", "J · Brut", (678, y, 88, 28), view.raw_packet)
+        else:
+            view._button(
+                "v2v_presentation",
+                "L · " + ("Graphe" if view.v2v_presentation == "list" else "Liste"),
+                (572, y, 98, 28),
+            )
+            view._button(
+                "v2v_filter", "U · Filtre", (678, y, 88, 28), view.v2v_mode == 1
+            )
     elif view.active_view in ("d01", "history"):
         view._button(
             "history",
@@ -90,7 +101,7 @@ def draw_panel(view):
     import pygame
 
     panel = view.details_rect
-    if panel.width == 0:
+    if panel.width == 0 or panel.height == 0:
         view.max_scroll = 0
         return
     pygame.draw.rect(view.screen_canvas, BACKGROUND, panel)
@@ -141,7 +152,9 @@ def draw_legend(view):
         "Le trafic reste toujours visible. Clic sur une voiture ou Tab : sélectionner.",
         "G : INFO C-RDG. Cercle CAV, rectangle R espace requis, puis CAV occupant.",
         "Liens C-RDG : rouge confirmé, jaune suspecté, turquoise occupation observée.",
-        "V : INFO V2V. Cercle CAV, rectangle M message, puis CAV destinataire.",
+        "V : liste des correspondants V2V. Envois et réceptions regroupés par véhicule.",
+        "L : liste / graphe V2V. Clic sur un rectangle M : contenu du paquet. L : retour ; J : paquet brut.",
+        "Les livraisons sont observées par l'instrumentation ; elles ne donnent pas une connaissance globale aux CAV.",
         "D : INFO D01 et occupations observées. H : historique du statut et des vitesses.",
         "R ou clic sur un nœud : détails. G / V / D une seconde fois : fermer le panneau.",
         "Vert : pas d'alerte ; jaune : suspicion ; rouge : confirmé ; gris : abstention.",

@@ -215,7 +215,8 @@ def test_all_views_and_buttons_fit_after_resize(view, size):
         assert view.scene_rect.right <= view.panel_rect.left
         if view.active_view != "traffic":
             assert view.panel_rect.contains(view.graph_rect)
-            assert view.panel_rect.contains(view.details_rect)
+            if view.details_rect.height:
+                assert view.panel_rect.contains(view.details_rect)
     view._action("traffic")
     view._action("details")
     assert view.panel_rect.width == 0 and view.scene_rect.width == size[0]
@@ -341,3 +342,121 @@ def test_initial_window_reserves_space_for_windows_frame_and_taskbar():
     desktop_width, desktop_height = pygame.display.get_desktop_sizes()[0]
     assert width <= desktop_width - 32
     assert height <= desktop_height - 64
+
+
+def emitted_frame(view, at_s=10.0):
+    frame = display_frame(view, at_s)
+    keys = list(frame["diagnostics"])
+    packet = dict(
+        sender_id=keys[0],
+        message_id="wire-1",
+        observed_at_s=at_s,
+        sent_at_s=at_s,
+        valid_until_s=at_s + 1.2,
+        position_xy_m=[1.25, 2.5],
+        signed_speed_mps=3.125,
+    )
+    frame["deliveries"] = [
+        dict(
+            event="emitted", channel="telemetry", message=packet, delivered_to=keys[1:]
+        )
+    ]
+    view.selected = keys[0]
+    view.manual_selection = True
+    return frame
+
+
+def test_v2v_defaults_to_correspondent_list_with_only_outgoing_packet_buttons(view):
+    view._action("v2v")
+    frame = emitted_frame(view)
+    view.inspect(frame)
+    assert view.v2v_presentation == "list" and view.v2v_mode == 2
+    assert view.message_buttons and view.details_rect.height == 0
+    assert all(
+        view.graph_rect.contains(view.buttons[key]) for key in view.message_buttons
+    )
+    assert view.label_positions and view.scene_rect.right == view.panel_rect.left
+    assert view.inspected_message is None
+
+
+def test_message_click_opens_complete_payload_and_retains_it_after_expiry(
+    view, monkeypatch
+):
+    view._action("v2v")
+    frame = emitted_frame(view)
+    view.inspect(frame)
+    key = next(iter(view.message_buttons))
+    view.no_window = False
+    monkeypatch.setattr(
+        pygame.event,
+        "get",
+        lambda: [
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN, button=1, pos=view.buttons[key].center
+            )
+        ],
+    )
+    view._handle_event()
+    view.no_window = True
+    assert view.inspected_message["payload"] == frame["deliveries"][0]["message"]
+    view.inspect(dict(frame, at_s=11.0, deliveries=[]))
+    assert not view.recent_messages
+    assert "3.125" in "\n".join(text for text, _ in view._information_lines())
+    assert view.details_rect == view.panel_rect and view.label_positions
+    view._action("raw_packet")
+    assert '"signed_speed_mps": 3.125' in "\n".join(
+        text for text, _ in view._information_lines()
+    )
+    view._action("v2v_presentation")
+    assert view.inspected_message is None and view.v2v_presentation == "list"
+
+
+def test_received_packets_are_grouped_without_automatically_opening_payload(
+    view, monkeypatch
+):
+    view._action("v2v")
+    frame = emitted_frame(view)
+    view.selected = frame["deliveries"][0]["delivered_to"][0]
+    view.inspect(frame)
+    assert view.info_snapshot["nodes"] and not view.message_buttons
+    assert view.inspected_message is None
+    view._action("v2v_presentation")
+    view.inspect(frame)
+    middle = next(key for key in view.graph_nodes if key.startswith("message:"))
+    view.no_window = False
+    monkeypatch.setattr(
+        pygame.event,
+        "get",
+        lambda: [
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN, button=1, pos=view.graph_nodes[middle].center
+            )
+        ],
+    )
+    view._handle_event()
+    assert "MESSAGE REÇU" in view._information_lines()[0][0]
+
+
+def test_v2v_payload_is_copied_without_mutating_or_reconstructing_backend_data(view):
+    view._action("v2v")
+    frame = emitted_frame(view)
+    view.frame = frame
+    view._remember_deliveries()
+    frame["deliveries"][0]["message"]["signed_speed_mps"] = 999
+    assert (
+        next(iter(view.recent_messages.values()))["payload"]["signed_speed_mps"]
+        == 3.125
+    )
+
+
+def test_automatic_ego_change_closes_the_previously_selected_packet(view):
+    view._action("v2v")
+    frame = emitted_frame(view)
+    view.inspect(frame)
+    sender = view.selected
+    view._open_message(next(iter(view.message_buttons.values())))
+    remaining = {
+        key: value for key, value in frame["diagnostics"].items() if key != sender
+    }
+    view.inspect(dict(frame, diagnostics=remaining, deliveries=[]))
+    assert view.selected != sender and view.inspected_message is None

@@ -52,20 +52,12 @@ def draw_network(view, *, communication=False):
     from .info_graph import (
         physical_snapshot,
         detector_relations,
-        message_snapshot,
         graph_pages,
         graph_positions,
     )
 
     if communication:
-        pairs = set(view._useful_links(view.frame["graphs"].get(view.selected, {})))
-        view.displayed_links = sorted(pairs)
-        snapshot = message_snapshot(
-            view.recent_messages.values(),
-            pairs,
-            view.message_aliases,
-            useful=view.v2v_mode == 1,
-        )
+        snapshot = view._v2v_snapshot()
         title = "INFO V2V · " + label(view.selected or "—")
         note = "Ronds : CAV · Rectangles M : messages livrés. U : diagnostics utiles / tous les canaux."
     else:

@@ -2,6 +2,7 @@
 
 from collections import defaultdict, deque
 from collections import OrderedDict
+import copy
 import math
 from pathlib import Path
 import time
@@ -9,7 +10,7 @@ import time
 from ..metadrive.view import TopDownView
 from .presentation import french, label, save_capture, source_stamp, wrapped
 from .layout import available_size, rectangles
-from . import chrome, diagrams
+from . import chrome, diagrams, v2v_info
 
 COLORS = {
     "NO_ALERT": (67, 190, 130),
@@ -32,6 +33,10 @@ class ExperimentView(TopDownView):
         self.manual_selection = False
         self.v2v_mode = 0
         self.active_view = "traffic"
+        self.v2v_presentation = "list"
+        self.inspected_message = None
+        self.raw_packet = False
+        self.message_buttons = {}
         self.show_graph = False
         self.show_resources = False
         self.show_details = True
@@ -118,7 +123,17 @@ class ExperimentView(TopDownView):
         )
         import pygame
 
-        if self.active_view == "traffic" and not self.show_help:
+        if self.active_view == "v2v" and self.inspected_message is not None:
+            self.graph_rect = pygame.Rect(
+                self.panel_rect.x, self.panel_rect.y, self.panel_rect.width, 0
+            )
+            self.details_rect = self.panel_rect.copy()
+        elif self.active_view == "v2v" and self.v2v_presentation == "list":
+            self.graph_rect = self.panel_rect.copy()
+            self.details_rect = pygame.Rect(
+                self.panel_rect.x, self.panel_rect.bottom, self.panel_rect.width, 0
+            )
+        elif self.active_view == "traffic" and not self.show_help:
             self.graph_rect = pygame.Rect(
                 self.panel_rect.x, self.panel_rect.y, self.panel_rect.width, 0
             )
@@ -220,7 +235,33 @@ class ExperimentView(TopDownView):
                     observed_at_s=message.get("observed_at_s", now),
                     sent_at_s=message.get("sent_at_s", now),
                     received_at_s=now,
+                    payload=copy.deepcopy(message),
                 )
+
+    def _v2v_snapshot(self):
+        from .info_graph import message_snapshot
+
+        pairs = set(self._useful_links(self.frame["graphs"].get(self.selected, {})))
+        self.displayed_links = sorted(pairs)
+        return message_snapshot(
+            self.recent_messages.values(),
+            pairs,
+            self.message_aliases,
+            useful=self.v2v_mode == 1,
+        )
+
+    def _open_message(self, key):
+        node = self.info_snapshot["nodes"].get(key)
+        if node is None or node["kind"] != "message":
+            return
+        self.inspected_message = copy.deepcopy(node)
+        self.raw_packet = False
+        self.show_help = False
+        self.scroll = 0
+        self._layout()
+        self._tell(
+            "Contenu du message " + node["label"] + " · L pour revenir aux échanges."
+        )
 
     def _useful_links(self, graph):
         if not self.show_v2v:
@@ -243,12 +284,12 @@ class ExperimentView(TopDownView):
                 recipient == self.selected and sender in relevant
             ):
                 continue
-            if sender in self.engine.agents and recipient in self.engine.agents:
-                links.append((sender, recipient))
-        return links[:4] if self.v2v_mode == 1 else links
+            links.append((sender, recipient))
+        return links
 
     def _draw(self, *args, **kwargs):
         self.buttons.clear()
+        self.message_buttons.clear()
         self.graph_nodes = {}
         if self.active_view != "v2v":
             self.displayed_links = []
@@ -271,7 +312,11 @@ class ExperimentView(TopDownView):
         if not self.frame or self.active_view == "traffic":
             return
         self.screen_canvas.set_clip(self.graph_rect)
-        if self.active_view in ("graph", "v2v", "d01"):
+        if self.active_view == "v2v" and self.inspected_message is not None:
+            pass  # Le paquet occupe le panneau droit ; le trafic reste à gauche.
+        elif self.active_view == "v2v" and self.v2v_presentation == "list":
+            v2v_info.draw_correspondents(self)
+        elif self.active_view in ("graph", "v2v", "d01"):
             diagrams.draw_network(self, communication=self.active_view == "v2v")
         elif self.active_view == "history":
             self.info_snapshot = dict(nodes={}, edges=[], units=[])
@@ -297,6 +342,23 @@ class ExperimentView(TopDownView):
     def _information_lines(self):
         if self.active_view == "traffic":
             return self._panel_lines()
+        if self.active_view == "v2v":
+            if self.inspected_message is not None:
+                return list(
+                    v2v_info.message_lines(
+                        self.inspected_message, self.selected, raw=self.raw_packet
+                    )
+                )
+            return v2v_info.own_lines(self.frame, self.selected) + [
+                (
+                    "Les mesures propres ne sont pas toutes diffusées. Cliquez sur M pour lire le paquet exact.",
+                    False,
+                ),
+                (
+                    "Les destinataires livrés sont montrés par l'instrumentation, sans être ajoutés aux entrées du CAV.",
+                    False,
+                ),
+            ]
         nodes = self.info_snapshot["nodes"]
         node = nodes.get(self.inspected_node)
         if node is not None:
@@ -526,7 +588,9 @@ class ExperimentView(TopDownView):
             self.show_graph = self.active_view == "graph"
             self.show_resources = False
             self.inspected_node = None
-            self.v2v_mode = 1 if self.active_view == "v2v" else 0
+            self.inspected_message = None
+            self.scroll = 0
+            self.v2v_mode = 2 if self.active_view == "v2v" else 0
             self.diagram_page = 0
             title = {
                 "traffic": "Circulation",
@@ -538,9 +602,11 @@ class ExperimentView(TopDownView):
             self._layout()
             self._tell("Panneau : " + title)
         elif action == "resources":
+            self.inspected_message = None
             if self.active_view not in ("graph", "d01"):
                 self.active_view = "graph"
                 self.show_graph = True
+                self.v2v_mode = 0
             self.show_resources = not self.show_resources
             self.resource_inspection_requested = self.show_resources
             self.inspected_node = None
@@ -552,6 +618,27 @@ class ExperimentView(TopDownView):
         elif action == "v2v_filter" and self.active_view == "v2v":
             self.v2v_mode = 2 if self.v2v_mode == 1 else 1
             self._tell("V2V : " + V2V_MODES[self.v2v_mode])
+        elif action == "v2v_presentation" and self.active_view == "v2v":
+            if self.inspected_message is not None:
+                self.inspected_message = None
+            else:
+                self.v2v_presentation = (
+                    "graph" if self.v2v_presentation == "list" else "list"
+                )
+            self.scroll = 0
+            self.diagram_page = 0
+            self._layout()
+            self._tell(
+                "V2V : "
+                + (
+                    "liste des correspondants"
+                    if self.v2v_presentation == "list"
+                    else "graphe des messages"
+                )
+            )
+        elif action == "raw_packet" and self.inspected_message is not None:
+            self.raw_packet = not self.raw_packet
+            self.scroll = 0
         elif action in ("diagram_prev", "diagram_next"):
             self.diagram_page += -1 if action == "diagram_prev" else 1
             self.inspected_node = None
@@ -600,7 +687,9 @@ class ExperimentView(TopDownView):
                 self.manual_selection = True
                 self.scroll = 0
                 self.inspected_node = None
+                self.inspected_message = None
                 self.diagram_page = 0
+                self._layout()
                 self._tell("Véhicule sélectionné : " + label(self.selected))
         self.dirty = True
 
@@ -640,7 +729,10 @@ class ExperimentView(TopDownView):
                     None,
                 )
                 if button:
-                    self._action(button)
+                    if button in self.message_buttons:
+                        self._open_message(self.message_buttons[button])
+                    else:
+                        self._action(button)
                 elif self.frame and self.panel_rect.collidepoint(event.pos):
                     node = next(
                         (
@@ -651,9 +743,12 @@ class ExperimentView(TopDownView):
                         None,
                     )
                     if node is not None:
-                        self.inspected_node = node
-                        self.scroll = 0
-                        self.dirty = True
+                        if self.info_snapshot["nodes"][node]["kind"] == "message":
+                            self._open_message(node)
+                        else:
+                            self.inspected_node = node
+                            self.scroll = 0
+                            self.dirty = True
                 elif self.frame and self.scene_rect.collidepoint(event.pos):
                     candidates = [
                         (math.dist(event.pos, self._pixel(vehicle.position)), key)
@@ -664,7 +759,9 @@ class ExperimentView(TopDownView):
                         self.manual_selection = True
                         self.scroll = 0
                         self.inspected_node = None
+                        self.inspected_message = None
                         self.diagram_page = 0
+                        self._layout()
                         self._tell("Véhicule sélectionné : " + label(self.selected))
             elif event.type == pygame.KEYDOWN and not getattr(event, "repeat", False):
                 character = getattr(event, "unicode", "").lower()
@@ -697,6 +794,8 @@ class ExperimentView(TopDownView):
                         pygame.K_t: "traffic",
                         pygame.K_p: "details",
                         pygame.K_u: "v2v_filter",
+                        pygame.K_l: "v2v_presentation",
+                        pygame.K_j: "raw_packet",
                         pygame.K_LEFT: "diagram_prev",
                         pygame.K_RIGHT: "diagram_next",
                     }.get(event.key)
@@ -730,6 +829,10 @@ class ExperimentView(TopDownView):
             resources=self.show_resources,
             reference=self.show_reference,
             view=self.active_view,
+            v2v_presentation=self.v2v_presentation,
+            inspected_message_id=self.inspected_message["message_id"]
+            if self.inspected_message
+            else None,
             window_size=self.screen_canvas.get_size(),
             authentic_pygame_frame=True,
         )
@@ -754,6 +857,7 @@ class ExperimentView(TopDownView):
 
     def inspect(self, frame):
         self.frame = frame
+        previous_selected = self.selected
         if not self.manual_selection:
             holders = [key for key, view in frame["graphs"].items() if view["groups"]]
             if holders:
@@ -762,6 +866,12 @@ class ExperimentView(TopDownView):
             self.selected = next(iter(frame["diagnostics"]))
         if self.closed:
             return False
+        if self.selected != previous_selected:
+            self.inspected_message = None
+            self.inspected_node = None
+            self.scroll = 0
+            self.diagram_page = 0
+            self._layout()
         self._remember_deliveries()
         self._remember_d01()
         self._redraw()
