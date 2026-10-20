@@ -1,12 +1,10 @@
 """Inspection 2D interactive ; les commandes de la vue n'agissent pas sur les CAV."""
 
-from functools import lru_cache
 from collections import defaultdict, deque
+from collections import OrderedDict
 import math
 from pathlib import Path
 import time
-
-from shapely import wkt
 
 from ..metadrive.view import TopDownView
 from .presentation import french, label, save_capture, source_stamp, wrapped
@@ -21,14 +19,6 @@ COLORS = {
 }
 RATES = (0.25, 0.5, 1, 2, 4, 8)
 V2V_MODES = ("masqué", "utile reçu", "tous liés à l'ego")
-
-
-@lru_cache(maxsize=256)
-def resource_polygons(text):
-    """Une preuve affichée en pause ne nécessite pas de relire son WKT."""
-    geometry = wkt.loads(text)
-    parts = list(geometry.geoms) if hasattr(geometry, "geoms") else [geometry]
-    return [list(part.exterior.coords) for part in parts if part.geom_type == "Polygon"]
 
 
 class ExperimentView(TopDownView):
@@ -47,6 +37,10 @@ class ExperimentView(TopDownView):
         self.show_details = True
         self.diagram_page = 0
         self.graph_nodes = {}
+        self.resource_aliases = {}
+        self.message_aliases = {}
+        self.inspected_node = None
+        self.info_snapshot = dict(nodes={}, edges=[], units=[])
         self.d01_history = defaultdict(lambda: deque(maxlen=301))
         self.label_font_size = 17
         self.zoom = 1.0
@@ -68,6 +62,7 @@ class ExperimentView(TopDownView):
         self.last_capture = None
         self.dirty = True
         self.recent_links = {}
+        self.recent_messages = OrderedDict()
         self.displayed_links = []
         size = screen_size or (available_size() if window else (1200, 720))
         self.scene_rect, self.panel_rect, self.footer_rect = rectangles(size)
@@ -116,8 +111,33 @@ class ExperimentView(TopDownView):
         )
         self.navigation_y = 12 + lines * 22
         self.scene_rect, self.panel_rect, self.footer_rect = rectangles(
-            self.screen_canvas.get_size(), title_lines=lines, details=self.show_details
+            self.screen_canvas.get_size(),
+            title_lines=lines,
+            details=self.show_details,
+            diagnostic=self.active_view != "traffic" or self.show_help,
         )
+        import pygame
+
+        if self.active_view == "traffic" and not self.show_help:
+            self.graph_rect = pygame.Rect(
+                self.panel_rect.x, self.panel_rect.y, self.panel_rect.width, 0
+            )
+            self.details_rect = self.panel_rect.copy()
+        else:
+            split = (
+                int(self.panel_rect.height * 0.70)
+                if self.show_details
+                else self.panel_rect.height
+            )
+            self.graph_rect = pygame.Rect(
+                self.panel_rect.x, self.panel_rect.y, self.panel_rect.width, split
+            )
+            self.details_rect = pygame.Rect(
+                self.panel_rect.x,
+                self.graph_rect.bottom,
+                self.panel_rect.width,
+                self.panel_rect.height - split,
+            )
         self._fit_map()
         self.dirty = True
 
@@ -179,11 +199,28 @@ class ExperimentView(TopDownView):
         self.recent_links = {
             pair: at for pair, at in self.recent_links.items() if now - at <= 0.6 + 1e-8
         }
+        self.recent_messages = OrderedDict(
+            (key, value)
+            for key, value in self.recent_messages.items()
+            if now - value["received_at_s"] <= 0.6 + 1e-8
+        )
         for event in self.frame["deliveries"]:
             if event["event"] == "emitted":
                 sender = event["message"]["sender_id"]
                 for recipient in event["delivered_to"]:
                     self.recent_links[sender, recipient] = now
+                message = event["message"]
+                channel = event.get("channel", "telemetry")
+                identity = (channel, message.get("message_id", sender + ":" + str(now)))
+                self.recent_messages[identity] = dict(
+                    channel=channel,
+                    message_id=identity[1],
+                    sender=sender,
+                    recipients=list(event["delivered_to"]),
+                    observed_at_s=message.get("observed_at_s", now),
+                    sent_at_s=message.get("sent_at_s", now),
+                    received_at_s=now,
+                )
 
     def _useful_links(self, graph):
         if not self.show_v2v:
@@ -219,32 +256,127 @@ class ExperimentView(TopDownView):
             for key, diagnostic in self.frame["diagnostics"].items():
                 self.labels[key] = label(key)
                 self.colors[key] = COLORS[diagnostic["status"]]
-        if self.active_view == "traffic" or not self.frame:
-            super()._draw(*args, **kwargs)
-            if self.selected in self.engine.agents:
-                import pygame
+        # Le trafic est toujours dessiné, y compris pendant la consultation des preuves.
+        super()._draw(*args, **kwargs)
+        if self.selected in self.engine.agents:
+            import pygame
 
-                pygame.draw.circle(
-                    self.screen_canvas,
-                    (242, 247, 255),
-                    self._pixel(self.engine.agents[self.selected].position),
-                    12,
-                    1,
-                )
+            pygame.draw.circle(
+                self.screen_canvas,
+                (242, 247, 255),
+                self._pixel(self.engine.agents[self.selected].position),
+                12,
+                1,
+            )
+        if not self.frame or self.active_view == "traffic":
             return
-        self.screen_canvas.set_clip(self.scene_rect)
-        if self.active_view in ("graph", "v2v"):
+        self.screen_canvas.set_clip(self.graph_rect)
+        if self.active_view in ("graph", "v2v", "d01"):
             diagrams.draw_network(self, communication=self.active_view == "v2v")
-        elif self.active_view == "d01":
+        elif self.active_view == "history":
+            self.info_snapshot = dict(nodes={}, edges=[], units=[])
+            self.visible_info_edges = []
             diagrams.draw_d01(self)
-        elif self.active_view == "resources":
-            diagrams.draw_resources(self, resource_polygons)
         self.screen_canvas.set_clip(None)
+        if getattr(self, "resource_inspection_requested", False):
+            self.inspected_node = next(
+                (
+                    key
+                    for key in self.graph_nodes
+                    if self.info_snapshot["nodes"][key]["kind"] == "resource"
+                ),
+                None,
+            )
+            self.resource_inspection_requested = False
 
     def _tell(self, message):
         self.notice = message
         self.notice_until = time.monotonic() + 5
         self.dirty = True
+
+    def _information_lines(self):
+        if self.active_view == "traffic":
+            return self._panel_lines()
+        nodes = self.info_snapshot["nodes"]
+        node = nodes.get(self.inspected_node)
+        if node is not None:
+            lines = [("DÉTAILS · " + node["label"], True)]
+            if node["kind"] == "resource":
+                lines += [("Espace occupé étayé ; identifiant d'affichage.", False)]
+                when = node.get("observed_at_s")
+                if when is not None:
+                    lines.append((f"Mesuré à {when:.1f} s", False))
+                for edge in self.info_snapshot["edges"]:
+                    if edge["target"] == self.inspected_node:
+                        lines.append(
+                            (
+                                nodes[edge["source"]]["label"] + " demande cet espace",
+                                False,
+                            )
+                        )
+                    if edge["source"] == self.inspected_node:
+                        lines.append(
+                            ("Occupé par " + nodes[edge["target"]]["label"], False)
+                        )
+            elif node["kind"] == "message":
+                lines += [
+                    (
+                        "Canal : "
+                        + (
+                            "diagnostic"
+                            if node["channel"] == "diagnostic"
+                            else "télémétrie"
+                        ),
+                        False,
+                    ),
+                    (
+                        f"Émis par {label(node['sender'])} à {node['sent_at_s']:.1f} s",
+                        False,
+                    ),
+                    (f"Livré à {node['received_at_s']:.1f} s", False),
+                    (
+                        "Destinataires : "
+                        + ", ".join(label(key) for key in node["recipients"]),
+                        False,
+                    ),
+                ]
+            else:
+                lines.append(
+                    ("Véhicule apparaissant dans les preuves affichées.", False)
+                )
+                if node["vehicle_id"] == self.selected:
+                    diagnostic = self.frame["diagnostics"].get(self.selected)
+                    if diagnostic:
+                        lines.append((french(diagnostic["status"]), False))
+                for edge in self.info_snapshot["edges"]:
+                    if self.inspected_node in (edge["source"], edge["target"]):
+                        lines.append(
+                            (
+                                nodes[edge["source"]]["label"]
+                                + " "
+                                + edge["role"]
+                                + " "
+                                + nodes[edge["target"]]["label"],
+                                False,
+                            )
+                        )
+            return lines
+        diagnostic = self.frame["diagnostics"].get(self.selected)
+        lines = [("VÉHICULE " + label(self.selected or "—"), True)]
+        if diagnostic:
+            lines.append((french(diagnostic["status"]), False))
+        for edge in getattr(self, "visible_info_edges", []):
+            lines.append(
+                (
+                    nodes[edge["source"]]["label"]
+                    + " "
+                    + edge["role"]
+                    + " "
+                    + nodes[edge["target"]]["label"],
+                    False,
+                )
+            )
+        return lines
 
     def _panel_lines(self):
         diagnostic = self.frame["diagnostics"].get(self.selected)
@@ -389,25 +521,41 @@ class ExperimentView(TopDownView):
             self.paused = not self.paused
             self.deadline = time.monotonic()
             self._tell("Simulation en pause." if self.paused else "Simulation reprise.")
-        elif action in ("traffic", "graph", "v2v", "d01", "resources"):
+        elif action in ("traffic", "graph", "v2v", "d01", "history"):
             self.active_view = "traffic" if self.active_view == action else action
             self.show_graph = self.active_view == "graph"
-            self.show_resources = self.active_view == "resources"
+            self.show_resources = False
+            self.inspected_node = None
             self.v2v_mode = 1 if self.active_view == "v2v" else 0
             self.diagram_page = 0
             title = {
                 "traffic": "Circulation",
                 "graph": "Graphe C-RDG",
                 "v2v": "Échanges V2V",
-                "d01": "Historique D01",
-                "resources": "Ressources étayées",
+                "d01": "Détecteur D01",
+                "history": "Historique D01",
             }[self.active_view]
-            self._tell("Vue : " + title)
+            self._layout()
+            self._tell("Panneau : " + title)
+        elif action == "resources":
+            if self.active_view not in ("graph", "d01"):
+                self.active_view = "graph"
+                self.show_graph = True
+            self.show_resources = not self.show_resources
+            self.resource_inspection_requested = self.show_resources
+            self.inspected_node = None
+            self.show_details = True
+            self._layout()
+            self._tell(
+                "Cliquez sur un rectangle R pour consulter la preuve d'occupation."
+            )
         elif action == "v2v_filter" and self.active_view == "v2v":
             self.v2v_mode = 2 if self.v2v_mode == 1 else 1
             self._tell("V2V : " + V2V_MODES[self.v2v_mode])
         elif action in ("diagram_prev", "diagram_next"):
             self.diagram_page += -1 if action == "diagram_prev" else 1
+            self.inspected_node = None
+            self.scroll = 0
         elif action == "details":
             self.show_details = not self.show_details
             self._layout()
@@ -417,6 +565,7 @@ class ExperimentView(TopDownView):
                 "help": "show_help",
             }[action]
             setattr(self, field, not getattr(self, field))
+            self._layout()
             title = {
                 "reference": "Référence globale (prochain pas)",
                 "help": "Légende",
@@ -450,6 +599,8 @@ class ExperimentView(TopDownView):
                 )
                 self.manual_selection = True
                 self.scroll = 0
+                self.inspected_node = None
+                self.diagram_page = 0
                 self._tell("Véhicule sélectionné : " + label(self.selected))
         self.dirty = True
 
@@ -471,9 +622,7 @@ class ExperimentView(TopDownView):
             if event.type in (pygame.WINDOWEXPOSED, pygame.WINDOWRESTORED):
                 self.dirty = True
             elif event.type == pygame.MOUSEWHEEL:
-                if self.active_view == "traffic" and self.scene_rect.collidepoint(
-                    pygame.mouse.get_pos()
-                ):
+                if self.scene_rect.collidepoint(pygame.mouse.get_pos()):
                     self.zoom = max(0.75, min(3, self.zoom * 1.15**event.y))
                     self._fit_map()
                 else:
@@ -492,7 +641,7 @@ class ExperimentView(TopDownView):
                 )
                 if button:
                     self._action(button)
-                elif self.frame and self.active_view != "traffic":
+                elif self.frame and self.panel_rect.collidepoint(event.pos):
                     node = next(
                         (
                             key
@@ -501,11 +650,10 @@ class ExperimentView(TopDownView):
                         ),
                         None,
                     )
-                    if node in self.frame["diagnostics"]:
-                        self.selected = node
-                        self.manual_selection = True
-                        self.diagram_page = 0
-                        self._tell("Véhicule sélectionné : " + label(node))
+                    if node is not None:
+                        self.inspected_node = node
+                        self.scroll = 0
+                        self.dirty = True
                 elif self.frame and self.scene_rect.collidepoint(event.pos):
                     candidates = [
                         (math.dist(event.pos, self._pixel(vehicle.position)), key)
@@ -515,6 +663,8 @@ class ExperimentView(TopDownView):
                         self.selected = min(candidates)[1]
                         self.manual_selection = True
                         self.scroll = 0
+                        self.inspected_node = None
+                        self.diagram_page = 0
                         self._tell("Véhicule sélectionné : " + label(self.selected))
             elif event.type == pygame.KEYDOWN and not getattr(event, "repeat", False):
                 character = getattr(event, "unicode", "").lower()
@@ -543,6 +693,7 @@ class ExperimentView(TopDownView):
                         pygame.K_F1: "help",
                         pygame.K_i: "reference",
                         pygame.K_d: "d01",
+                        pygame.K_h: "history",
                         pygame.K_t: "traffic",
                         pygame.K_p: "details",
                         pygame.K_u: "v2v_filter",

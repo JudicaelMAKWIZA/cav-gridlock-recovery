@@ -22,11 +22,14 @@ def draw_chrome(view):
             ("graph", "G · C-RDG"),
             ("v2v", "V · V2V"),
             ("d01", "D · D01"),
-            ("resources", "R · Ressources"),
+            ("resources", "R · Détails"),
         )
     ):
         view._button(
-            key, title, (12 + index * 116, y, 108, 28), view.active_view == key
+            key,
+            title,
+            (12 + index * 116, y, 108, 28),
+            view.show_resources if key == "resources" else view.active_view == key,
         )
     y += 36
     view._button(
@@ -46,13 +49,20 @@ def draw_chrome(view):
     view._button("help", "? / F1", (492, y, 72, 28), view.show_help)
     if view.active_view == "v2v":
         view._button("v2v_filter", "U · Filtre", (572, y, 88, 28), view.v2v_mode == 1)
+    elif view.active_view in ("d01", "history"):
+        view._button(
+            "history",
+            "H · Historique",
+            (572, y, 110, 28),
+            view.active_view == "history",
+        )
     draw_panel(view)
     pygame.draw.rect(screen, BACKGROUND, view.footer_rect)
     notice = (
         view.notice
         if time.monotonic() < view.notice_until
         else (
-            "Clic / Tab : sélectionner · T : trafic · G / V / D / R : vues · Échap : fermer"
+            "Le trafic reste visible · G / V / D : informations · clic sur un nœud : détails"
         )
     )
     text_lines(
@@ -79,7 +89,7 @@ def draw_chrome(view):
 def draw_panel(view):
     import pygame
 
-    panel = view.panel_rect
+    panel = view.details_rect
     if panel.width == 0:
         view.max_scroll = 0
         return
@@ -89,7 +99,7 @@ def draw_panel(view):
     rows = []
     y = 0
     step = view.panel_font.get_linesize() + 2
-    for message, title in view._panel_lines():
+    for message, title in view._information_lines():
         if title:
             y += 10
         for line in wrapped(message, view.panel_font, viewport.width - 4):
@@ -124,25 +134,33 @@ def draw_panel(view):
 def draw_legend(view):
     import pygame
 
-    box = view.scene_rect.inflate(-24, -16)
+    box = view.panel_rect.inflate(-16, -8)
     pygame.draw.rect(view.screen_canvas, BACKGROUND, box, border_radius=8)
     lines = [
         "LÉGENDE ET COMMANDES — F1 pour fermer",
-        "T : trafic sans flèches de diagnostic. Clic sur une voiture ou Tab : sélectionner.",
-        "G : graphe C-RDG local, demandeur vers bloqueur, dans sa propre vue.",
-        "V : graphe des livraisons V2V. U : reçus utiles / tous les liens de l'ego.",
-        "D : historique D01 et vitesses propres. R : géométrie des ressources étayées.",
-        "Une seconde pression sur G, V, D ou R revient au trafic.",
+        "Le trafic reste toujours visible. Clic sur une voiture ou Tab : sélectionner.",
+        "G : INFO C-RDG. Cercle CAV, rectangle R espace requis, puis CAV occupant.",
+        "Liens C-RDG : rouge confirmé, jaune suspecté, turquoise occupation observée.",
+        "V : INFO V2V. Cercle CAV, rectangle M message, puis CAV destinataire.",
+        "D : INFO D01 et occupations observées. H : historique du statut et des vitesses.",
+        "R ou clic sur un nœud : détails. G / V / D une seconde fois : fermer le panneau.",
         "Vert : pas d'alerte ; jaune : suspicion ; rouge : confirmé ; gris : abstention.",
         "Espace : pause / reprise. + / − : cadence cible. S : capture PNG et provenance.",
-        "P : afficher / masquer les informations. Molette sur la carte : zoom.",
-        "Molette sur le panneau ou Page haut/bas : défiler. gauche / droite : pages des graphes.",
+        "P : afficher / masquer les détails. Molette sur la carte : zoom.",
+        "Molette sur le panneau ou Page haut/bas : défiler. Gauche / droite : voisinages.",
         "I : référence globale d'inspection facultative ; jamais une entrée des modèles.",
         "Échap : fermeture de la vue ; le calcul termine sans fenêtre.",
     ]
-    y = box.y + 10
+    rows = []
     for line in lines:
-        y = text_lines(
-            view, line, (box.x + 10, y), box.width - 20, small=box.height < 430
-        )
-        y += 5
+        rows.extend(wrapped(line, view.small_font, box.width - 20))
+        rows.append("")
+    step = view.small_font.get_linesize() + 2
+    view.max_scroll = max(0, len(rows) * step - box.height + 20)
+    view.scroll = min(view.scroll, view.max_scroll)
+    for index, line in enumerate(rows):
+        y = box.y + 10 + index * step - view.scroll
+        if box.top <= y and y + step < box.bottom:
+            view.screen_canvas.blit(
+                view.small_font.render(line, True, (234, 241, 249)), (box.x + 10, y)
+            )

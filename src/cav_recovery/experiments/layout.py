@@ -25,14 +25,18 @@ def available_size():
     return max(320, min(1440, width - 32)), max(300, min(900, height - 64))
 
 
-def rectangles(size, *, title_lines=1, details=True):
+def rectangles(size, *, title_lines=1, details=True, diagnostic=False):
     """Répartit la place disponible sans coordonnées liées à un écran particulier."""
     import pygame
 
     width, height = size
     header = 86 + title_lines * 22
     footer = 64
-    sidebar = min(300, max(240, width // 4)) if details and width >= 720 else 0
+    sidebar = (
+        width // 2
+        if diagnostic
+        else (min(300, max(240, width // 4)) if details and width >= 720 else 0)
+    )
     content = pygame.Rect(0, header, width - sidebar, max(1, height - header - footer))
     panel = pygame.Rect(content.right, header, sidebar, content.height)
     return content, panel, pygame.Rect(0, height - footer, width, footer)

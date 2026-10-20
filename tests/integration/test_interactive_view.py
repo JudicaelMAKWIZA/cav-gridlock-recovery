@@ -163,6 +163,9 @@ def display_frame(view, at_s=1.0):
     diagnostics = {}
     for key in view.engine.agents:
         diagnostics[key] = dict(
+            ego_id=key,
+            movement_id="straight",
+            current_occupants=[],
             status="NO_ALERT",
             reason="PROGRESSING",
             destination="a1_sink",
@@ -179,6 +182,13 @@ def display_frame(view, at_s=1.0):
         level="SUSPECTED",
         resource_wkt="POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))",
     )
+    diagnostics[keys[0]]["current_occupants"] = [
+        dict(
+            sender_id=keys[1],
+            resource_polygon_wkt=edge["resource_wkt"],
+            observed_at_s=at_s,
+        )
+    ]
     return dict(
         at_s=at_s,
         diagnostics=diagnostics,
@@ -194,13 +204,19 @@ def display_frame(view, at_s=1.0):
 def test_all_views_and_buttons_fit_after_resize(view, size):
     view._resize(size)
     frame = display_frame(view)
-    for name in ("traffic", "graph", "v2v", "d01", "resources"):
+    for name in ("traffic", "graph", "v2v", "d01", "resources", "history"):
         view._action(name)
         view.inspect(frame)
         screen = view.screen_canvas.get_rect()
         assert screen.contains(view.scene_rect) and screen.contains(view.panel_rect)
         assert all(screen.contains(rect) for rect in view.buttons.values())
         assert view._screen_size == size
+        assert view.label_positions  # Le trafic est dessiné dans chaque mode.
+        assert view.scene_rect.right <= view.panel_rect.left
+        if view.active_view != "traffic":
+            assert view.panel_rect.contains(view.graph_rect)
+            assert view.panel_rect.contains(view.details_rect)
+    view._action("traffic")
     view._action("details")
     assert view.panel_rect.width == 0 and view.scene_rect.width == size[0]
 
@@ -229,7 +245,7 @@ def test_view_shortcuts_toggle_dedicated_content_and_tab_selects(view, monkeypat
         (pygame.K_g, "graph"),
         (pygame.K_v, "v2v"),
         (pygame.K_d, "d01"),
-        (pygame.K_r, "resources"),
+        (pygame.K_h, "history"),
     ):
         event = pygame.event.Event(pygame.KEYDOWN, key=key, unicode="")
         monkeypatch.setattr(pygame.event, "get", lambda: [event])
@@ -237,6 +253,13 @@ def test_view_shortcuts_toggle_dedicated_content_and_tab_selects(view, monkeypat
         assert view.active_view == name
         view._handle_event()
         assert view.active_view == "traffic"
+    monkeypatch.setattr(
+        pygame.event,
+        "get",
+        lambda: [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_r)],
+    )
+    view._handle_event()
+    assert view.active_view == "graph" and view.show_resources
     before = view.selected
     monkeypatch.setattr(
         pygame.event,
@@ -258,7 +281,7 @@ def test_d01_plot_keeps_only_past_samples_and_does_not_duplicate_paused_frame(vi
     )
 
 
-def test_graph_uses_available_space_before_paginating(view):
+def test_graph_keeps_complete_vehicle_resource_vehicle_chains_beside_traffic(view):
     view._resize((1248, 616))
     frame = display_frame(view)
     owner = next(iter(frame["diagnostics"]))
@@ -271,8 +294,44 @@ def test_graph_uses_available_space_before_paginating(view):
     view.manual_selection = True
     view._action("graph")
     view.inspect(frame)
-    assert len(view.graph_nodes) == 16
-    assert "diagram_prev" not in view.buttons
+    assert view.label_positions and "diagram_prev" in view.buttons
+    nodes = view.info_snapshot["nodes"]
+    assert {nodes[key]["kind"] for key in view.graph_nodes} == {"vehicle", "resource"}
+    for edge in view.visible_info_edges:
+        assert nodes[edge["source"]]["kind"] != nodes[edge["target"]]["kind"]
+    assert all(view.graph_rect.contains(rect) for rect in view.graph_nodes.values())
+    assert view.graph_rect.left >= view.scene_rect.right
+
+
+def test_resource_click_inspects_proof_without_changing_local_ego(view, monkeypatch):
+    view._action("graph")
+    view.inspect(display_frame(view))
+    resource = next(key for key in view.graph_nodes if key.startswith("resource:"))
+    selected = view.selected
+    view.no_window = False
+    monkeypatch.setattr(
+        pygame.event,
+        "get",
+        lambda: [
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN, button=1, pos=view.graph_nodes[resource].center
+            )
+        ],
+    )
+    view._handle_event()
+    assert view.inspected_node == resource and view.selected == selected
+    assert any("Occupé par" in text for text, _ in view._information_lines())
+
+
+def test_diagnostic_details_and_help_leave_traffic_visible(view):
+    view._action("graph")
+    view.inspect(display_frame(view))
+    view._action("details")
+    assert view.scene_rect.width > 0 and view.graph_rect.width > 0
+    assert view.details_rect.height == 0
+    view._action("help")
+    view.inspect(display_frame(view))
+    assert view.label_positions and view.scene_rect.right <= view.panel_rect.left
 
 
 def test_initial_window_reserves_space_for_windows_frame_and_taskbar():

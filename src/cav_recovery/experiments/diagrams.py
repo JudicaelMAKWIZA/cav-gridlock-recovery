@@ -28,7 +28,7 @@ def heading(view, title, explanation):
     """Réserve la place du titre et de la portée avant de dessiner les données."""
     import pygame
 
-    rect = view.scene_rect
+    rect = view.graph_rect
     pygame.draw.rect(view.screen_canvas, BACKGROUND, rect)
     y = text_lines(
         view, title, (rect.x + 16, rect.y + 12), rect.width - 32, color=(131, 214, 226)
@@ -47,120 +47,135 @@ def heading(view, title, explanation):
 
 
 def draw_network(view, *, communication=False):
-    """Une flèche représente un lien existant, sans en déduire un nouveau lien causal."""
+    """Dessine le graphe typé dans le panneau compagnon, sans couvrir le trafic."""
     import pygame
-
-    graph = view.frame["graphs"].get(view.selected, {})
-    if communication:
-        pairs = view._useful_links(graph)
-        view.displayed_links = pairs
-        edges = [(a, b, (91, 165, 242)) for a, b in pairs]
-        title = "V2V — échanges liés à " + label(view.selected or "—")
-        note = (
-            "Flèche : émetteur vers destinataire. Livraisons réelles des 0,6 dernières "
-            "secondes ; canaux regroupés. U : reçus utiles / tous les liens de l'ego."
-        )
-    else:
-        current = [
-            edge for edge in graph.get("edges", []) if edge["state"] == "CURRENT"
-        ]
-        edges = [
-            (
-                edge["requester"],
-                edge["blocker"],
-                COLORS[
-                    "CONFIRMED_OBSTRUCTION"
-                    if edge["level"] == "CONFIRMED"
-                    else "SUSPECTED"
-                ],
-            )
-            for edge in current
-        ]
-        title = "C-RDG — vue locale reçue par " + label(view.selected or "—")
-        note = (
-            "Flèche : demandeur vers bloqueur. Rouge : relation confirmée ; jaune : "
-            "relation suspectée. Le graphe partiel ne représente pas l'oracle global."
-        )
-    plot = heading(view, title, note)
-    keys = {key for a, b, _ in edges for key in (a, b)}
-    keys.discard(view.selected)
-    ordered = sorted(keys, key=lambda key: (len(label(key)), label(key)))
-    page_size = max(
-        7,
-        min(
-            29,
-            int(2 * math.pi * max(30, min(plot.width, plot.height) / 2 - 32) / 42) - 1,
-        ),
+    from .info_graph import (
+        physical_snapshot,
+        detector_relations,
+        message_snapshot,
+        graph_pages,
+        graph_positions,
     )
-    pages = max(1, math.ceil(len(ordered) / page_size))
-    view.diagram_page %= pages
-    visible = ordered[
-        view.diagram_page * page_size : (view.diagram_page + 1) * page_size
+
+    if communication:
+        pairs = set(view._useful_links(view.frame["graphs"].get(view.selected, {})))
+        view.displayed_links = sorted(pairs)
+        snapshot = message_snapshot(
+            view.recent_messages.values(),
+            pairs,
+            view.message_aliases,
+            useful=view.v2v_mode == 1,
+        )
+        title = "INFO V2V · " + label(view.selected or "—")
+        note = "Ronds : CAV · Rectangles M : messages livrés. U : diagnostics utiles / tous les canaux."
+    else:
+        if view.active_view == "d01":
+            diagnostic = view.frame["diagnostics"].get(view.selected, {})
+            rows = detector_relations(diagnostic) if diagnostic else []
+            title = "INFO D01 · " + label(view.selected or "—")
+            note = "Ronds : CAV · Rectangles R : espaces occupés observés. Le statut temporel reste distinct."
+        else:
+            rows = [
+                edge
+                for edge in view.frame["graphs"].get(view.selected, {}).get("edges", [])
+                if edge["state"] == "CURRENT"
+            ]
+            title = "INFO C-RDG · " + label(view.selected or "—")
+            note = "Ronds : CAV · Rectangles R : espaces requis. Demandeur vers ressource vers occupant."
+        snapshot = physical_snapshot(rows, view.resource_aliases)
+    view.info_snapshot = snapshot
+    plot = heading(view, title, note)
+    budget = 18 if plot.height > 250 else 12
+    pages = graph_pages(
+        snapshot,
+        view.selected,
+        budget,
+        middle_budget=max(1, min(3, (plot.height - 30) // 48)),
+    )
+    view.diagram_page %= len(pages)
+    visible = pages[view.diagram_page]
+    edges = [
+        edge
+        for edge in snapshot["edges"]
+        if edge["source"] in visible and edge["target"] in visible
     ]
-    if view.selected:
-        visible.insert(0, view.selected)
-    if pages > 1:
+    view.visible_info_edges = edges
+    if len(pages) > 1:
+        view._button("diagram_prev", "<", (plot.right - 72, plot.y, 30, 24))
+        view._button("diagram_next", ">", (plot.right - 34, plot.y, 30, 24))
         text_lines(
             view,
-            f"Page {view.diagram_page + 1}/{pages} · gauche / droite : changer de page",
-            (plot.x, plot.y),
+            f"Voisinage {view.diagram_page + 1}/{len(pages)}",
+            plot.topleft,
+            plot.width - 80,
+            small=True,
+        )
+        plot.y += 30
+        plot.height = max(30, plot.height - 30)
+    layout = graph_positions(
+        tuple(sorted(visible)),
+        tuple(sorted((edge["source"], edge["target"]) for edge in edges)),
+    )
+    positions = {
+        key: (
+            plot.left + 28 + point[0] * max(1, plot.width - 56),
+            plot.top + 14 + point[1] * max(1, plot.height - 28),
+        )
+        for key, point in layout.items()
+    }
+    for edge in edges:
+        start, end = positions[edge["source"]], positions[edge["target"]]
+        distance = max(1, math.dist(start, end))
+        ux, uy = (end[0] - start[0]) / distance, (end[1] - start[1]) / distance
+        source_radius = (
+            30 if snapshot["nodes"][edge["source"]]["kind"] != "vehicle" else 19
+        )
+        target_radius = (
+            30 if snapshot["nodes"][edge["target"]]["kind"] != "vehicle" else 19
+        )
+        color = {
+            "CONFIRMED": COLORS["CONFIRMED_OBSTRUCTION"],
+            "SUSPECTED": COLORS["SUSPECTED"],
+            "MESSAGE": (91, 165, 242),
+        }.get(edge["level"], (101, 202, 189))
+        view._arrow(
+            (start[0] + ux * source_radius, start[1] + uy * source_radius),
+            (end[0] - ux * target_radius, end[1] - uy * target_radius),
+            color,
+        )
+    view.graph_nodes = {}
+    for key, point in positions.items():
+        node = snapshot["nodes"][key]
+        selected = key == view.inspected_node or key == "vehicle:" + str(view.selected)
+        if node["kind"] == "vehicle":
+            color = (255, 221, 139) if selected else (201, 215, 232)
+            pygame.draw.circle(view.screen_canvas, color, point, 17)
+            rect = pygame.Rect(point[0] - 19, point[1] - 19, 38, 38)
+        else:
+            color = (147, 204, 222) if node["kind"] == "message" else (167, 216, 197)
+            rect = pygame.Rect(point[0] - 26, point[1] - 15, 52, 30)
+            pygame.draw.rect(view.screen_canvas, color, rect, border_radius=3)
+        if selected:
+            pygame.draw.rect(
+                view.screen_canvas, INK, rect.inflate(5, 5), 1, border_radius=4
+            )
+        image = view.small_font.render(node["label"], True, (16, 27, 39))
+        view.screen_canvas.blit(image, image.get_rect(center=point))
+        view.graph_nodes[key] = rect
+    count = f"{len(visible)}/{len(snapshot['nodes'])} nœuds · {len(edges)}/{len(snapshot['edges'])} liens"
+    if not snapshot["nodes"]:
+        text_lines(
+            view,
+            "Aucune preuve actuelle à représenter.",
+            plot.topleft,
             plot.width,
             small=True,
         )
-        plot.y += 26
-        plot.height = max(30, plot.height - 26)
-        view._button("diagram_prev", "< Préc.", (plot.right - 164, plot.y, 76, 26))
-        view._button("diagram_next", "Suiv. >", (plot.right - 80, plot.y, 76, 26))
-        plot.y += 30
-        plot.height = max(30, plot.height - 30)
-    positions = {}
-    if communication and visible:
-        positions[visible[0]] = plot.center
-        ring = visible[1:]
-    else:
-        ring = visible
-    for index, key in enumerate(ring):
-        angle = -math.pi / 2 + index * 2 * math.pi / max(1, len(ring))
-        positions[key] = (
-            plot.centerx + max(12, plot.width / 2 - 32) * math.cos(angle),
-            plot.centery + max(12, plot.height / 2 - 32) * math.sin(angle),
-        )
-    if len(visible) == 1:
-        positions[visible[0]] = plot.center
-    drawn = 0
-    for a, b, color in edges:
-        if a not in positions or b not in positions or a == b:
-            continue
-        start, end = positions[a], positions[b]
-        distance = max(1, math.dist(start, end))
-        ux, uy = (end[0] - start[0]) / distance, (end[1] - start[1]) / distance
-        # Décaler les deux directions pour garder les flèches réciproques distinctes.
-        view._arrow(
-            (start[0] + ux * 21 - uy * 3, start[1] + uy * 21 + ux * 3),
-            (end[0] - ux * 21 - uy * 3, end[1] - uy * 21 + ux * 3),
-            color,
-        )
-        drawn += 1
-    view.graph_nodes = {}
-    for key, point in positions.items():
-        # La couleur d'un tiers ne doit pas suggérer que son diagnostic global
-        # ferait partie des connaissances reçues par l'ego.
-        pygame.draw.circle(view.screen_canvas, (183, 204, 226), point, 19)
-        if key == view.selected:
-            pygame.draw.circle(view.screen_canvas, INK, point, 23, 2)
-        image = view.small_font.render(label(key), True, (16, 27, 39))
-        view.screen_canvas.blit(image, image.get_rect(center=point))
-        view.graph_nodes[key] = pygame.Rect(point[0] - 24, point[1] - 24, 48, 48)
-    message = (
-        f"{drawn}/{len(edges)} liens représentés · clic sur un nœud : sélectionner"
-    )
-    if not edges:
-        message = "Aucun lien actuel étayé dans cette vue."
     text_lines(
         view,
-        message,
-        (view.scene_rect.x + 16, view.scene_rect.bottom - 26),
-        view.scene_rect.width - 32,
+        count,
+        (view.graph_rect.x + 12, view.graph_rect.bottom - 23),
+        view.graph_rect.width - 24,
         small=True,
         color=MUTED,
     )
@@ -243,64 +258,3 @@ def draw_d01(view):
         small=True,
         color=MUTED,
     )
-
-
-def draw_resources(view, polygons):
-    """Projette les empreintes de preuve dans une vue géométrique dédiée."""
-    import pygame
-
-    plot = heading(
-        view,
-        "Ressources — preuves reçues par " + label(view.selected or "—"),
-        "Contours des espaces occupés étayés ; jaune : suspicion, rouge : "
-        "confirmation. Les identifiants désignent demandeur vers bloqueur.",
-    )
-    edges = [
-        edge
-        for edge in view.frame["graphs"].get(view.selected, {}).get("edges", [])
-        if edge["state"] == "CURRENT"
-    ]
-    shapes = [
-        (edge, polygon) for edge in edges for polygon in polygons(edge["resource_wkt"])
-    ]
-    if not shapes:
-        text_lines(
-            view,
-            "Aucune ressource occupée étayée dans cette vue.",
-            plot.topleft,
-            plot.width,
-        )
-        return
-    points = [point for _, shape in shapes for point in shape]
-    xmin, xmax = min(p[0] for p in points), max(p[0] for p in points)
-    ymin, ymax = min(p[1] for p in points), max(p[1] for p in points)
-    scale = min(
-        (plot.width - 40) / max(1, xmax - xmin),
-        (plot.height - 40) / max(1, ymax - ymin),
-    )
-
-    def pixel(point):
-        return (
-            plot.centerx + (point[0] - (xmin + xmax) / 2) * scale,
-            plot.centery - (point[1] - (ymin + ymax) / 2) * scale,
-        )
-
-    labels = []
-    for edge, shape in shapes:
-        color = COLORS[
-            "CONFIRMED_OBSTRUCTION" if edge["level"] == "CONFIRMED" else "SUSPECTED"
-        ]
-        pygame.draw.polygon(
-            view.screen_canvas, color, [pixel(point) for point in shape], 2
-        )
-        name = label(edge["requester"]) + " vers " + label(edge["blocker"])
-        point = pixel(shape[0])
-        image = view.small_font.render(name, True, INK, BACKGROUND)
-        rect = image.get_rect(topleft=point).clamp(plot)
-        while (
-            any(rect.colliderect(other) for other in labels)
-            and rect.bottom + 20 <= plot.bottom
-        ):
-            rect.y += 20
-        labels.append(rect)
-        view.screen_canvas.blit(image, rect)
