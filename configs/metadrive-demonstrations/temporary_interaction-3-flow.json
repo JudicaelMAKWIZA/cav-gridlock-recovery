@@ -1,0 +1,20 @@
+{
+  "schema": "cgr-demo-recipe-1",
+  "base_scenario": "temporary_interaction-3",
+  "seed": 21109,
+  "overrides": {
+    "experiment_name": "temporary_interaction-3-flow",
+    "movement_profile": "short_right_turn_arrival_pulse",
+    "demand": {
+      "headway_s": 0.75,
+      "profile": "short_right_turn_arrival_pulse"
+    }
+  },
+  "agent_overrides": [],
+  "right_turn_pulse": {
+    "seed": 21109,
+    "headway_s": 0.75,
+    "jitter_s": 0.15
+  },
+  "expected_spec_id": "b567a042da074afed3d7f4e8"
+}

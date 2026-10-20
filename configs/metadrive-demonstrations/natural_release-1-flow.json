@@ -1,0 +1,35 @@
+{
+  "schema": "cgr-demo-recipe-1",
+  "base_scenario": "natural_release-1",
+  "seed": 21116,
+  "overrides": {
+    "experiment_name": "natural_release-1-flow",
+    "movement_profile": "finite_transverse_stream_with_defensive_crossing_queue",
+    "demand": {
+      "headway_s": 1.2,
+      "profile": "finite_transverse_stream_with_defensive_crossing_queue"
+    },
+    "active_limit": 24,
+    "density_level": 24
+  },
+  "agent_overrides": [
+    {
+      "origin": 0,
+      "values": {
+        "reaction_s": 0.5,
+        "clearance_m": 1.35,
+        "target_speed_mps": 3.6
+      }
+    },
+    {
+      "origin": 1,
+      "values": {
+        "reaction_s": 0.3,
+        "clearance_m": 0.55,
+        "target_speed_mps": 4.6
+      }
+    }
+  ],
+  "right_turn_pulse": null,
+  "expected_spec_id": "81422be16b6b068039209811"
+}

@@ -4,6 +4,9 @@ import copy
 import math
 
 from .v2v import V2VExchange
+from ..d01.observer import Config
+
+K04 = Config()
 
 STATUSES = {"NO_ALERT", "SUSPECTED", "CONFIRMED_OBSTRUCTION", "UNKNOWN"}
 REPORT_FIELDS = {
@@ -78,7 +81,7 @@ def validate_report(report, sender, at_s):
     observed, emitted = report["evidence_through_s"], report["emitted_at_s"]
     if (
         not all(finite(t) for t in (observed, emitted, at_s))
-        or not observed <= emitted <= at_s + 1e-7
+        or not 0 <= observed <= emitted <= at_s + 1e-7
     ):
         raise ReportError("future or malformed diagnostic times")
     for name, fields, boolean in (
@@ -97,6 +100,42 @@ def validate_report(report, sender, at_s):
                 raise ReportError("invalid diagnostic evidence numbers")
             if block["start_s"] > block["end_s"] or block["end_s"] > observed + 1e-7:
                 raise ReportError("future diagnostic evidence")
+    effect = report["own_effect"]
+    if effect is not None and (
+        type(effect["samples"]) is not int
+        or effect["samples"] < 1
+        or not 0 <= effect["low_speed_fraction"] <= 1
+    ):
+        raise ReportError("invalid own-effect sample coverage")
+    if report["status"] == "CONFIRMED_OBSTRUCTION":
+        persistence = report["persistence"]
+        expected_proofs = round(K04.persistence_s / K04.proof_s) + 1
+        expected_windows = round((K04.persistence_s - K04.effect_s) / K04.sample_s) + 1
+        if (
+            persistence is None
+            or effect is None
+            or not effect["qualifies"]
+            or not persistence["all_effect_windows_qualify"]
+            or type(persistence["proof_appointments"]) is not int
+            or persistence["proof_appointments"] != expected_proofs
+            or type(persistence["own_effect_windows"]) is not int
+            or persistence["own_effect_windows"] != expected_windows
+            or effect["samples"] != round(K04.effect_s / K04.sample_s) + 1
+            or effect["low_speed_fraction"] < K04.low_speed_fraction
+            or abs(effect["end_s"] - observed) > 1e-7
+            or abs(effect["end_s"] - effect["start_s"] - K04.effect_s) > 1e-7
+            or abs(persistence["end_s"] - observed) > 1e-7
+            or abs(persistence["end_s"] - persistence["start_s"] - K04.persistence_s)
+            > 1e-7
+            or abs(
+                persistence["first_effect_end_s"]
+                - persistence["start_s"]
+                - K04.effect_s
+            )
+            > 1e-7
+            or abs(persistence["last_effect_end_s"] - persistence["end_s"]) > 1e-7
+        ):
+            raise ReportError("confirmation without complete approved K04 coverage")
     if (
         not isinstance(report["anonymous_obstacles"], list)
         or len(report["anonymous_obstacles"]) > 16
@@ -114,6 +153,8 @@ def validate_report(report, sender, at_s):
             raise ReportError("invalid anonymous obstacle fields")
         if obstacle["identity"] is not None or obstacle["category"] != "unknown":
             raise ReportError("anonymous evidence cannot name a vehicle")
+        if not finite(obstacle["error_bound_m"]) or obstacle["error_bound_m"] < 0:
+            raise ReportError("invalid anonymous error bound")
         if type(obstacle["ray"]) is not int or not 0 <= obstacle["ray"] < 16:
             raise ReportError("invalid anonymous ray")
         if (
@@ -141,6 +182,11 @@ def validate_report(report, sender, at_s):
             raise ReportError("relation does not belong to sender")
         if relation["blocker"] == sender or not isinstance(relation["blocker"], str):
             raise ReportError("invalid blocker")
+        if any(
+            not isinstance(relation[field], str) or not 0 < len(relation[field]) <= 1024
+            for field in ("blocker", "message_id", "source")
+        ):
+            raise ReportError("invalid relation provenance")
         if (
             not finite(relation["observed_at_s"])
             or not finite(relation["error_bound_m"])
@@ -168,11 +214,21 @@ def validate_report(report, sender, at_s):
             or not relation["effect_qualifies"]
         ):
             raise ReportError("confirmation without persistence")
+    if report["status"] == "CONFIRMED_OBSTRUCTION" and not any(
+        relation["level"] == "CONFIRMED" for relation in report["relations"]
+    ):
+        raise ReportError("confirmed report without a current occupied movement")
     return report
 
 
 def make_report(diagnostic):
     """Ne transmet que le diagnostic propre et les preuves qui lui sont accessibles."""
+    # Ce schéma transporte le contrat approuvé ; une autre configuration devra
+    # être annoncée explicitement par un autre schéma expérimental.
+    from dataclasses import asdict
+
+    if diagnostic["config"] != asdict(K04):
+        raise ReportError("diagnostic report schema requires approved K04 parameters")
     effect = diagnostic["effect_window"]
     supported = bool(effect and effect["qualifies"])
     confirmed = diagnostic["status"] == "CONFIRMED_OBSTRUCTION"

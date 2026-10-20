@@ -95,7 +95,7 @@ class MovementGeometry:
         self.static_key = self.pose_key = None
 
     def _route_poses(self, station, distance, heading):
-        """?chantillonne le plan statique lorsque le conducteur ne d?clare pas de trajectoire."""
+        """Échantillonne le plan statique lorsque le conducteur ne déclare pas de trajectoire."""
 
         def at(s):
             q = self.route.interpolate(s)
@@ -147,6 +147,8 @@ class MovementGeometry:
             ego["width_m"],
             movement_lengths,
             data["own_controls"].get("planned_path_xyh_m"),
+            data["own_controls"].get("wheelbase_m"),
+            data["own_controls"].get("max_steering_rad"),
         )
         if pose == self.pose_key:
             return self.result

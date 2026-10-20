@@ -157,6 +157,8 @@ class ExperimentView(TopDownView):
                 diagnostic["status"],
                 "Motif : " + diagnostic["reason"],
                 "Destination : " + diagnostic["destination"],
+                f"Vitesse : {diagnostic['own_state']['signed_speed_mps']:.2f} m/s",
+                f"Demandée / acceptée : {diagnostic['own_controls']['requested_speed_mps']:.1f} / {diagnostic['own_controls']['accepted_speed_mps']:.1f} m/s",
                 f"Début preuve : {diagnostic['coverage']['series_start_s']}",
                 f"Début effet : {diagnostic['coverage']['effect_start_s']}",
                 f"Rendez-vous : {len(diagnostic['coverage']['proof_times_s'])}",
@@ -187,12 +189,17 @@ class ExperimentView(TopDownView):
         independent = self.frame.get("independent_reference")
         if independent is not None:
             lines.append(
-                f"Réf. globale à {independent['at_s']:.1f}s : {len(independent['affected_requesters'])}"
+                f"Réf. native (préfixe) : {len(independent['affected_requesters'])}"
             )
         for group in graph.get("groups", [])[:2]:
             lines.append(
                 "Affectés : "
-                + ", ".join(label(key) for key in group["affected_requesters"])
+                + ", ".join(label(key) for key in group["affected_requesters"][:6])
+                + (
+                    f" (+{len(group['affected_requesters']) - 6})"
+                    if len(group["affected_requesters"]) > 6
+                    else ""
+                )
             )
         lines += ["", "Messages V2V réellement reçus :"]
         inbox = self.frame["measurements"].get(self.selected, {}).get("v2v")

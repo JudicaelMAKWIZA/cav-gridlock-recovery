@@ -143,8 +143,10 @@ def main(argv=None):
         print(json.dumps(replay(args.recorded_experiment, args.output_dir), indent=2))
         return 0
     if args.command == "run-config":
+        from .configuration import load_specification
+
         result = run_spec(
-            json.loads(args.configuration.read_text("utf-8")),
+            load_specification(args.configuration),
             args.output_dir,
             args.gui,
             sources,

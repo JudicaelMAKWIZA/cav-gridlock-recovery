@@ -41,6 +41,11 @@ class LocalCRDG:
             raise ReportError("wrong ego or noncausal graph update")
         self.last_time = at_s
         reports = [(make_report(diagnostic), "own", at_s + 1.2, None)]
+        if knowledge is not None and (
+            not isinstance(knowledge, dict)
+            or not isinstance(knowledge.get("received", {}), dict)
+        ):
+            raise ReportError("invalid diagnostic mailbox")
         for sender, entry in sorted((knowledge or {}).get("received", {}).items()):
             if not isinstance(entry, dict) or set(entry) != {
                 "received_at_s",
@@ -62,9 +67,21 @@ class LocalCRDG:
             if (
                 not isinstance(message, dict)
                 or set(message) != fields
+                or type(message["protocol_version"]) is not int
                 or message["protocol_version"] != 1
             ):
                 raise ReportError("invalid diagnostic message fields")
+            position = message["position_xy_m"]
+            if (
+                not isinstance(position, (list, tuple))
+                or len(position) != 2
+                or not all(finite(value) for value in position)
+                or type(message["sequence_number"]) is not int
+                or message["sequence_number"] < 1
+                or not isinstance(message["message_id"], str)
+                or not message["message_id"]
+            ):
+                raise ReportError("invalid diagnostic envelope")
             if not all(
                 finite(message[key])
                 for key in ("observed_at_s", "sent_at_s", "valid_until_s")
@@ -72,11 +89,19 @@ class LocalCRDG:
                 raise ReportError("invalid receipt times")
             if (
                 sender != message["sender_id"]
+                or sender == self.ego_id
+                or not 0 <= message["observed_at_s"] <= message["sent_at_s"]
                 or not message["sent_at_s"] <= entry["received_at_s"] <= at_s + 1e-7
+                or entry["received_at_s"] > message["valid_until_s"] + 1e-7
             ):
                 raise ReportError("invalid report receipt")
             if at_s <= message["valid_until_s"] + 1e-7:
                 report = validate_report(message["report"], sender, at_s)
+                if (
+                    abs(report["evidence_through_s"] - message["observed_at_s"]) > 1e-7
+                    or abs(report["emitted_at_s"] - message["sent_at_s"]) > 1e-7
+                ):
+                    raise ReportError("diagnostic envelope does not match its evidence")
                 reports.append(
                     (
                         report,

@@ -506,6 +506,8 @@ def evaluate_episode(folder):
                     released_at_s=event["end_s"],
                     subsequent_progress_m=gain,
                     previously_confirmed=event["confirmed"],
+                    effect_established=bool(event["effect_intervals"]),
+                    physical_effect_s=event["movement_effect_duration_s"],
                 )
             )
     situation = spec.get("requested_situation")
@@ -513,14 +515,16 @@ def evaluate_episode(folder):
     rules = dict(
         nominal=negative,
         dense_progressing=negative and native["traffic"].get("peak_active", 0) >= 12,
-        temporary_interaction=negative and bool(released),
+        temporary_interaction=negative and bool(resumed),
         individual_obstruction=reference["label"] == "POSITIVE_CONFIRMED",
         partial_observability=fully_observable["global_current_relations"]
         > fully_observable["one_hop_available_relations"],
-        natural_release=bool(resumed),
+        natural_release=any(release["effect_established"] for release in resumed),
         collective=bool(group_timeline),
     )
     summary = dict(
+        schema="integrated-evaluation-2",
+        evaluation_code_sha256=file_sha256(Path(__file__)),
         name=folder.name,
         topology=topology,
         seed=spec.get("seed"),
@@ -576,7 +580,18 @@ def evaluate_episode(folder):
         scope="development_demonstrations_not_reserved_M02_test",
         statistical_unit="episode; frame counts are descriptive, not independent samples",
     )
-    json_file(folder / "evaluation/results.json", summary)
+    result_path = folder / "evaluation/results.json"
+    if result_path.exists():
+        previous = json.loads(result_path.read_text("utf-8"))
+        if previous.get("evaluation_code_sha256") != summary["evaluation_code_sha256"]:
+            previous_path = (
+                folder
+                / "evaluation"
+                / ("results-previous-" + file_sha256(result_path)[:12] + ".json")
+            )
+            if not previous_path.exists():
+                previous_path.write_bytes(result_path.read_bytes())
+    json_file(result_path, summary)
     json_file(folder / "evaluation/collective-reference.json", group_timeline)
     return summary
 
@@ -586,9 +601,13 @@ def evaluate_campaign(root):
     summaries = []
     for complete in sorted(root.glob("*/complete.json")):
         result_path = complete.parent / "evaluation/results.json"
+        cached = (
+            json.loads(result_path.read_text("utf-8")) if result_path.exists() else None
+        )
         summary = (
-            json.loads(result_path.read_text("utf-8"))
-            if result_path.exists()
+            cached
+            if cached
+            and cached.get("evaluation_code_sha256") == file_sha256(Path(__file__))
             else evaluate_episode(complete.parent)
         )
         summaries.append(summary)
