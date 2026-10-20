@@ -228,3 +228,126 @@ def test_received_record_order_does_not_change_diagnostic_or_caller_input():
     q["v2v"]["received"].reverse();before=copy.deepcopy(q)
     assert EgoObserver().update(p)==EgoObserver().update(q)
     assert q==before
+
+
+def delayed_occupation(first_proof_s=10.4, end_s=40.4):
+    """L'ego est déjà arrêté avant la première occupation connue."""
+    rows = []
+    for tick in range(round((end_s - .4) / .2) + 1):
+        row = packet(round(.4 + tick * .2, 7))
+        if row["decision_at_s"] < first_proof_s:
+            row["v2v"]["received"] = []
+        rows.append(row)
+    return rows
+
+
+@pytest.mark.parametrize("first_proof_s", [10.4, 10.8, 20.4])
+def test_preexisting_stop_never_counts_before_first_occupation(first_proof_s):
+    deadline = round(first_proof_s + 30., 7)
+    _, outputs = run(delayed_occupation(first_proof_s, deadline))
+    assert all(row["status"] != "CONFIRMED_OBSTRUCTION" for row in outputs[:-1])
+    final = outputs[-1]
+    assert final["status"] == "CONFIRMED_OBSTRUCTION"
+    assert final["emitted_at_s"] == deadline
+    coverage = final["coverage"]
+    assert coverage["series_start_s"] == first_proof_s
+    assert coverage["effect_start_s"] >= first_proof_s
+    assert coverage["proof_times_s"] == pytest.approx(
+        [first_proof_s + .4 * index for index in range(76)]
+    )
+    window = coverage["persistence_window"]
+    assert window["start_s"] == pytest.approx(first_proof_s)
+    assert window["proof_appointments"] == 76
+    assert window["own_effect_windows"] == 126
+    assert window["first_effect_end_s"] == pytest.approx(first_proof_s + 5.)
+    assert window["last_effect_end_s"] == deadline
+    for row in outputs:
+        if row["coverage"]["effect_start_s"] is not None:
+            assert row["coverage"]["effect_start_s"] >= row["coverage"]["series_start_s"]
+    if first_proof_s == 10.4:
+        premature = next(row for row in outputs if row["emitted_at_s"] == 35.6)
+        assert premature["status"] != "CONFIRMED_OBSTRUCTION"
+        assert premature["coverage"]["persistence_window"] is None
+
+
+@pytest.mark.parametrize("missing_s", [10.4, 30., 30.4])
+def test_interruption_requires_thirty_seconds_of_new_proof(missing_s):
+    restart = round(missing_s + .4, 7)
+    deadline = round(restart + 30., 7)
+    rows = delayed_occupation(.4, deadline)
+    next(row for row in rows if row["decision_at_s"] == missing_s)["v2v"]["received"] = []
+    _, outputs = run(rows)
+    assert not any(row["status"] == "CONFIRMED_OBSTRUCTION" for row in outputs[:-1])
+    assert outputs[-1]["status"] == "CONFIRMED_OBSTRUCTION"
+    assert outputs[-1]["coverage"]["series_start_s"] == restart
+    assert outputs[-1]["coverage"]["effect_start_s"] >= restart
+    assert outputs[-1]["coverage"]["persistence_window"]["start_s"] == pytest.approx(restart)
+
+
+def test_all_own_effect_windows_must_qualify_during_persistence():
+    rows = []
+    position = 0.
+    for tick in range(201):
+        at = round(.4 + .2 * tick, 7)
+        speed = .2 if 10. <= at <= 11. else 0.
+        position += speed * .2
+        rows.append(packet(at, ego_x=position, speed=speed))
+    _, outputs = run(rows)
+    assert any(row["effect_window"] and not row["effect_window"]["qualifies"]
+               for row in outputs)
+    assert not any(row["status"] == "CONFIRMED_OBSTRUCTION" for row in outputs[:-1])
+    final = outputs[-1]
+    assert final["emitted_at_s"] == 40.4
+    assert final["status"] == "CONFIRMED_OBSTRUCTION"
+    assert final["coverage"]["series_start_s"] == .4
+    assert final["coverage"]["persistence_window"]["start_s"] == pytest.approx(10.4)
+
+
+@pytest.mark.parametrize("missing_s", [.4, 10.4, 30.])
+def test_elapsed_time_cannot_replace_an_unavailable_proof_record(missing_s):
+    """Une preuve perdue dans l'historique ne peut plus étayer le verdict."""
+    observer, _ = run(fixture_a()[:-1])
+    missing = next(row for row in observer.proofs if row["time_s"] == missing_s)
+    observer.proofs.remove(missing)
+    result = observer.update(packet(30.4))
+    assert result["status"] != "CONFIRMED_OBSTRUCTION"
+    assert not result["historical_confirmations"]
+
+
+def test_elapsed_time_cannot_replace_an_unavailable_own_effect_window():
+    observer, _ = run(fixture_a()[:-1])
+    observer.effect_windows.remove((10.4, True))
+    result = observer.update(packet(30.4))
+    assert result["status"] != "CONFIRMED_OBSTRUCTION"
+    assert result["coverage"]["persistence_window"] is None
+
+
+def test_last_appointment_and_intermediate_update_do_not_round_up_persistence():
+    _, outputs = run(delayed_occupation())
+    for at in (40., 40.2):
+        row = next(row for row in outputs if row["emitted_at_s"] == at)
+        assert row["status"] != "CONFIRMED_OBSTRUCTION"
+        assert row["coverage"]["persistence_window"] is None
+    assert outputs[-1]["status"] == "CONFIRMED_OBSTRUCTION"
+
+
+def test_non_grid_persistence_waits_for_the_next_complete_appointment():
+    _, outputs = run(delayed_occupation(end_s=40.8), Config(persistence_s=30.2, history_s=35.2))
+    assert not any(row["status"] == "CONFIRMED_OBSTRUCTION" for row in outputs[:-1])
+    assert outputs[-1]["status"] == "CONFIRMED_OBSTRUCTION"
+    window = outputs[-1]["coverage"]["persistence_window"]
+    assert window["start_s"] == pytest.approx(10.6)
+    assert window["proof_appointments"] == 76
+    assert window["own_effect_windows"] == 127
+
+
+def test_rolling_history_preserves_complete_persistence_without_unbounded_growth():
+    observer, outputs = run(delayed_occupation(.4, 70.4))
+    final = outputs[-1]
+    assert final["status"] == "CONFIRMED_OBSTRUCTION"
+    assert final["coverage"]["history_truncated"]
+    assert final["coverage"]["persistence_window"]["start_s"] == pytest.approx(40.4)
+    assert final["coverage"]["persistence_window"]["proof_appointments"] == 76
+    assert len(observer.history) <= 176
+    assert len(observer.effect_windows) <= 176
+    assert len(observer.proofs) <= 89

@@ -42,6 +42,8 @@ class EgoObserver:
         self.geometry=MovementGeometry()
         self.history=deque(maxlen=math.ceil(self.config.history_s/.2)+1)
         self.proofs=deque(maxlen=math.ceil(self.config.history_s/.4)+1)
+        self.effect_windows=deque(maxlen=math.ceil(self.config.history_s/.2)+1)
+        self.persistence_window=None
         self.events=deque(maxlen=256)
         self.confirmations=deque(maxlen=64)
         self.seen=OrderedDict()
@@ -69,6 +71,8 @@ class EgoObserver:
                         resource_bounds_xy_m=list(self.anchor.bounds),occupant_intervals=closed)
         self.series_start=self.effect_start=self.anchor=self.last_proof=None
         self.proofs.clear();self.occupants=[];self.confirmed_at=None
+        self.effect_windows.clear()
+        self.persistence_window=None
         self.lost=kind=="OBSERVATION_LOST"
 
     def _effect(self,t,length):
@@ -84,6 +88,49 @@ class EgoObserver:
         return dict(start_s=start,end_s=t,samples=len(rows),progress_m=progress,low_speed_fraction=low,
                     qualifies=0<=progress<length*self.config.progression_lengths and low>=self.config.low_speed_fraction)
 
+    def _covered_persistence(self, t):
+        """Vérifie les preuves et les fenêtres propres sur toute la persistance.
+
+        L'immobilisation antérieure à l'occupation ne compte pas. Les cinq
+        premières secondes constituent la première fenêtre d'effet ; chaque
+        fenêtre glissante suivante doit aussi être recevable à 5 Hz.
+        """
+        start = t - self.config.persistence_s
+        if self.series_start is None or self.effect_start is None:
+            return None
+        if start < max(self.series_start, self.effect_start) - EPS_TIME:
+            return None
+
+        origin = self.config.proof_origin_s
+        cadence = self.config.proof_s
+        first_tick = math.ceil((start - origin - EPS_TIME) / cadence)
+        last_tick = math.floor((t - origin + EPS_TIME) / cadence)
+        expected_proofs = [origin + tick * cadence
+                           for tick in range(first_tick, last_tick + 1)]
+        proof_times = [row["time_s"] for row in self.proofs
+                       if row["time_s"] >= start - EPS_TIME]
+        if len(proof_times) != len(expected_proofs):
+            return None
+        if any(abs(actual - expected) > EPS_TIME
+               for actual, expected in zip(proof_times, expected_proofs)):
+            return None
+
+        sample = self.config.sample_s
+        count = math.floor((self.config.persistence_s - self.config.effect_s
+                            + EPS_TIME) / sample) + 1
+        first_end = t - (count - 1) * sample
+        windows = [(at, qualifies) for at, qualifies in self.effect_windows
+                   if at >= first_end - EPS_TIME]
+        if len(windows) != count:
+            return None
+        if any(not qualifies or abs(at - (first_end + index * sample)) > EPS_TIME
+               for index, (at, qualifies) in enumerate(windows)):
+            return None
+        return dict(start_s=start, end_s=t,
+                    proof_appointments=len(proof_times),
+                    own_effect_windows=count, first_effect_end_s=first_end,
+                    last_effect_end_s=t, all_effect_windows_qualify=True)
+
     def _output(self,data,status,reason,*,geometry=None,anonymous=(),current=(),freshness=(),effect=None):
         t=data["decision_at_s"]
         proof_rows=list(self.proofs)
@@ -97,6 +144,7 @@ class EgoObserver:
             own_effect_samples=[dict(observed_at_s=q,mission_progress_m=p,signed_speed_mps=v) for q,p,v in self.history],
             coverage=dict(series_start_s=self.series_start,last_covered_s=self.last_proof,
                 effect_start_s=self.effect_start,proof_times_s=[r["time_s"] for r in proof_rows],
+                persistence_window=copy.deepcopy(self.persistence_window),
                 appointments=copy.deepcopy(proof_rows),continuous_between_samples=False,
                 intermediate_pose_hold=False,history_truncated=bool(proof_rows and self.series_start is not None and proof_rows[0]["time_s"]>self.series_start+EPS_TIME)),
             occupant_intervals=copy.deepcopy(self.occupants),historical_confirmations=copy.deepcopy(list(self.confirmations)),
@@ -112,6 +160,7 @@ class EgoObserver:
         # Always validate the public boundary; LocalInput cannot bypass it.
         if self.finished:raise InputError("observer is censored; use a new instance for another run")
         data=adapt(packet).data;t=data["decision_at_s"];ego=data["ego"];mission=data["mission"]
+        self.persistence_window=None
         if self.ego_id is not None and data["ego_id"]!=self.ego_id:
             raise InputError("one observer cannot consume another ego")
         if self.time_s is not None and t<=self.time_s+EPS_TIME:
@@ -204,19 +253,23 @@ class EgoObserver:
                     self._break(t,"KNOWN_RELATION_RELEASED" if released else "MISSING_CURRENT_CAV_OCCUPANCY",
                                 kind="RELEASE_OBSERVED" if released else "OBSERVATION_LOST")
         effect=self._effect(t,ego["length_m"])
+        self.effect_windows.append((t, bool(effect and effect["qualifies"])))
         if self.series_start is not None and t-self.series_start>=self.config.effect_s-EPS_TIME:
             if effect and effect["qualifies"]:
-                if self.effect_start is None:self.effect_start=effect["start_s"]
+                if self.effect_start is None:
+                    self.effect_start=max(self.series_start, effect["start_s"])
             else:self.effect_start=None
         progressed=previous_progress is not None and ego["mission_progress_m"]>previous_progress+1e-6
         if progressed and not self.resumed:
             self._event("MOVEMENT_RESUMED",t);self.resumed=True
         if not progressed:self.resumed=False
-        if current and appointment and self.effect_start is not None and t-self.effect_start>=self.config.persistence_s-EPS_TIME:
+        if current and appointment:
+            self.persistence_window=self._covered_persistence(t)
+        if self.persistence_window is not None:
             if self.confirmed_at is None:
                 self.confirmed_at=t
                 event=self._event("OBSTRUCTION_CONFIRMED",t,proof_start_s=self.series_start,effect_start_s=self.effect_start,
-                                  temporal_scope="sampled_0.4s")
+                                  temporal_scope="sampled_0.4s",persistence_window=copy.deepcopy(self.persistence_window))
                 self.confirmations.append(copy.deepcopy(event))
             status,reason="CONFIRMED_OBSTRUCTION","PERSISTENT_MOVEMENT_OBSTRUCTION"
         elif self.lost and not current:
