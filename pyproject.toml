@@ -23,6 +23,7 @@ metadrive = [
     "shapely==2.2.0",
     "pygame==2.6.1",
     "pillow==13.0.0",
+    "psutil==7.2.2",
 ]
 
 [tool.setuptools.packages.find]

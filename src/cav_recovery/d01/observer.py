@@ -46,8 +46,9 @@ class Config:
 class EgoObserver:
     """Maintient un historique indépendant par ego et renvoie des résultats détachés."""
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, *, detailed=True):
         self.config = config or Config()
+        self.detailed = detailed
         self.geometry = MovementGeometry()
         self.history = deque(maxlen=math.ceil(self.config.history_s / 0.2) + 1)
         self.proofs = deque(maxlen=math.ceil(self.config.history_s / 0.4) + 1)
@@ -213,17 +214,20 @@ class EgoObserver:
             effect_window=copy.deepcopy(effect),
             own_state=plain(data["ego"]),
             own_controls=plain(data["own_controls"]),
+            details_omitted=not self.detailed,
             own_effect_samples=[
                 dict(observed_at_s=q, mission_progress_m=p, signed_speed_mps=v)
                 for q, p, v in self.history
-            ],
+            ]
+            if self.detailed
+            else [],
             coverage=dict(
                 series_start_s=self.series_start,
                 last_covered_s=self.last_proof,
                 effect_start_s=self.effect_start,
                 proof_times_s=[r["time_s"] for r in proof_rows],
                 persistence_window=copy.deepcopy(self.persistence_window),
-                appointments=copy.deepcopy(proof_rows),
+                appointments=copy.deepcopy(proof_rows) if self.detailed else [],
                 continuous_between_samples=False,
                 intermediate_pose_hold=False,
                 history_truncated=bool(
@@ -234,7 +238,9 @@ class EgoObserver:
             ),
             occupant_intervals=copy.deepcopy(self.occupants),
             historical_confirmations=copy.deepcopy(list(self.confirmations)),
-            events=copy.deepcopy(list(self.events)),
+            events=copy.deepcopy(
+                list(self.events) if self.detailed else list(self.events)[-8:]
+            ),
             config=asdict(self.config),
             intervention_necessity="UNKNOWN",
             full_mission_impasse="NOT_ESTABLISHED",

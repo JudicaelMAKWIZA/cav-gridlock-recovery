@@ -7,6 +7,10 @@ import sys
 def main(argv=None, *, runner=None):
     """Charge uniquement le composant demandé, sans moteur au démarrage."""
     values = list(sys.argv[1:] if argv is None else argv)
+    if values[:1] == ["demo"]:
+        from .experiments.cli import main as run
+
+        return run(values[1:])
     if values[:1] == ["metadrive"]:
         from .metadrive.cli import main as run
 
@@ -26,6 +30,7 @@ def main(argv=None, *, runner=None):
     commands.add_parser("metadrive", help="Scénarios et simulation physique.")
     commands.add_parser("dataset", help="Génération, qualification et exports M02.")
     commands.add_parser("d01", help="Environnement d’essai individuel D01.")
+    commands.add_parser("demo", help="Détection intégrée, C-RDG et démonstrations.")
     parser.parse_args(values)
     parser.print_help()
     return 0

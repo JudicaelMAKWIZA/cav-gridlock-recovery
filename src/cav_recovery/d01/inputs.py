@@ -55,6 +55,8 @@ def _equal(value, expected, name):
 
 
 def freeze(value):
+    if isinstance(value, MappingProxyType):
+        return value
     if isinstance(value, dict):
         return MappingProxyType({k: freeze(v) for k, v in value.items()})
     if isinstance(value, list):
@@ -84,7 +86,22 @@ class LocalInput:
         return self.data["ego_id"]
 
 
+_VALIDATED = object()
+
+
+@dataclass(frozen=True)
+class _ValidatedInput(LocalInput):
+    seal: object
+
+
 def adapt(value):
+    """Accepte une mesure brute ou une entrée déjà validée par sa fabrique locale."""
+    if type(value) is _ValidatedInput and value.seal is _VALIDATED:
+        return value
+    return _adapt_dict(value)
+
+
+def _adapt_dict(value, static=None):
     """Valide chaque champ avant de construire une entrée immuable détachée.
 
     Une donnée invalide est refusée, jamais transformée en résultat négatif.
@@ -115,47 +132,69 @@ def adapt(value):
     for key in ("length_m", "width_m"):
         _number(ego[key], key, 0.01, 30)
     mission = value["mission"]
-    _keys(
-        mission,
-        "observed_at_s available_at_s version origin destination own_route_xy_m movement_id demand_forward",
-        "mission",
-    )
-    _times(mission, t, "mission")
-    for key in ("version", "origin", "destination", "movement_id"):
-        _text(mission[key], key)
-    if type(mission["demand_forward"]) is not bool:
-        raise InputError("demand_forward must be boolean")
-    route = mission["own_route_xy_m"]
-    if not isinstance(route, list) or not 2 <= len(route) <= 10000:
-        raise InputError("own route: 2..10000 points required")
-    for point in route:
-        _vector(point, 2, "own route point")
     road = value["map"]
-    _keys(
-        road,
-        "observed_at_s available_at_s version coordinate_frame drivable_polygons_xy_m lane_width_m rule_context",
-        "map",
-    )
+    if static is None:
+        _keys(
+            mission,
+            "observed_at_s available_at_s version origin destination own_route_xy_m movement_id demand_forward",
+            "mission",
+        )
+        for key in ("version", "origin", "destination", "movement_id"):
+            _text(mission[key], key)
+        if type(mission["demand_forward"]) is not bool:
+            raise InputError("demand_forward must be boolean")
+        route = mission["own_route_xy_m"]
+        if not isinstance(route, list) or not 2 <= len(route) <= 10000:
+            raise InputError("own route: 2..10000 points required")
+        for point in route:
+            _vector(point, 2, "own route point")
+        _keys(
+            road,
+            "observed_at_s available_at_s version coordinate_frame drivable_polygons_xy_m lane_width_m rule_context",
+            "map",
+        )
+        _text(road["version"], "map version")
+        _equal(road["coordinate_frame"], FRAME, "frame")
+        _number(road["lane_width_m"], "lane width", 1, 10)
+        if road["rule_context"] not in ("not_modelled", "ordinary_wait", "unknown"):
+            raise InputError("rule_context: unsupported rule (no inferred permission)")
+        polygons = road["drivable_polygons_xy_m"]
+        if not isinstance(polygons, list) or not 1 <= len(polygons) <= 1024:
+            raise InputError("map: bounded explicit polygons required")
+        for polygon in polygons:
+            if not isinstance(polygon, list) or not 3 <= len(polygon) <= 10000:
+                raise InputError("invalid map polygon")
+            for point in polygon:
+                _vector(point, 2, "map point")
+    elif (
+        type(static) is not LocalInputFactory
+        or mission is not static.mission
+        or road is not static.map
+    ):
+        raise InputError("unvalidated static context")
+    _times(mission, t, "mission")
     _times(road, t, "map")
-    _text(road["version"], "map version")
-    _equal(road["coordinate_frame"], FRAME, "frame")
-    _number(road["lane_width_m"], "lane width", 1, 10)
-    if road["rule_context"] not in ("not_modelled", "ordinary_wait", "unknown"):
-        raise InputError("rule_context: unsupported rule (no inferred permission)")
-    polygons = road["drivable_polygons_xy_m"]
-    if not isinstance(polygons, list) or not 1 <= len(polygons) <= 1024:
-        raise InputError("map: bounded explicit polygons required")
-    for polygon in polygons:
-        if not isinstance(polygon, list) or not 3 <= len(polygon) <= 10000:
-            raise InputError("invalid map polygon")
-        for point in polygon:
-            _vector(point, 2, "map point")
     controls = value["own_controls"]
-    _keys(
-        controls,
-        "observed_at_s available_at_s requested_speed_mps accepted_speed_mps native_action",
-        "own_controls",
-    )
+    if not isinstance(controls, dict):
+        raise InputError("own_controls must be an object")
+    fields = "observed_at_s available_at_s requested_speed_mps accepted_speed_mps native_action"
+    if "planned_path_xyh_m" in controls:
+        fields += " planned_path_xyh_m"
+        path = controls["planned_path_xyh_m"]
+        if not isinstance(path, list) or not 2 <= len(path) <= 256:
+            raise InputError("invalid own planned path")
+        for pose in path:
+            _vector(pose, 3, "own planned pose")
+        if "wheelbase_m" in controls or "max_steering_rad" in controls:
+            fields += " wheelbase_m max_steering_rad"
+            _number(controls.get("wheelbase_m"), "wheelbase", 0.1, ego["length_m"])
+            _number(
+                controls.get("max_steering_rad"),
+                "maximum steering",
+                0.01,
+                math.pi / 2 - 0.01,
+            )
+    _keys(controls, fields, "own_controls")
     _times(controls, t, "controls")
     for key in ("requested_speed_mps", "accepted_speed_mps"):
         _number(controls[key], key)
@@ -288,3 +327,43 @@ def message_age(entry, decision_at_s):
         if abs(decision_at_s - m["observed_at_s"]) <= EPS_TIME
         else "historical"
     )
+
+
+@dataclass(frozen=True)
+class LocalInputFactory:
+    """Valide une fois le plan et la carte immuables d'un véhicule.
+
+    Chaque mesure dynamique reste entièrement validée. Seule la copie des
+    blocs statiques déjà vérifiés est évitée ; LocalInput construit directement
+    par un appelant ne permet toujours pas de contourner la frontière.
+    """
+
+    ego_id: str
+    mission: Mapping
+    map: Mapping
+    initial: LocalInput
+
+    def __init__(self, initial_packet):
+        parsed = adapt(initial_packet)
+        object.__setattr__(self, "ego_id", parsed.ego_id)
+        object.__setattr__(self, "mission", parsed.data["mission"])
+        object.__setattr__(self, "map", parsed.data["map"])
+        object.__setattr__(self, "initial", _ValidatedInput(parsed.data, _VALIDATED))
+
+    def build(self, measurements):
+        _keys(
+            measurements,
+            "ego_id decision_at_s ego lidar own_controls v2v",
+            "measurements",
+        )
+        if measurements["ego_id"] != self.ego_id:
+            raise InputError("prepared context belongs to another ego")
+        packet = dict(
+            schema_version="F01-input-1",
+            contract_id="K04_APPROVED",
+            mission=self.mission,
+            map=self.map,
+            **measurements,
+        )
+        parsed = _adapt_dict(packet, static=self)
+        return _ValidatedInput(parsed.data, _VALIDATED)

@@ -5,6 +5,7 @@ import math
 
 
 PROTOCOL_VERSION = 1
+CLOCK_TOLERANCE_S = 1e-7
 
 
 class V2VExchange:
@@ -116,7 +117,7 @@ class V2VExchange:
                 events.append({"event": "joined", "time_s": time_s, "vehicle_id": item})
             self.local[item]["own"] = self._own_state(item, readings[item], time_s)
             for sender, entry in sorted(list(self.local[item]["received"].items())):
-                if time_s > entry["message"]["valid_until_s"]:
+                if time_s > entry["message"]["valid_until_s"] + CLOCK_TOLERANCE_S:
                     self.local[item]["expired"][sender] = {
                         "message_id": entry["message"]["message_id"],
                         "last_received_at_s": entry["received_at_s"],

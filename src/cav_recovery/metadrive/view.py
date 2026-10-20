@@ -10,12 +10,18 @@ from .observation import body
 
 class TopDownView(TopDownRenderer):
     def __init__(
-        self, *, window=True, labels=None, camera_position=(85, -10), scaling=6
+        self,
+        *,
+        window=True,
+        labels=None,
+        camera_position=(85, -10),
+        scaling=6,
+        screen_size=(1000, 760),
     ):
         self.user_closed = False
         super().__init__(
             window=window,
-            screen_size=(1000, 760),
+            screen_size=screen_size,
             camera_position=camera_position,
             scaling=scaling,
             show_agent_name=False,

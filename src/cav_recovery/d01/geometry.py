@@ -9,6 +9,65 @@ class GeometryError(ValueError):
     pass
 
 
+def planned_poses(data, distance):
+    """Lit uniquement le plan propre explicite, avec origine et longueur vérifiées."""
+    plan = data["own_controls"].get("planned_path_xyh_m")
+    if plan is None:
+        return None
+    ego = data["ego"]
+    if math.dist(plan[0][:2], ego["position_xy_m"]) > 2e-6:
+        raise GeometryError("OWN_PLAN_ORIGIN_MISMATCH")
+    if (
+        abs(
+            math.atan2(
+                math.sin(plan[0][2] - ego["heading_rad"]),
+                math.cos(plan[0][2] - ego["heading_rad"]),
+            )
+        )
+        > 2e-6
+    ):
+        raise GeometryError("OWN_PLAN_HEADING_MISMATCH")
+    result = [(tuple(plan[0][:2]), plan[0][2])]
+    travelled = 0.0
+    for first, last in zip(plan, plan[1:]):
+        segment = math.dist(first[:2], last[:2])
+        if not 0 < segment <= 0.500002:
+            raise GeometryError("OWN_PLAN_SAMPLING_UNSUPPORTED")
+        remaining = distance - travelled
+        fraction = min(1.0, remaining / segment)
+        rotation = math.atan2(
+            math.sin(last[2] - first[2]), math.cos(last[2] - first[2])
+        )
+        direction = math.atan2(last[1] - first[1], last[0] - first[0])
+        middle_heading = first[2] + rotation / 2
+        rounding_angle = 2e-6 / segment + 1e-6
+        if (
+            abs(
+                math.atan2(
+                    math.sin(direction - middle_heading),
+                    math.cos(direction - middle_heading),
+                )
+            )
+            > rounding_angle
+        ):
+            raise GeometryError("OWN_PLAN_NONHOLONOMIC_MISMATCH")
+        controls = data["own_controls"]
+        if "wheelbase_m" in controls:
+            limit = math.tan(controls["max_steering_rad"]) / controls["wheelbase_m"]
+            if abs(rotation) / segment > limit + rounding_angle / segment:
+                raise GeometryError("OWN_PLAN_STEERING_LIMIT")
+        result.append(
+            (
+                tuple(first[k] + fraction * (last[k] - first[k]) for k in (0, 1)),
+                first[2] + fraction * rotation,
+            )
+        )
+        travelled += segment
+        if travelled >= distance - 2e-6:
+            return result
+    raise GeometryError("INCOMPLETE_OWN_MOVEMENT")
+
+
 def footprint(position, heading, length, width):
     c, s = math.cos(heading), math.sin(heading)
     return Polygon(
@@ -35,6 +94,38 @@ class MovementGeometry:
     def __init__(self):
         self.static_key = self.pose_key = None
 
+    def _route_poses(self, station, distance, heading):
+        """?chantillonne le plan statique lorsque le conducteur ne d?clare pas de trajectoire."""
+
+        def at(s):
+            q = self.route.interpolate(s)
+            a = self.route.interpolate(max(0, s - 0.001))
+            b = self.route.interpolate(min(self.route.length, s + 0.001))
+            return (q.x, q.y), math.atan2(b.y - a.y, b.x - a.x)
+
+        _, tangent = at(station)
+        if (
+            abs(
+                math.atan2(
+                    math.sin(tangent - heading),
+                    math.cos(tangent - heading),
+                )
+            )
+            > 0.1
+        ):
+            raise GeometryError("OWN_HEADING_OFF_ROUTE")
+        # Les sommets du trajet complètent les échantillons curvilignes réguliers.
+        count = max(1, math.ceil(distance / 0.25))
+        stations = {station + distance * i / count for i in range(count + 1)}
+        arc = 0.0
+        coords = list(self.route.coords)
+        for a, b in zip(coords, coords[1:]):
+            arc += math.dist(a, b)
+            if station < arc < station + distance:
+                stations.add(arc)
+        poses = [at(s) for s in sorted(stations)]
+        return poses, tangent
+
     def build(self, data, movement_lengths):
         ego, mission, road = (data[k] for k in ("ego", "mission", "map"))
         key = (mission["own_route_xy_m"], road["drivable_polygons_xy_m"])
@@ -55,6 +146,7 @@ class MovementGeometry:
             ego["length_m"],
             ego["width_m"],
             movement_lengths,
+            data["own_controls"].get("planned_path_xyh_m"),
         )
         if pose == self.pose_key:
             return self.result
@@ -63,37 +155,15 @@ class MovementGeometry:
         distance = movement_lengths * ego["length_m"]
         if station + distance > self.route.length + 1e-7:
             raise GeometryError("INCOMPLETE_OWN_MOVEMENT")
-        if self.route.distance(point) > 0.05:
+        own_plan = planned_poses(data, distance)
+        if own_plan is None and self.route.distance(point) > 0.05:
             # Aucun raccord inventé ni affectation cachée de route n’est accepté.
             raise GeometryError("OWN_ROUTE_TRACKING_UNCERTAIN")
 
-        def at(s):
-            q = self.route.interpolate(s)
-            a = self.route.interpolate(max(0, s - 0.001))
-            b = self.route.interpolate(min(self.route.length, s + 0.001))
-            return (q.x, q.y), math.atan2(b.y - a.y, b.x - a.x)
-
-        _, tangent = at(station)
-        if (
-            abs(
-                math.atan2(
-                    math.sin(tangent - ego["heading_rad"]),
-                    math.cos(tangent - ego["heading_rad"]),
-                )
-            )
-            > 0.1
-        ):
-            raise GeometryError("OWN_HEADING_OFF_ROUTE")
-        # Les sommets du trajet complètent les échantillons curvilignes réguliers.
-        count = max(1, math.ceil(distance / 0.25))
-        stations = {station + distance * i / count for i in range(count + 1)}
-        arc = 0.0
-        coords = list(self.route.coords)
-        for a, b in zip(coords, coords[1:]):
-            arc += math.dist(a, b)
-            if station < arc < station + distance:
-                stations.add(arc)
-        poses = [at(s) for s in sorted(stations)]
+        if own_plan is None:
+            poses, tangent = self._route_poses(station, distance, ego["heading_rad"])
+        else:
+            poses, tangent = own_plan, ego["heading_rad"]
         straight = all(
             abs(math.atan2(math.sin(h - tangent), math.cos(h - tangent))) < 1e-10
             for _, h in poses
@@ -136,12 +206,24 @@ class MovementGeometry:
             station_m=station,
             distance_m=distance,
             error_m=pose_error(ego["length_m"], ego["width_m"]),
+            origin_xy_m=ego["position_xy_m"],
+            sweep_radius_m=max(
+                math.dist(position, ego["position_xy_m"]) for position, _ in poses
+            )
+            + radius,
+            eroded_geometries={},
         )
         self.pose_key = pose
         return self.result
 
 
 def body_evidence(message, geometry):
+    other_radius = math.hypot(message["length_m"], message["width_m"]) / 2
+    if (
+        math.dist(message["position_xy_m"], geometry["origin_xy_m"])
+        > geometry["sweep_radius_m"] + other_radius + 1e-5
+    ):
+        return None
     other = footprint(
         message["position_xy_m"],
         message["heading_rad"],
@@ -149,9 +231,18 @@ def body_evidence(message, geometry):
         message["width_m"],
     )
     error = geometry["error_m"] + pose_error(message["length_m"], message["width_m"])
-    if geometry["own"].buffer(-error).intersects(other.buffer(-error)):
+    if error not in geometry["eroded_geometries"]:
+        if len(geometry["eroded_geometries"]) >= 16:
+            geometry["eroded_geometries"].clear()
+        geometry["eroded_geometries"][error] = (
+            geometry["own"].buffer(-error),
+            geometry["required"].buffer(-error),
+        )
+    own_inner, required_inner = geometry["eroded_geometries"][error]
+    other_inner = other.buffer(-error)
+    if own_inner.intersects(other_inner):
         raise GeometryError("CURRENT_BODY_OVERLAP")
-    overlap = geometry["required"].buffer(-error).intersection(other.buffer(-error))
+    overlap = required_inner.intersection(other_inner)
     if overlap.area <= 0:
         return None
     return dict(
@@ -162,6 +253,7 @@ def body_evidence(message, geometry):
         intersection_envelope_xy_m=[
             list(p) for p in overlap.convex_hull.exterior.coords
         ],
+        resource_polygon_wkt=overlap.wkt,
         position_xy_m=list(message["position_xy_m"]),
         heading_rad=message["heading_rad"],
         length_m=message["length_m"],

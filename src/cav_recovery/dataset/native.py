@@ -12,7 +12,7 @@ from ..platform_support import peak_rss_kib
 import numpy as np
 import shapely
 from shapely.geometry import Polygon, LineString, Point
-from shapely.ops import unary_union
+from shapely.ops import unary_union, split
 from metadrive.component.block.base_block import BaseBlock
 from metadrive.component.lane.point_lane import PointLane
 from metadrive.component.lane.straight_lane import StraightLane
@@ -30,6 +30,37 @@ from ..metadrive.observation import body, rectangle, signed_speed
 from ..metadrive.native import missions_for, configuration_record
 from ..metadrive.cooperation import MetaDriveExchange
 from .qualify import qualify
+
+
+def local_drivable_regions(surface):
+    """Décompose les surfaces trouées sans déclarer leurs îlots franchissables.
+
+    Le contrat local représente une union de polygones simples. Une coupe passant
+    dans chaque îlot ouvre ses anneaux sans les remplir. Cette décomposition évite
+    les milliers de triangles et préserve la géométrie native, contrôlée ensuite.
+    """
+    regions = list(surface.geoms) if hasattr(surface, "geoms") else [surface]
+    result = []
+    pending = list(regions)
+    while pending:
+        region = pending.pop()
+        if region.interiors:
+            y = Polygon(region.interiors[0]).representative_point().y
+            min_x, _, max_x, _ = region.bounds
+            pieces = list(
+                split(region, LineString([(min_x - 1, y), (max_x + 1, y)])).geoms
+            )
+            if len(pieces) <= 1:
+                raise ValueError("native road island could not be represented locally")
+            pending.extend(pieces)
+        else:
+            result.append(region)
+        if len(result) + len(pending) > 1024:
+            raise ValueError("native local map exceeds the bounded polygon schema")
+    combined = shapely.union_all(result)
+    if combined.symmetric_difference(surface).area > 1e-8:
+        raise ValueError("local static map differs from the native road surface")
+    return result
 
 
 class DatasetBlock(BaseBlock):
@@ -320,7 +351,7 @@ class Route:
         )
 
 
-def simulate(spec, folder, contract):
+def simulate(spec, folder, contract, *, observer=None):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=False)
     start = time.perf_counter()
@@ -382,6 +413,24 @@ def simulate(spec, folder, contract):
             )
             surface_tolerance = surface.buffer(1e-5)
             shapely.prepare(surface_tolerance)
+            static_map = None
+            if observer is not None:
+                regions = local_drivable_regions(surface)
+                static_map = dict(
+                    observed_at_s=0.0,
+                    available_at_s=0.0,
+                    version="native-static-map",
+                    coordinate_frame="metadrive_local_xy_m",
+                    drivable_polygons_xy_m=[
+                        [
+                            [float(value) for value in point]
+                            for point in region.exterior.coords
+                        ]
+                        for region in regions
+                    ],
+                    lane_width_m=spec["topology"]["lane_width_m"],
+                    rule_context="not_modelled",
+                )
             metadata = dict(
                 vehicles={},
                 physics_columns=["x_m", "y_m", "heading_rad", "vx_mps", "vy_mps"],
@@ -429,6 +478,24 @@ def simulate(spec, folder, contract):
                 metadata["initial_progress_m"][key] = float(
                     routes[key].line.project(Point(v.position))
                 )
+                if observer is not None:
+                    observer.register(
+                        key,
+                        dict(
+                            observed_at_s=t,
+                            available_at_s=t,
+                            version="initial-own-plan",
+                            origin=str(agent_specs[key]["origin"]),
+                            destination=str(m.destination),
+                            own_route_xy_m=[
+                                [float(value) for value in point]
+                                for point in routes[key].line.coords
+                            ],
+                            movement_id=key + ":" + agent_specs[key]["movement_id"],
+                            demand_forward=True,
+                        ),
+                        static_map,
+                    )
                 dump(
                     streams["native_events"],
                     dict(
@@ -768,8 +835,13 @@ def simulate(spec, folder, contract):
                 counts.append(pose_count)
                 dump(streams["reference"], frame)
                 dump(streams["commands"], dict(time_s=t, commands=commands))
+                telemetry_started = time.perf_counter()
+                telemetry_events = []
                 if step:
-                    exchange.observe(t, v2v_rows)
+                    telemetry_events = exchange.observe(t, v2v_rows)
+                telemetry_ms = (time.perf_counter() - telemetry_started) * 1000
+                acquisition_started = time.perf_counter()
+                local_measurements = {}
                 for key, v in sorted(env.agents.items()):
                     rays = env.engine.get_sensor("lidar").perceive(
                         v,
@@ -779,6 +851,59 @@ def simulate(spec, folder, contract):
                         show=False,
                     )[0]
                     knowledge = exchange.knowledge(key)
+                    if observer is not None:
+                        from ..metadrive.planning import requested_path
+
+                        controls = commands[key]
+                        path = requested_path(
+                            routes[key],
+                            v.position,
+                            v.heading_theta,
+                            current[key]["speed_mps"],
+                            float(v.FRONT_WHEELBASE + v.REAR_WHEELBASE),
+                            math.radians(v.config["max_steering"]),
+                            1.2 * float(v.LENGTH),
+                        )
+                        local_measurements[key] = dict(
+                            ego_id=key,
+                            decision_at_s=t,
+                            ego=dict(
+                                observed_at_s=t,
+                                available_at_s=t,
+                                position_xy_m=measured(v.position),
+                                heading_rad=round(float(v.heading_theta), 6),
+                                signed_speed_mps=round(current[key]["speed_mps"], 6),
+                                velocity_xy_mps=measured(v.velocity),
+                                acceleration_xy_mps2=None
+                                if introduced[key] == t
+                                else measured(current[key]["acceleration_xy_mps2"]),
+                                mission_progress_m=round(current[key]["progress_m"], 6),
+                                length_m=float(v.LENGTH),
+                                width_m=float(v.WIDTH),
+                            ),
+                            lidar=dict(
+                                observed_at_s=t,
+                                available_at_s=t,
+                                source="native_lidar",
+                                num_lasers=16,
+                                range_m=30.0,
+                                height_m=1.2,
+                                phase_offset_rad=0.0,
+                                normalized_ranges=measured(rays),
+                                missing=False,
+                            ),
+                            own_controls=dict(
+                                observed_at_s=t,
+                                available_at_s=t,
+                                requested_speed_mps=controls["requested_speed_mps"],
+                                accepted_speed_mps=controls["accepted_speed_mps"],
+                                native_action=controls["action"],
+                                planned_path_xyh_m=path,
+                                wheelbase_m=float(v.FRONT_WHEELBASE + v.REAR_WHEELBASE),
+                                max_steering_rad=math.radians(v.config["max_steering"]),
+                            ),
+                            v2v=observer.project_mailbox(knowledge, t),
+                        )
                     dump(
                         streams["observations"],
                         dict(
@@ -796,6 +921,19 @@ def simulate(spec, folder, contract):
                             received_v2v=knowledge,
                             missing_mask=dict(lidar=False, v2v=not bool(knowledge)),
                         ),
+                    )
+                if observer is not None:
+                    acquisition_ms = (time.perf_counter() - acquisition_started) * 1000
+                    reference_started = time.perf_counter()
+                    if observer.gui:
+                        observer.inspect_reference(frame, metadata, not bool(errors))
+                    observer.observe(
+                        t,
+                        local_measurements,
+                        acquisition_ms=acquisition_ms,
+                        telemetry_ms=telemetry_ms,
+                        telemetry_events=telemetry_events,
+                        reference_ms=(time.perf_counter() - reference_started) * 1000,
                     )
                 samples += 1
                 if (
@@ -874,12 +1012,16 @@ def simulate(spec, folder, contract):
                 )
             )
         finally:
-            if pending_fine is not None:
-                dump(streams["physics"], pending_fine)
-            if env is not None:
-                if native_step is not None:
-                    env.engine.step_physics_world = native_step
-                env.close()
+            try:
+                if observer is not None:
+                    observer.finish(last_t)
+                if pending_fine is not None:
+                    dump(streams["physics"], pending_fine)
+            finally:
+                if env is not None:
+                    if native_step is not None:
+                        env.engine.step_physics_world = native_step
+                    env.close()
     integrity = dict(
         errors=errors,
         all_arrived=len(arrived) == len(spec["agents"]),
