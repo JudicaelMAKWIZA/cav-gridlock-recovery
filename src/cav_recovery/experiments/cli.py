@@ -85,7 +85,11 @@ def run_spec(spec, output, gui=False, expected=None):
         for name, payload in snapshot.items()
     ):
         raise ValueError("source capture does not match experiment identity")
-    session = DetectionSession(output, gui=gui)
+    session = DetectionSession(
+        output,
+        gui=gui,
+        display_context=dict(scenario=name, seed=spec["seed"], spec_id=identity),
+    )
     annotation = simulate(spec, output, Contract(), observer=session)
     for relative, payload in snapshot.items():
         target = output / "source-snapshot" / relative

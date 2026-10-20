@@ -17,8 +17,10 @@ class TopDownView(TopDownRenderer):
         camera_position=(85, -10),
         scaling=6,
         screen_size=(1000, 760),
+        film_size=(2000, 2000),
     ):
         self.user_closed = False
+        self.closed = False
         super().__init__(
             window=window,
             screen_size=screen_size,
@@ -27,6 +29,8 @@ class TopDownView(TopDownRenderer):
             show_agent_name=False,
             num_stack=1,
             draw_target_vehicle_trajectory=False,
+            film_size=film_size,
+            semantic_map=True,
         )
         self.labels = (
             dict(labels)
@@ -170,10 +174,15 @@ class TopDownView(TopDownRenderer):
                 ]
             self._draw_car(key, vehicle)
             footprints[key] = self.vehicle_pixels(vehicle)
-        width, height = self.screen_canvas.get_size()
+        viewport = getattr(self, "scene_rect", self.screen_canvas.get_rect())
+        width, height = viewport.size
         cx, cy = self._frame_canvas.pos2pix(*self.position)
-        offset = (cx - width / 2, cy - height / 2)
-        self.screen_canvas.blit(self._frame_canvas, (0, 0), (*offset, width, height))
+        offset = (cx - viewport.centerx, cy - viewport.centery)
+        self.screen_canvas.blit(
+            self._frame_canvas,
+            viewport.topleft,
+            (cx - width / 2, cy - height / 2, width, height),
+        )
         if self._vehicle_font is None:
             if not pygame.font.get_init():
                 pygame.font.init()
@@ -197,8 +206,14 @@ class TopDownView(TopDownRenderer):
             for dx, dy in ((18, -25), (18, 15), (-38, -25), (-38, 15), (18, -43)):
                 rect = label.get_rect(
                     topleft=(
-                        min(max(0, x + dx), width - label.get_width()),
-                        min(max(0, y + dy), height - label.get_height()),
+                        min(
+                            max(viewport.left, x + dx),
+                            viewport.right - label.get_width(),
+                        ),
+                        min(
+                            max(viewport.top, y + dy),
+                            viewport.bottom - label.get_height(),
+                        ),
                     )
                 )
                 if not any(
@@ -234,3 +249,31 @@ class TopDownView(TopDownRenderer):
                 event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
             ):
                 self.user_closed = True
+
+    def render(self, text, to_image=True, *args, **kwargs):
+        """Dessine nos silhouettes sans recopier l'historique natif inutilisé.
+
+        La fermeture précède tout accès aux surfaces SDL. Une fermeture demandée
+        pendant une pause ne dépend donc plus de la fin de la simulation.
+        """
+        if self.closed:
+            return None
+        self._handle_event()
+        if self.user_closed:
+            self.close()
+            return None
+        self.refresh()
+        self._draw(*args, **kwargs)
+        self._add_text(text)
+        self.blit()
+        if to_image:
+            from metadrive.obs.top_down_obs_impl import WorldSurface
+
+            return WorldSurface.to_cv2_image(self.screen_canvas)
+        return self.screen_canvas
+
+    def close(self):
+        """La vue et le simulateur peuvent demander la même fermeture."""
+        if not self.closed:
+            self.closed = True
+            super().close()

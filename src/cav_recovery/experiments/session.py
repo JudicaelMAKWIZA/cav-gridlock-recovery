@@ -70,7 +70,7 @@ class DetectionSession:
 
     project_mailbox = staticmethod(project_mailbox)
 
-    def __init__(self, output, *, gui=False, compare_local=True):
+    def __init__(self, output, *, gui=False, compare_local=True, display_context=None):
         self.output = Path(output)
         self.contexts = {}
         self.factories = {}
@@ -84,6 +84,7 @@ class DetectionSession:
         self.reasons = Counter()
         self.last = {}
         self.gui = gui
+        self.display_context = dict(display_context or {})
         self.compare_local = compare_local
         self.view = None
         self.finished = False
@@ -144,7 +145,13 @@ class DetectionSession:
             from .reference_view import PrefixReference
 
             self.reference_monitor = PrefixReference()
-        self.reference_stats = self.reference_monitor.update(frame, metadata, valid)
+        if self.view is not None and self.view.show_reference:
+            self.reference_stats = self.reference_monitor.update(frame, metadata, valid)
+        else:
+            # Conserver le préfixe est peu coûteux ; sa qualification est facultative.
+            # Ce tampon d'inspection ne rejoint jamais les entrées des CAV.
+            self.reference_monitor.frames.append(frame)
+            self.reference_stats = None
 
     def observe(
         self,
@@ -267,8 +274,12 @@ class DetectionSession:
             if self.view is None:
                 from .view import ExperimentView
 
-                self.view = ExperimentView(output=self.output)
-            self.view.inspect(self.last)
+                self.view = ExperimentView(
+                    output=self.output, context=self.display_context
+                )
+            if self.view.inspect(self.last) is False:
+                self.gui = False
+                print("Vue fermée proprement ; fin du calcul sans fenêtre.", flush=True)
             costs["visualization"] = (time.perf_counter() - begin) * 1000
         costs["detector_reports_crdg_total"] = sum(
             costs[key]
