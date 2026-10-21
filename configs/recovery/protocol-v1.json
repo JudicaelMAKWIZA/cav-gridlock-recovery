@@ -1,0 +1,41 @@
+{
+  "version": "REC-EVAL-1",
+  "status": "prerequisite_pilot_frozen_before_any_multiagent_training",
+  "historical_K04_unchanged": true,
+  "activation": "own_stall_35s_and_blocked_nominal_then_local_forward_probe_or_agreed_retreat",
+  "claims": "physical_and_cooperative_feasibility_not_K04_end_to_end_validation",
+  "metrics": {
+    "recovery_window_s": 10.0,
+    "progress_vehicle_lengths": 1.0,
+    "relapse_followup_s": 30.0,
+    "effect_window_s": 5.0,
+    "T_recovery": "t_conf_minus_t_diag_or_null_if_no_qualified_diagnostic",
+    "T_action": "t_conf_minus_first_applied_command_not_refused_proposal",
+    "T_end_to_end": "t_conf_minus_independent_physical_origin"
+  },
+  "training_reservation": {
+    "development_sources": "existing_integrated_catalogue_known_to_researcher",
+    "parent_manifest": "configs/recovery/partitions-v1.json",
+    "whole_parents_train_validation_test": [8, 4, 4],
+    "recipes_train_validation_test": [32, 16, 16],
+    "grouping": "geometry_parent_plus_flow_parent_whole_episode_not_windows",
+    "unseen_topology_test": "asymmetric_reserved_for_future_recovery_test_not_used_for_recovery_tuning",
+    "test_not_generated_or_evaluated": true,
+    "M02_partitions_not_reused_or_modified": true,
+    "limitation": "asymmetric_is_held_out_for_recovery_but_not_necessarily_for_historical_detectors; physical_validity_and_recoverability_still_unmeasured"
+  },
+  "domain": {
+    "forward_limit_mps": 2.0,
+    "gentle_forward_options": {"speed_mps": 0.4, "normalized_steering": [-0.3, 0.0, 0.3]},
+    "reverse_limit_mps": 0.6,
+    "reverse_cumulative_budget_m": 8.0,
+    "single_retreat_distance_m": 6.0,
+    "single_retreat_timeout_s": 25.0,
+    "post_retreat_yield_s": 10.0,
+    "native_lidar_rays": 360,
+    "reverse_agreement_neighbors_within_m": 10.0,
+    "guard_assumptions": "native_exact_ego_CAV_bodies_width_ge_1.7m_acceleration_reserve_4mps2_stopping_deceleration_1mps2_not_universal_certificate"
+  },
+  "methods": ["nominal_same_local_guard", "deterministic_local", "future_shared_PPO_without_CRDG", "future_graph_recurrent_PPO"],
+  "prohibited": ["global_groups_in_actor", "pose_edits", "destination_edits", "forced_vehicle_removal", "test_tuning", "long_training_in_this_phase"]
+}

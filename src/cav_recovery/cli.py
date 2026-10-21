@@ -7,6 +7,10 @@ import sys
 def main(argv=None, *, runner=None):
     """Charge uniquement le composant demandé, sans moteur au démarrage."""
     values = list(sys.argv[1:] if argv is None else argv)
+    if values[:1] == ["recovery"]:
+        from .recovery.cli import main as run
+
+        return run(values[1:])
     if values[:1] == ["lab"]:
         from .laboratory.cli import main as run
 
@@ -36,6 +40,7 @@ def main(argv=None, *, runner=None):
     commands.add_parser("d01", help="Environnement d’essai individuel D01.")
     commands.add_parser("demo", help="Détection intégrée, C-RDG et démonstrations.")
     commands.add_parser("lab", help="Laboratoire causal et apprentissage TCN CPU.")
+    commands.add_parser("recovery", help="Prérequis physiques et coopération expérimentale.")
     parser.parse_args(values)
     parser.print_help()
     return 0

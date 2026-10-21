@@ -1,0 +1,538 @@
+{
+  "version": "REC-SPLIT-1",
+  "groups": [
+    {
+      "partition": "train",
+      "parent_id": "production:0025000",
+      "lineage_group": "0fb2be43e4508b807d27",
+      "family": "four_arm",
+      "active_limit": 24,
+      "recipes": [
+        {
+          "index": 100000,
+          "phase": "production",
+          "seed": 101000,
+          "configuration_sha256": "019e8e70ba8c83c84f6ff6980ec4f7fb8fc86675780abac00b6a03551e641436"
+        },
+        {
+          "index": 100001,
+          "phase": "production",
+          "seed": 101001,
+          "configuration_sha256": "fa047f8465470af40db298901b23cc978403f17dc6e469dc06030f33d09effe7"
+        },
+        {
+          "index": 100002,
+          "phase": "production",
+          "seed": 101002,
+          "configuration_sha256": "1e969fd28d95c831dd356ca28bf2dd62b48851fa4f1912a91d62f4b2db01c10c"
+        },
+        {
+          "index": 100003,
+          "phase": "production",
+          "seed": 101003,
+          "configuration_sha256": "4ec51db8fe5bcf9e580037e8b56066b5db8b3240b3ea0ce86f639ce8d05ee2b1"
+        }
+      ]
+    },
+    {
+      "partition": "train",
+      "parent_id": "production:0025001",
+      "lineage_group": "c906e694471b5985b5a3",
+      "family": "t_junction",
+      "active_limit": 24,
+      "recipes": [
+        {
+          "index": 100004,
+          "phase": "production",
+          "seed": 101004,
+          "configuration_sha256": "3e438f92acaed5dcc0274914c5702d2557e4b8ae0c245bf2a65d1baa058dcd44"
+        },
+        {
+          "index": 100005,
+          "phase": "production",
+          "seed": 101005,
+          "configuration_sha256": "11576e48ce63d480fe01998ef1bbc5fe27ab5747de77559809d4d929e72223f9"
+        },
+        {
+          "index": 100006,
+          "phase": "production",
+          "seed": 101006,
+          "configuration_sha256": "8555fd88b4e79ad6197a8a088287aa5e538c928eb0c9285122a56fe1ecd61d81"
+        },
+        {
+          "index": 100007,
+          "phase": "production",
+          "seed": 101007,
+          "configuration_sha256": "68b8d9136ea0b87bc9c97379a452ea5aa87dd28fb8a946a3cd32b2e134858b79"
+        }
+      ]
+    },
+    {
+      "partition": "train",
+      "parent_id": "production:0025002",
+      "lineage_group": "f25030049293eb653712",
+      "family": "oblique",
+      "active_limit": 24,
+      "recipes": [
+        {
+          "index": 100008,
+          "phase": "production",
+          "seed": 101008,
+          "configuration_sha256": "20f1177223c250ca70af08aebb7b8c549dde6e4a4fbfe7bc275882914ebfc39a"
+        },
+        {
+          "index": 100009,
+          "phase": "production",
+          "seed": 101009,
+          "configuration_sha256": "ee522a79eadfb6125986632384bcd5a79bee85bc9a9f28ff509c13ffa3ffc73d"
+        },
+        {
+          "index": 100010,
+          "phase": "production",
+          "seed": 101010,
+          "configuration_sha256": "8f6bf58e85e4298ae8cbcd4d2d9fc358ff5967c2175f81192cb03ddd5c7e3f5e"
+        },
+        {
+          "index": 100011,
+          "phase": "production",
+          "seed": 101011,
+          "configuration_sha256": "ec29ea7d13ef7557ca3e0e9d90f1d214a92086ab8fbc51fc0bb557ab12e9f6a2"
+        }
+      ]
+    },
+    {
+      "partition": "train",
+      "parent_id": "production:0025004",
+      "lineage_group": "e1144d4b0a9a77b0f28f",
+      "family": "four_arm",
+      "active_limit": 30,
+      "recipes": [
+        {
+          "index": 100016,
+          "phase": "production",
+          "seed": 101016,
+          "configuration_sha256": "64518384434456f174f8d47e497f13c9f7a931cfb43d6fe3782c4c86da0c8b96"
+        },
+        {
+          "index": 100017,
+          "phase": "production",
+          "seed": 101017,
+          "configuration_sha256": "a47a3b93fba4a4d1ee072cc998318da9df64b683fbd9c60d4ae7139ab781686a"
+        },
+        {
+          "index": 100018,
+          "phase": "production",
+          "seed": 101018,
+          "configuration_sha256": "0961961c339b311d69695c470b4bb4906eefaeeadc915b520593ea784874820b"
+        },
+        {
+          "index": 100019,
+          "phase": "production",
+          "seed": 101019,
+          "configuration_sha256": "953ee4e9501538361c81dbdee03fae85b66f714ef53d406d85f304cd6f9a311f"
+        }
+      ]
+    },
+    {
+      "partition": "train",
+      "parent_id": "production:0025005",
+      "lineage_group": "050596c56a6ec342504f",
+      "family": "t_junction",
+      "active_limit": 30,
+      "recipes": [
+        {
+          "index": 100020,
+          "phase": "production",
+          "seed": 101020,
+          "configuration_sha256": "4b33f7d8437196d14a3847208a7fe79216a34b4f870152d27f2fe4b98b1cb557"
+        },
+        {
+          "index": 100021,
+          "phase": "production",
+          "seed": 101021,
+          "configuration_sha256": "985e466387289079dd94bbbfadb4f30203f29365493589bff286f4cc88ecc255"
+        },
+        {
+          "index": 100022,
+          "phase": "production",
+          "seed": 101022,
+          "configuration_sha256": "dd9c21cb190e62a26e6e6cd7a768a0ba37dd8cedcdf5abb378dc28af1c5f1ab7"
+        },
+        {
+          "index": 100023,
+          "phase": "production",
+          "seed": 101023,
+          "configuration_sha256": "aa453f2c6ff0e3c4c238b0b046d60975af34eb49a6c531dc9625af81b13f0493"
+        }
+      ]
+    },
+    {
+      "partition": "train",
+      "parent_id": "production:0025006",
+      "lineage_group": "489e7bfecf1bcd39c352",
+      "family": "oblique",
+      "active_limit": 30,
+      "recipes": [
+        {
+          "index": 100024,
+          "phase": "production",
+          "seed": 101024,
+          "configuration_sha256": "285dc6289d4e5de5d891b8f73d4fb3538e47b078e74bfc30131d92d9d14a6740"
+        },
+        {
+          "index": 100025,
+          "phase": "production",
+          "seed": 101025,
+          "configuration_sha256": "b1e45f1b82e69e2e6cc7e8b8962c8060fa9b2825216f9f5da073213676e0ad4b"
+        },
+        {
+          "index": 100026,
+          "phase": "production",
+          "seed": 101026,
+          "configuration_sha256": "1d0c11df4a80a98c91057644598740981ce182b4622f9987c06f4593af113405"
+        },
+        {
+          "index": 100027,
+          "phase": "production",
+          "seed": 101027,
+          "configuration_sha256": "af9510bdd47dbe83dcb2deb8b8eb55b18a22abf3b1e7ad11b88fd81008cf3ec3"
+        }
+      ]
+    },
+    {
+      "partition": "train",
+      "parent_id": "production:0025008",
+      "lineage_group": "77ff1820183cc6ce5d2d",
+      "family": "four_arm",
+      "active_limit": 8,
+      "recipes": [
+        {
+          "index": 100032,
+          "phase": "production",
+          "seed": 101032,
+          "configuration_sha256": "e7797478c4c19d227af2b21d2507ecefc3c88e821cc3e9656024f4135a1f655b"
+        },
+        {
+          "index": 100033,
+          "phase": "production",
+          "seed": 101033,
+          "configuration_sha256": "ac7807dad4809f9f14c1d1ce044381b1db3a8db79bfdc8a8e73742717257adea"
+        },
+        {
+          "index": 100034,
+          "phase": "production",
+          "seed": 101034,
+          "configuration_sha256": "1c5f69150ce07ad5a95d24cdf6afa6bb2dde7378ca0c231e12b4ae032d2a9788"
+        },
+        {
+          "index": 100035,
+          "phase": "production",
+          "seed": 101035,
+          "configuration_sha256": "0ccfe3c0921578aa87c5e8bc907efbf7f35def3d78b5259f0a55ae80b16f4de7"
+        }
+      ]
+    },
+    {
+      "partition": "train",
+      "parent_id": "production:0025009",
+      "lineage_group": "c6af7e2947fc1afd97b0",
+      "family": "t_junction",
+      "active_limit": 8,
+      "recipes": [
+        {
+          "index": 100036,
+          "phase": "production",
+          "seed": 101036,
+          "configuration_sha256": "d35079f21d85de4d20444427c99862187cda7f428f19f9b6050860b04e2a19ec"
+        },
+        {
+          "index": 100037,
+          "phase": "production",
+          "seed": 101037,
+          "configuration_sha256": "6bf49f9b88e61abaaba636f49c3ef31a59fb2dd32180681a5b6357504a503299"
+        },
+        {
+          "index": 100038,
+          "phase": "production",
+          "seed": 101038,
+          "configuration_sha256": "af29524f374146cfb72ac3be4d1393b5d7d252900a970cfee33778e5d6d6f908"
+        },
+        {
+          "index": 100039,
+          "phase": "production",
+          "seed": 101039,
+          "configuration_sha256": "1a86f807266c71dcd5d4329a34240350ae1557ab1bf96bfb04c38b77d2725ec4"
+        }
+      ]
+    },
+    {
+      "partition": "validation",
+      "parent_id": "production:0025010",
+      "lineage_group": "63c4218e2c4e2f60ecbd",
+      "family": "oblique",
+      "active_limit": 8,
+      "recipes": [
+        {
+          "index": 100040,
+          "phase": "production",
+          "seed": 101040,
+          "configuration_sha256": "4e4ddc05430682aad68f5b6fa0e0b2398f6a077e6063ee82953a846d196ffa45"
+        },
+        {
+          "index": 100041,
+          "phase": "production",
+          "seed": 101041,
+          "configuration_sha256": "d610f76ba4926cb46896e7c3efd4c3a8c3e3feb41e8cd621e0fb4cc39214e554"
+        },
+        {
+          "index": 100042,
+          "phase": "production",
+          "seed": 101042,
+          "configuration_sha256": "faf2e5f15c50cc0a0992380f89d6436ca52ec767e52a1adc9fe0e6d7190d2d29"
+        },
+        {
+          "index": 100043,
+          "phase": "production",
+          "seed": 101043,
+          "configuration_sha256": "07c7c8f3ca11440c71a035418d8a785ec7efcfd3e1050e4773012d891ebbc6cf"
+        }
+      ]
+    },
+    {
+      "partition": "validation",
+      "parent_id": "production:0025012",
+      "lineage_group": "d9e92631c41a8c0e2279",
+      "family": "four_arm",
+      "active_limit": 16,
+      "recipes": [
+        {
+          "index": 100048,
+          "phase": "production",
+          "seed": 101048,
+          "configuration_sha256": "297a08e1ef2a9f06894c80b0d583cf0bbbc43765de614bf09b11dfd70adf1a65"
+        },
+        {
+          "index": 100049,
+          "phase": "production",
+          "seed": 101049,
+          "configuration_sha256": "fa89b18c15757f4924419e9c8bff3b3b5fcc443b0c023fe583bb523d8bfcafc8"
+        },
+        {
+          "index": 100050,
+          "phase": "production",
+          "seed": 101050,
+          "configuration_sha256": "1cd478747e6c1a079b65a5e042048281b90b867bd501c7acc1a6e26238df1f14"
+        },
+        {
+          "index": 100051,
+          "phase": "production",
+          "seed": 101051,
+          "configuration_sha256": "63e43b6a0acc336135bb03f2e39cd6e5dd0ba5f4a6371daeaae5dfc9176fc4ef"
+        }
+      ]
+    },
+    {
+      "partition": "validation",
+      "parent_id": "production:0025013",
+      "lineage_group": "1560f1de51ed7dc0830f",
+      "family": "t_junction",
+      "active_limit": 16,
+      "recipes": [
+        {
+          "index": 100052,
+          "phase": "production",
+          "seed": 101052,
+          "configuration_sha256": "4b3b086c98934b610c44b0963bd3f73471d9d500500551c51be8c3a7586ed1c9"
+        },
+        {
+          "index": 100053,
+          "phase": "production",
+          "seed": 101053,
+          "configuration_sha256": "1901fed35fa4c5d3add15acf21cdea3e7186ba4ccbd7b9a6d88244c38beea39d"
+        },
+        {
+          "index": 100054,
+          "phase": "production",
+          "seed": 101054,
+          "configuration_sha256": "3d41a04392a7a90bd8f5834c920359aec501d3ac39d6c4692074b84f26858dac"
+        },
+        {
+          "index": 100055,
+          "phase": "production",
+          "seed": 101055,
+          "configuration_sha256": "6621e236c9389e1a5be8bcb671bd4c202867a87744a29bb116c105d3a440c09c"
+        }
+      ]
+    },
+    {
+      "partition": "validation",
+      "parent_id": "production:0025014",
+      "lineage_group": "a7c47db0f8b2403d7bcd",
+      "family": "oblique",
+      "active_limit": 16,
+      "recipes": [
+        {
+          "index": 100056,
+          "phase": "production",
+          "seed": 101056,
+          "configuration_sha256": "37beae265d2c75668ff0718a97c37bb84eda8da5bd4c6baa29bc4592fabbb512"
+        },
+        {
+          "index": 100057,
+          "phase": "production",
+          "seed": 101057,
+          "configuration_sha256": "b55f301b8520ad24fd10be6505718638a320ca29f5a5c73da411ab044fbb047f"
+        },
+        {
+          "index": 100058,
+          "phase": "production",
+          "seed": 101058,
+          "configuration_sha256": "37c5fe7ba507f8f99ea136e539208f97a414406a63c7cb6943aeeb29142ce538"
+        },
+        {
+          "index": 100059,
+          "phase": "production",
+          "seed": 101059,
+          "configuration_sha256": "ba6fb1592ab440b40e63814e1ec1362309806936ad6d8f66ab8e79d76f4859d4"
+        }
+      ]
+    },
+    {
+      "partition": "test",
+      "parent_id": "production:0025015",
+      "lineage_group": "ae30107317815e3ee545",
+      "family": "asymmetric",
+      "active_limit": 16,
+      "recipes": [
+        {
+          "index": 100060,
+          "phase": "production",
+          "seed": 101060,
+          "configuration_sha256": "670f338ab1d60e3ba71f266d80eced0dadd9744f1631157445803c695f3d445d"
+        },
+        {
+          "index": 100061,
+          "phase": "production",
+          "seed": 101061,
+          "configuration_sha256": "e6997449211534cc15c8c0eb2d4abc749ba12921548c9603bbae146e26362f95"
+        },
+        {
+          "index": 100062,
+          "phase": "production",
+          "seed": 101062,
+          "configuration_sha256": "3837fe80804752012d74d2a9d47f1255fce072a41dc628e882231ffe8bd97628"
+        },
+        {
+          "index": 100063,
+          "phase": "production",
+          "seed": 101063,
+          "configuration_sha256": "5bfad340bc7f2c36b6ece795bbde8fb9da31651f257cd2c7721af8093cd8f770"
+        }
+      ]
+    },
+    {
+      "partition": "test",
+      "parent_id": "production:0025019",
+      "lineage_group": "b102db016e8d49b85732",
+      "family": "asymmetric",
+      "active_limit": 24,
+      "recipes": [
+        {
+          "index": 100076,
+          "phase": "production",
+          "seed": 101076,
+          "configuration_sha256": "c97b5584a7c865236c7c2e65c8ff2fbdfcb014960bdeb951b6ef90a9ef43c8a3"
+        },
+        {
+          "index": 100077,
+          "phase": "production",
+          "seed": 101077,
+          "configuration_sha256": "1682ffcd71fcb0c7b00ea2ee5f6ae610edbf7f4bfa879894336165f697e50368"
+        },
+        {
+          "index": 100078,
+          "phase": "production",
+          "seed": 101078,
+          "configuration_sha256": "f1ff4edba3ef4db516ac21417c8e861049066f3e5c6cd6cc3ce4d6b353011d9a"
+        },
+        {
+          "index": 100079,
+          "phase": "production",
+          "seed": 101079,
+          "configuration_sha256": "4181d79758734addd6798c599c63b32eebabed871a9ca6f336f4c6fa7ccc444b"
+        }
+      ]
+    },
+    {
+      "partition": "test",
+      "parent_id": "production:0025023",
+      "lineage_group": "760d4efb0a5efb89325c",
+      "family": "asymmetric",
+      "active_limit": 30,
+      "recipes": [
+        {
+          "index": 100092,
+          "phase": "production",
+          "seed": 101092,
+          "configuration_sha256": "ab87429762af16244fba3669e6cd31d5dee84be5eff8f171480902a29dbccb85"
+        },
+        {
+          "index": 100093,
+          "phase": "production",
+          "seed": 101093,
+          "configuration_sha256": "00ad57eac47bed249743053be835b481e740ff3af7ef2a584a63383eb5af57c1"
+        },
+        {
+          "index": 100094,
+          "phase": "production",
+          "seed": 101094,
+          "configuration_sha256": "e7338494ec8c70bb504df66e005d6e683a8b58016508c8a2de07f4627549a75c"
+        },
+        {
+          "index": 100095,
+          "phase": "production",
+          "seed": 101095,
+          "configuration_sha256": "bdb8d5b5bf2493c935ece0f07cc5c7ec8b433b5eba7696d5cabf55062cc14485"
+        }
+      ]
+    },
+    {
+      "partition": "test",
+      "parent_id": "production:0025031",
+      "lineage_group": "f3ae825357919444fe37",
+      "family": "asymmetric",
+      "active_limit": 16,
+      "recipes": [
+        {
+          "index": 100124,
+          "phase": "production",
+          "seed": 101124,
+          "configuration_sha256": "7249cee82d85c738716aedee9baa7202385e31612b285614366065d8d950985f"
+        },
+        {
+          "index": 100125,
+          "phase": "production",
+          "seed": 101125,
+          "configuration_sha256": "534e83bd9a79fd9f7ca4304b0b0d30c9ebe541c93439cd03369a6045cee2fb3a"
+        },
+        {
+          "index": 100126,
+          "phase": "production",
+          "seed": 101126,
+          "configuration_sha256": "3fa2d3851a94806a0a1e1b554c231f9c1813f24fc26c4b631b52f4c46e76dd7e"
+        },
+        {
+          "index": 100127,
+          "phase": "production",
+          "seed": 101127,
+          "configuration_sha256": "20af9abea6a5d268300ae82e2ffa05357e3429cc973d7381d74df0e67b9a021f"
+        }
+      ]
+    }
+  ],
+  "simulated": false,
+  "evaluation_performed": false,
+  "unit": "whole_parent_all_four_variants",
+  "limitation": "topology_held_out_for_recovery_not_for_historical_detection",
+  "geometry_and_flow_grouping": "generator_parent_plus_conservative_lineage_bucket"
+}
