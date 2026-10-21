@@ -70,7 +70,15 @@ class DetectionSession:
 
     project_mailbox = staticmethod(project_mailbox)
 
-    def __init__(self, output, *, gui=False, compare_local=True, display_context=None):
+    def __init__(
+        self,
+        output,
+        *,
+        gui=False,
+        compare_local=True,
+        display_context=None,
+        temporal_model=None,
+    ):
         self.output = Path(output)
         self.contexts = {}
         self.factories = {}
@@ -90,6 +98,11 @@ class DetectionSession:
         self.finished = False
         self.reference_monitor = None
         self.reference_stats = None
+        self.temporal_monitor = None
+        if temporal_model is not None:
+            from ..laboratory.inference import LocalTemporalMonitor
+
+            self.temporal_monitor = LocalTemporalMonitor(temporal_model)
         import psutil
 
         self.process = psutil.Process()
@@ -118,6 +131,13 @@ class DetectionSession:
             ):
                 self.streams[name] = gzip.open(
                     directory / (name + ".jsonl.gz"),
+                    "wt",
+                    encoding="utf-8",
+                    compresslevel=3,
+                )
+            if self.temporal_monitor is not None:
+                self.streams["temporal_estimates"] = gzip.open(
+                    directory / "temporal_estimates.jsonl.gz",
                     "wt",
                     encoding="utf-8",
                     compresslevel=3,
@@ -217,6 +237,7 @@ class DetectionSession:
             if event["event"] == "emitted":
                 write_row(self.streams["communications"], event)
         records = {}
+        temporal_estimates = {}
         for key, diagnostic in diagnostics.items():
             view = graph_views[key]
             compact_graph = graph_record(view)
@@ -237,29 +258,40 @@ class DetectionSession:
                 at_s - row["message"]["observed_at_s"]
                 for row in (inbox or {}).get("received", [])
             ]
+            feature_record = dict(
+                ego_id=key,
+                movement_id=diagnostic["movement_id"],
+                observed_at_s=at_s,
+                available_at_s=at_s,
+                own_state=packet["ego"],
+                lidar=packet["lidar"]["normalized_ranges"],
+                requested_speed_mps=packet["own_controls"]["requested_speed_mps"],
+                accepted_speed_mps=packet["own_controls"]["accepted_speed_mps"],
+                own_native_action=packet["own_controls"]["native_action"],
+                received_message_ages_s=ages,
+                v2v_box_available=inbox is not None,
+                lidar_available=not packet["lidar"]["missing"],
+                local_status=diagnostic["status"],
+                current_received_relations=len(compact_graph["edges"]),
+                observed_collective_groups=len(view["groups"]),
+                scope="causal_local_measurements_only",
+            )
+            write_row(self.streams["features"], feature_record)
+            if self.temporal_monitor is not None:
+                temporal_begin = time.perf_counter()
+                temporal_estimates[key] = self.temporal_monitor.observe(feature_record)
+                costs["temporal_inference"] += (
+                    time.perf_counter() - temporal_begin
+                ) * 1000
+        if self.temporal_monitor is not None:
             write_row(
-                self.streams["features"],
-                dict(
-                    ego_id=key,
-                    movement_id=diagnostic["movement_id"],
-                    observed_at_s=at_s,
-                    available_at_s=at_s,
-                    own_state=packet["ego"],
-                    lidar=packet["lidar"]["normalized_ranges"],
-                    requested_speed_mps=packet["own_controls"]["requested_speed_mps"],
-                    accepted_speed_mps=packet["own_controls"]["accepted_speed_mps"],
-                    own_native_action=packet["own_controls"]["native_action"],
-                    received_message_ages_s=ages,
-                    v2v_box_available=inbox is not None,
-                    lidar_available=not packet["lidar"]["missing"],
-                    local_status=diagnostic["status"],
-                    current_received_relations=len(compact_graph["edges"]),
-                    observed_collective_groups=len(view["groups"]),
-                    scope="causal_local_measurements_only",
-                ),
+                self.streams["temporal_estimates"],
+                dict(at_s=at_s, vehicles=temporal_estimates),
             )
         write_row(self.streams["decisions"], dict(at_s=at_s, vehicles=records))
-        costs["serialization"] += (time.perf_counter() - begin) * 1000
+        costs["serialization"] += (time.perf_counter() - begin) * 1000 - costs[
+            "temporal_inference"
+        ]
         self.last = dict(
             at_s=at_s,
             diagnostics=diagnostics,
@@ -268,6 +300,7 @@ class DetectionSession:
             costs_ms=dict(costs),
             measurements=measurements,
             independent_reference=self.reference_stats,
+            temporal_estimates=temporal_estimates,
         )
         if self.gui:
             begin = time.perf_counter()
@@ -288,6 +321,10 @@ class DetectionSession:
         costs["operational_with_acquisition"] = (
             costs["detector_reports_crdg_total"] + acquisition_ms + telemetry_ms
         )
+        if self.temporal_monitor is not None:
+            costs["operational_with_temporal"] = (
+                costs["operational_with_acquisition"] + costs["temporal_inference"]
+            )
         self.costs.append(dict(at_s=at_s, active=len(measurements), **costs))
         self.peak_rss = max(self.peak_rss, self.process.memory_info().rss)
 

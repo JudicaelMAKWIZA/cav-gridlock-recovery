@@ -7,7 +7,7 @@ from ..dataset.pipeline import read_rows
 from .session import DetectionSession, graph_record
 
 
-def replay(source, output, *, verify=True):
+def replay(source, output, *, verify=True, temporal_model=None):
     source, output = Path(source).resolve(), Path(output).resolve()
     if output.is_relative_to(source) or output.is_relative_to(
         Path(r"D:\cav-recovery-data\metadrive-dense-20261018").resolve()
@@ -20,7 +20,9 @@ def replay(source, output, *, verify=True):
     expected = (
         iter(read_rows(source / "diagnostic/decisions.jsonl.gz")) if verify else None
     )
-    session = DetectionSession(output, compare_local=False)
+    session = DetectionSession(
+        output, compare_local=False, temporal_model=temporal_model
+    )
     checked = 0
     at_s = 0.0
     try:
@@ -59,7 +61,9 @@ def replay(source, output, *, verify=True):
         engine_initialized=False,
         physics_regenerated=False,
         comparison_A_disabled=True,
-        timing_scope="detector_and_received_report_graph_without_native_sensor_acquisition",
+        timing_scope="local_diagnostics_graph_and_optional_statistical_monitor_without_native_acquisition",
+        temporal_model=str(temporal_model) if temporal_model is not None else None,
+        temporal_estimates_are_K04_confirmations=False,
     )
     (output / "replay.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result

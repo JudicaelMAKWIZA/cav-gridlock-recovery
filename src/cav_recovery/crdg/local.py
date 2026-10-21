@@ -35,6 +35,15 @@ class LocalCRDG:
         return self.geometry_cache[text]
 
     def update(self, diagnostic, knowledge, at_s):
+        # La preuve propre doit être datée par le même rendez-vous que le graphe.
+        # Une erreur de câblage ne doit pas ranger une preuve future dans l'historique.
+        if (
+            not finite(at_s)
+            or at_s < 0
+            or abs(diagnostic["evidence_through_s"] - at_s) > 1e-7
+            or abs(diagnostic["emitted_at_s"] - at_s) > 1e-7
+        ):
+            raise ReportError("own diagnostic and graph appointment do not align")
         if diagnostic["ego_id"] != self.ego_id or (
             self.last_time is not None and at_s <= self.last_time
         ):

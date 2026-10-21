@@ -12,6 +12,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+laboratory = [
+    "torch==2.14.1",
+    "numpy==2.5.4",
+    "orjson>=3.10,<4",
+    "matplotlib==3.11.2",
+    "nbformat>=5.10,<6",
+    "nbclient>=0.10,<0.11",
+    "ipykernel>=6.29,<8",
+    "psutil==7.2.2",
+]
+
 d01 = [
     "shapely==2.2.0",
 ]

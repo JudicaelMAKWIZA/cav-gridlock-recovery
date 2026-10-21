@@ -133,6 +133,9 @@ def main(argv=None):
     replay_command = commands.add_parser("replay")
     replay_command.add_argument("recorded_experiment", type=Path)
     replay_command.add_argument("--output-dir", type=Path, required=True)
+    replay_command.add_argument(
+        "--tcn-model", type=Path, help="Estimation locale passive ; ne change pas K04."
+    )
     campaign = commands.add_parser("evaluate")
     campaign.add_argument("--output-dir", type=Path, required=True)
     campaign.add_argument("--workers", type=int, choices=(1, 2), default=2)
@@ -144,7 +147,16 @@ def main(argv=None):
     if args.command == "replay":
         from .replay import replay
 
-        print(json.dumps(replay(args.recorded_experiment, args.output_dir), indent=2))
+        print(
+            json.dumps(
+                replay(
+                    args.recorded_experiment,
+                    args.output_dir,
+                    temporal_model=args.tcn_model,
+                ),
+                indent=2,
+            )
+        )
         return 0
     if args.command == "run-config":
         from .configuration import load_specification

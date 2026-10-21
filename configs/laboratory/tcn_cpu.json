@@ -1,0 +1,27 @@
+{
+  "protocol": "causal-confirmation-now-v1",
+  "target": "persistent_confirmation_available_at_end",
+  "history_samples": 176,
+  "sample_s": 0.2,
+  "seed": 1741,
+  "threads": 4,
+  "batch_size": 128,
+  "epochs": 4,
+  "train_stride": 5,
+  "validation_selection_stride": 5,
+  "final_evaluation_stride": 1,
+  "checkpoint_steps": 100,
+  "patience": 2,
+  "learning_rate": 0.001,
+  "dilations": [1, 2, 4, 8, 16, 32, 64],
+  "kernel_size": 3,
+  "trials": [
+    {"name": "tcn_h8", "hidden": 8, "architecture": "tcn"},
+    {"name": "tcn_h12", "hidden": 12, "architecture": "tcn"},
+    {"name": "instantaneous_baseline", "hidden": 8, "architecture": "instantaneous"}
+  ],
+  "selection": "minimum_validation_binary_cross_entropy",
+  "threshold_selection": "maximum_validation_f1_grid_0.05_to_0.95",
+  "test_used_for_selection": false,
+  "outputs_on_source_dataset": false
+}
