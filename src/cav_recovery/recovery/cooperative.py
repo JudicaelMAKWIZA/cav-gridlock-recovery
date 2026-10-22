@@ -93,6 +93,10 @@ class CooperativePolicy:
             )
         )
 
+    def report_option_end(self, view, reason):
+        """Annonce la fin de l'option ; une politique de passage peut la différer."""
+        self.emit("DONE", view, {"reason": reason})
+
     def candidates(self, view, guard):
         own = view.own
         requests = [
@@ -218,14 +222,11 @@ class CooperativePolicy:
                 or moved >= self.option_distance_m
                 or now - self.started >= self.option_duration_s
             ):
-                self.emit(
-                    "DONE",
+                self.report_option_end(
                     view,
-                    {
-                        "reason": "announced_space_clear"
-                        if space_clear
-                        else "bounded_local_option_finished"
-                    },
+                    "announced_space_clear"
+                    if space_clear
+                    else "bounded_local_option_finished",
                 )
                 reverse = self.action.speed_mps < 0
                 self.attempt = None

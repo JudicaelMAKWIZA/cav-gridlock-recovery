@@ -65,7 +65,10 @@ def nominal_action(view, contract):
 class RecoveryEnv:
     """Les politiques ne reçoivent que LocalView, jamais l'audit physique."""
 
-    def __init__(self, spec, output, contract=None, *, measurement_contract=None):
+    def __init__(
+        self, spec, output, contract=None, *, measurement_contract=None,
+        guard_factory=None,
+    ):
         self.spec, self.output = spec, Path(output)
         protect_frozen_dataset(self.output)
         self.contract = contract or RecoveryContract()
@@ -89,7 +92,9 @@ class RecoveryEnv:
 
             self.diagnostics = NativeRecoveryDiagnostics(measurement_contract)
         self.measurement_contract = measurement_contract
-        self.guard = LocalGuard(self.contract)
+        self.guard = (
+            guard_factory(self.contract) if guard_factory else LocalGuard(self.contract)
+        )
         self.native = None
         self.stack = ExitStack()
         self.routes, self.missions, self.identities, self.endpoints = {}, {}, {}, {}
@@ -607,6 +612,7 @@ def run(
     policy_version=None,
     observation_hook=None,
     coordinator_factory=None,
+    guard_factory=None,
 ):
     if method not in {
         "nominal",
@@ -627,7 +633,8 @@ def run(
     protect_frozen_dataset(output)
     started, cpu = time.perf_counter(), time.process_time()
     instance = RecoveryEnv(
-        spec, output, contract, measurement_contract=measurement_contract
+        spec, output, contract, measurement_contract=measurement_contract,
+        guard_factory=guard_factory,
     )
     policies = {}
     coordinator = None

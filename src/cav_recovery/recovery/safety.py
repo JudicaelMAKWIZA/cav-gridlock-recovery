@@ -58,8 +58,9 @@ class LocalGuard:
     carte connue, commandes bornées. Ce n'est pas un certificat universel.
     """
 
-    def __init__(self, contract=None):
+    def __init__(self, contract=None, *, sweep_predictor=trajectory):
         self.contract = contract or RecoveryContract()
+        self.sweep_predictor = sweep_predictor
 
     def check(self, view, action, *, require_agreement=True):
         c = self.contract
@@ -116,7 +117,7 @@ class LocalGuard:
             0.25,
             speed * c.step_s + speed**2 / 2 + abs(action.speed_mps) * c.step_s + 0.15,
         )
-        sweep = trajectory(own, action, length)
+        sweep = self.sweep_predictor(own, action, length)
         if not view.road.buffer(1e-5).covers(sweep.buffer(0.02)):
             return self._refuse(action, "ROAD_ENVELOPE")
         xy = np.asarray(own["position"])

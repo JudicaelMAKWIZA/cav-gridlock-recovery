@@ -9,6 +9,7 @@ import time
 from ..laboratory.storage import atomic_json, json_file, file_hash
 from .cooperative import CooperativePolicy
 from .clearance_policy import ClearancePolicy
+from .passage_policy import PassagePolicy
 from .feasibility import GlobalCoordinator
 from .temporal import temporal_row
 
@@ -51,11 +52,10 @@ class AuditPolicy:
 
     def __init__(self, ego, endpoint, contract, condition, inputs):
         self.condition, self.inputs = condition, inputs
-        cls = (
-            ClearancePolicy
-            if condition["strategy"] == "clearance"
-            else CooperativePolicy
-        )
+        cls = {
+            "clearance": ClearancePolicy,
+            "coordinated_clearance": PassagePolicy,
+        }.get(condition["strategy"], CooperativePolicy)
         self.policy = cls(ego, endpoint, contract)
         self.outbox = []
         self.recent_progress = []
