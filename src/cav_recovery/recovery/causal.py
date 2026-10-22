@@ -10,6 +10,10 @@ from ..laboratory.storage import atomic_json, json_file, file_hash
 from .cooperative import CooperativePolicy
 from .clearance_policy import ClearancePolicy
 from .passage_policy import PassagePolicy
+from .verified_passage_policy import (
+    FreshPartnerPolicy, RevalidatedPassagePolicy, VerifiedPassagePolicy,
+    PrioritizedPassagePolicy, ContinuousPassagePolicy,
+)
 from .feasibility import GlobalCoordinator
 from .temporal import temporal_row
 
@@ -55,6 +59,11 @@ class AuditPolicy:
         cls = {
             "clearance": ClearancePolicy,
             "coordinated_clearance": PassagePolicy,
+            "fresh_partner_clearance": FreshPartnerPolicy,
+            "revalidated_clearance": RevalidatedPassagePolicy,
+            "verified_clearance": VerifiedPassagePolicy,
+            "prioritized_clearance": PrioritizedPassagePolicy,
+            "continuous_clearance": ContinuousPassagePolicy,
         }.get(condition["strategy"], CooperativePolicy)
         self.policy = cls(ego, endpoint, contract)
         self.outbox = []

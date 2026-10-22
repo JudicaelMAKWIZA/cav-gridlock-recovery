@@ -4,7 +4,10 @@ import copy
 import math
 
 
-KINDS = {"INTENT", "AGREE_HOLD", "REFUSE", "CANCEL", "DONE", "STATE", "CLEAR_REQUEST"}
+KINDS = {
+    "INTENT", "AGREE_HOLD", "REFUSE", "CANCEL", "DONE", "STATE",
+    "CLEAR_REQUEST", "PASSAGE_OFFER", "PASSAGE_REPORT",
+}
 
 
 def validate(message, now):
@@ -23,7 +26,7 @@ def validate(message, now):
     if (
         not isinstance(message, dict)
         or set(message) != fields
-        or message["version"] not in {"REC-V2V-1", "REC-V2V-2"}
+        or message["version"] not in {"REC-V2V-1", "REC-V2V-2", "REC-V2V-3"}
     ):
         raise ValueError("Schéma coopératif invalide.")
     if (
@@ -32,6 +35,13 @@ def validate(message, now):
         or message["sequence"] < 1
     ):
         raise ValueError("Type ou séquence invalide.")
+    v3 = message["version"] == "REC-V2V-3"
+    if (
+        message["kind"] in {"PASSAGE_OFFER", "PASSAGE_REPORT"} and not v3
+    ) or (v3 and message["kind"] not in {
+        "CLEAR_REQUEST", "PASSAGE_OFFER", "PASSAGE_REPORT"
+    }):
+        raise ValueError("Version de passage incompatible.")
     if not all(
         isinstance(message[k], str) and message[k] for k in ["sender", "attempt"]
     ):
@@ -60,7 +70,16 @@ def validate(message, now):
     if not isinstance(message["payload"], dict):
         raise ValueError("Contenu coopératif invalide.")
     fields_by_kind = dict(
-        CLEAR_REQUEST={"space_wkt", "progress_m"},
+        CLEAR_REQUEST=(
+            {"space_wkt", "progress_m", "purpose", "movement_id",
+             "required_wkt", "guard_reason"}
+            if v3 else {"space_wkt", "progress_m"}
+        ),
+        PASSAGE_OFFER={"space_wkt", "initial_progress_m", "purpose"},
+        PASSAGE_REPORT={
+            "phase", "resource_status", "guard_reason", "policy_reason",
+            "required_wkt", "progress_m", "purpose",
+        },
         STATE={"speed_mps", "heading_rad", "length_m", "width_m", "progress_m"},
         INTENT={"speed_mps", "steering", "distance_m"},
         AGREE_HOLD={"until_s"},
@@ -72,7 +91,7 @@ def validate(message, now):
     if set(payload) != fields_by_kind[message["kind"]]:
         raise ValueError("Champs non recevables dans le contenu.")
     for key, value in payload.items():
-        if key == "space_wkt":
+        if key in {"space_wkt", "required_wkt"}:
             from shapely import wkt
 
             if not isinstance(value, str) or len(value) > 20000:
@@ -80,9 +99,28 @@ def validate(message, now):
             polygon = wkt.loads(value)
             if polygon.is_empty or not polygon.is_valid or polygon.area > 200:
                 raise ValueError("Espace demandé hors domaine.")
-        elif key == "reason":
+        elif key in {"reason", "guard_reason", "policy_reason"}:
             if not isinstance(value, str) or not 0 < len(value) < 256:
                 raise ValueError("Motif invalide.")
+        elif key == "phase":
+            if not isinstance(value, str) or value not in {
+                "BLOCKED", "ADMISSIBLE", "ENTERED", "CLEARED", "UNKNOWN",
+                "ABANDONED",
+            }:
+                raise ValueError("Phase de passage invalide.")
+        elif key == "resource_status":
+            if not isinstance(value, str) or value not in {
+                "CLEAR", "OCCUPIED", "UNKNOWN"
+            }:
+                raise ValueError("Occupation de ressource invalide.")
+        elif key == "purpose":
+            if not isinstance(value, str) or value not in {
+                "NOMINAL_PASSAGE", "REVERSE_OPTION"
+            }:
+                raise ValueError("Objet de dégagement invalide.")
+        elif key == "movement_id":
+            if not isinstance(value, str) or not 0 < len(value) < 256:
+                raise ValueError("Mouvement demandé invalide.")
         elif (
             isinstance(value, bool)
             or not isinstance(value, (float, int))
@@ -120,7 +158,11 @@ class Endpoint:
     def send(self, kind, attempt, position, now, *, target=None, payload=None):
         self.sequence += 1
         message = dict(
-            version="REC-V2V-2" if kind == "CLEAR_REQUEST" else "REC-V2V-1",
+            version=(
+                "REC-V2V-3" if kind in {"PASSAGE_OFFER", "PASSAGE_REPORT"}
+                or (kind == "CLEAR_REQUEST" and "purpose" in (payload or {}))
+                else "REC-V2V-2" if kind == "CLEAR_REQUEST" else "REC-V2V-1"
+            ),
             sender=self.ego,
             sequence=self.sequence,
             kind=kind,

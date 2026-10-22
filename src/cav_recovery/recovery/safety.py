@@ -62,6 +62,26 @@ class LocalGuard:
         self.contract = contract or RecoveryContract()
         self.sweep_predictor = sweep_predictor
 
+    def action_envelope(self, view, action):
+        """Retourne exactement le balayage et la nouvelle place testés plus bas.
+
+        Ce calcul géométrique reste disponible lorsqu'un autre critère du garde
+        refuse l'action. Il n'accorde aucune autorisation de mouvement.
+        """
+        c = self.contract
+        speed = abs(view.own["speed_mps"])
+        distance = max(
+            0.25,
+            speed * c.step_s + speed**2 / 2
+            + abs(action.speed_mps) * c.step_s + 0.15,
+        )
+        sweep = self.sweep_predictor(view.own, action, distance)
+        present = rectangle(
+            view.own["position"], view.own["heading_rad"],
+            view.own["length_m"], view.own["width_m"],
+        )
+        return distance, sweep, sweep.difference(present.buffer(0.03))
+
     def check(self, view, action, *, require_agreement=True):
         c = self.contract
         if action.speed_mps == 0:
@@ -113,11 +133,7 @@ class LocalGuard:
             < speed * c.step_s + speed**2 / 2 + settling
         ):
             return self._refuse(action, "REVERSE_STOPPING_BUDGET")
-        length = max(
-            0.25,
-            speed * c.step_s + speed**2 / 2 + abs(action.speed_mps) * c.step_s + 0.15,
-        )
-        sweep = self.sweep_predictor(own, action, length)
+        length, sweep, required = self.action_envelope(view, action)
         if not view.road.buffer(1e-5).covers(sweep.buffer(0.02)):
             return self._refuse(action, "ROAD_ENVELOPE")
         xy = np.asarray(own["position"])
@@ -184,8 +200,6 @@ class LocalGuard:
             + 0.5 * c.neighbor_acceleration_bound_mps2 * horizon**2
         )
         clearance = visible.buffer(-(c.margin_m + angular + dynamic_reserve))
-        present = rectangle(xy, own["heading_rad"], own["length_m"], own["width_m"])
-        required = sweep.difference(present.buffer(0.03))
         if not clearance.covers(required):
             return self._refuse(action, "RAY_OCCUPANCY_OR_UNKNOWN")
         for message in view.messages:

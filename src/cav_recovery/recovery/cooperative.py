@@ -97,6 +97,18 @@ class CooperativePolicy:
         """Annonce la fin de l'option ; une politique de passage peut la différer."""
         self.emit("DONE", view, {"reason": reason})
 
+    def request_clearance(self, view, space, *, target, purpose, action):
+        """Adresse la place demandée ; la variante vérifiée précise son emploi."""
+        self.emit(
+            "CLEAR_REQUEST", view,
+            dict(space_wkt=space.wkt, progress_m=view.own["progress_m"]),
+            target=target,
+        )
+
+    def yield_to_intent(self, view, nominal, guard, message):
+        """Le protocole de base honore les intentions reçues dans sa portée."""
+        return True
+
     def candidates(self, view, guard):
         own = view.own
         requests = [
@@ -167,17 +179,16 @@ class CooperativePolicy:
                     message["position"], p["heading_rad"], p["length_m"], p["width_m"]
                 )
                 if space.intersection(other).area > 0.01:
-                    self.emit(
-                        "CLEAR_REQUEST",
-                        view,
-                        dict(space_wkt=space.wkt, progress_m=view.own["progress_m"]),
-                        target=message["sender"],
+                    self.request_clearance(
+                        view, space, target=message["sender"],
+                        purpose="NOMINAL_PASSAGE", action=nominal,
                     )
         intents = [
             m
             for m in view.messages
             if m["kind"] == "INTENT"
             and math.dist(m["position"], view.own["position"]) <= 10.0
+            and self.yield_to_intent(view, nominal, guard, m)
         ]
         peers = {m["sender"] for m in intents}
         if self.attempt:
@@ -281,13 +292,9 @@ class CooperativePolicy:
                         p["width_m"],
                     )
                     if needed.intersection(other).area > 0.01:
-                        self.emit(
-                            "CLEAR_REQUEST",
-                            view,
-                            dict(
-                                space_wkt=needed.wkt, progress_m=view.own["progress_m"]
-                            ),
-                            target=message["sender"],
+                        self.request_clearance(
+                            view, needed, target=message["sender"],
+                            purpose="REVERSE_OPTION", action=reverse,
                         )
                 break
         if (

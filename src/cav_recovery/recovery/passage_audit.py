@@ -12,12 +12,21 @@ from .safety import LocalGuard
 
 
 def run_passage_condition(
-    spec, output, *, passage=False, aligned_guard=False, label=None,
+    spec, output, *, passage=False, aligned_guard=False, fresh_partners=False,
+    revalidate=False, verified=False, prioritized=False, continuous=False,
+    label=None,
 ):
     """Un facteur à la fois ; le contrat physique REC-PHYS-3 reste constant."""
     output = Path(output)
     condition = dict(
-        strategy="coordinated_clearance" if passage else "clearance",
+        strategy=(
+            "continuous_clearance" if continuous else
+            "prioritized_clearance" if prioritized else
+            "verified_clearance" if verified else
+            "revalidated_clearance" if revalidate else
+            "fresh_partner_clearance" if fresh_partners else
+            "coordinated_clearance" if passage else "clearance"
+        ),
         trigger="local",
         information="local",
         not_before_s=69.0,
@@ -39,8 +48,17 @@ def run_passage_condition(
         condition=(
             label or ("D" if passage and aligned_guard else "B" if passage else "C")
         ),
-        factors={"resource_passage_commitment": passage,
-                 "center_aligned_guard": aligned_guard},
+        factors={
+            "resource_passage_commitment": any((
+                passage, fresh_partners, revalidate, verified, prioritized, continuous,
+            )),
+            "center_aligned_guard": aligned_guard,
+            "fresh_partners": fresh_partners,
+            "option_revalidated": revalidate,
+            "verified_passage_report": verified or prioritized or continuous,
+            "upstream_passage_priority": prioritized or continuous,
+            "in_flight_passage_priority": continuous,
+        },
         domain="DefaultVehicle_only_local_development_scenes",
         motion_prediction="REC-MOTION-2",
         safety="REC-PHYS-3_limits_with_center_sweep_only_when_requested",

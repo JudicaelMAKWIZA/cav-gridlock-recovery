@@ -20,6 +20,7 @@ class Passage:
     initial_progress_m: float
     last_progress_m: float
     last_progress_at_s: float
+    purpose: str = "NOMINAL_PASSAGE"
     entered: bool = False
     crossed: bool = False
 
@@ -66,6 +67,18 @@ class PassagePolicy(ClearancePolicy):
             None,
         )
 
+    def passage_complete(self, view, passage):
+        """La variante vérifiée peut exiger un compte rendu en plus du STATE."""
+        return passage.crossed
+
+    def passage_crossed(self, passage, vehicle, progress, length_m):
+        """Contrat historique de traversée en avant, conservé pour B3."""
+        return (
+            passage.entered
+            and progress >= passage.initial_progress_m + length_m + 0.5
+            and not vehicle.buffer(0.15).intersects(passage.space)
+        )
+
     def _passage_action(self, view):
         now = view.at_s
         unresolved = []
@@ -83,13 +96,10 @@ class PassagePolicy(ClearancePolicy):
                     state["payload"]["width_m"],
                 )
                 passage.entered |= vehicle.intersects(passage.space)
-                passage.crossed |= (
-                    passage.entered
-                    and progress
-                    >= passage.initial_progress_m + state["payload"]["length_m"] + 0.5
-                    and not vehicle.buffer(0.15).intersects(passage.space)
+                passage.crossed |= self.passage_crossed(
+                    passage, vehicle, progress, state["payload"]["length_m"]
                 )
-            if not passage.crossed:
+            if not self.passage_complete(view, passage):
                 unresolved.append(passage)
 
         if not unresolved:
