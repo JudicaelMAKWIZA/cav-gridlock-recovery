@@ -24,7 +24,7 @@ class Action:
 class RecoveryContract:
     """Domaine commun au nominal, à la baseline et aux futurs acteurs."""
 
-    version: str = "recovery-physical-2"
+    version: str = "recovery-physical-3"
     step_s: float = 0.2
     physics_s: float = 0.02
     maximum_forward_mps: float = 2.0
@@ -45,6 +45,7 @@ class RecoveryContract:
     direction_change_speed_mps: float = 0.01
     neighbor_acceleration_bound_mps2: float = 6.0
     unknown_object_speed_bound_mps: float = 2.1
+    stationary_drift_bound_mps: float = 0.01
 
     def __post_init__(self):
         for name, value in asdict(self).items():

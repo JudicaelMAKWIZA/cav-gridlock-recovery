@@ -74,6 +74,12 @@ class CooperativePolicy:
         self.partners = set()
         self.progress_history = []
         self.release_space = None
+        self.activation_override = None
+        self.request_distance_m = 2.5
+        self.option_distance_m = 4.5
+        self.option_duration_s = 25.0
+        self.pose_predictor = endpoint_pose
+        self.sweep_predictor = trajectory
 
     def emit(self, kind, view, payload, *, target=None, attempt=None):
         self.outbox.append(
@@ -105,7 +111,7 @@ class CooperativePolicy:
                 continue
             if not guard.check(view, action, require_agreement=False)["accepted"]:
                 continue
-            pose = endpoint_pose(own, action, 1.0)
+            pose = self.pose_predictor(own, action, 1.0)
             end = rectangle(pose[:2], pose[2], own["length_m"], own["width_m"])
             release = (
                 present.intersection(requested).area - end.intersection(requested).area
@@ -113,7 +119,7 @@ class CooperativePolicy:
             progress = view.route.line.project(Point(pose[:2])) - station
             if action.speed_mps < 0 and release <= 0.02:
                 continue
-            if not view.road.covers(trajectory(own, action, 1.0)):
+            if not view.road.covers(self.sweep_predictor(own, action, 1.0)):
                 continue
             route_error = view.route.line.distance(Point(pose[:2]))
             score = (
@@ -145,6 +151,8 @@ class CooperativePolicy:
             now - self.progress_history[0][0] >= self.contract.stall_s - 1e-7
             and view.own["progress_m"] - self.progress_history[0][1] < 0.5
         )
+        if self.activation_override is not None:
+            stalled = self.activation_override
         if stalled and self.attempt is None and now >= self.yield_until:
             space = required_space(view)
             for message in view.messages:
@@ -205,7 +213,11 @@ class CooperativePolicy:
                 .buffer(0.15)
                 .intersects(self.release_space)
             )
-            if space_clear or moved >= 4.5 or now - self.started >= 25.0:
+            if (
+                space_clear
+                or moved >= self.option_distance_m
+                or now - self.started >= self.option_duration_s
+            ):
                 self.emit(
                     "DONE",
                     view,
@@ -243,7 +255,7 @@ class CooperativePolicy:
             )
             for steer in [0.0, -0.3, 0.3]:
                 reverse = Action(-0.6, steer)
-                pose = endpoint_pose(view.own, reverse, 2.5)
+                pose = self.pose_predictor(view.own, reverse, self.request_distance_m)
                 end = rectangle(
                     pose[:2], pose[2], view.own["length_m"], view.own["width_m"]
                 )
@@ -253,7 +265,7 @@ class CooperativePolicy:
                     <= 0.05
                 ):
                     continue
-                sweep = trajectory(view.own, reverse, 2.5)
+                sweep = self.sweep_predictor(view.own, reverse, self.request_distance_m)
                 if not view.road.covers(sweep):
                     continue
                 needed = sweep.difference(present)
@@ -302,7 +314,11 @@ class CooperativePolicy:
             self.emit(
                 "INTENT",
                 view,
-                dict(speed_mps=a.speed_mps, steering=a.steering, distance_m=4.5),
+                dict(
+                    speed_mps=a.speed_mps,
+                    steering=a.steering,
+                    distance_m=self.option_distance_m,
+                ),
             )
             required = {
                 m["sender"]

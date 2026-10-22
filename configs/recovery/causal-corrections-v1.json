@@ -1,0 +1,30 @@
+{
+  "version": "REC-CAUSAL-CORRECTIONS-1",
+  "base_recipe": "causal-audit-v1.json",
+  "development_only": true,
+  "physical_contract": "recovery-physical-3",
+  "reverse_budget_m": 8.0,
+  "physics_step_s": 0.02,
+  "decision_step_s": 0.2,
+  "variants": {
+    "PLAN": {"cli_mode": "plan", "factor_vs_METRO": "own proposed trajectory supplied to unchanged D01 observer"},
+    "C2": {"cli_mode": "sequence", "factor_vs_C": "execute stored second stage after measured first target and renewed agreements"},
+    "E": {"cli_mode": "motion-global", "factor_vs_C2": "rear axle offset in bounded search pose and sweep"},
+    "F": {"cli_mode": "motion-local", "factor_vs_D": "rear axle offset in local option ranking and requests"},
+    "I": {"cli_mode": "ideal", "factors_vs_C": ["global exact current bodies in guard", "body envelope approximation"]}
+  },
+  "motion_prediction": {
+    "version": "REC-MOTION-2",
+    "vehicle_model": "DefaultVehicle",
+    "rear_axle_offset_m": 1.4166,
+    "wheelbase_m": 2.46894,
+    "length_m": 4.515,
+    "width_m": 1.852,
+    "native_physics_changed": false,
+    "execution_guard_model": "legacy local REC-PHYS-3 sweep retained for isolated planning comparison",
+    "safety_certification_claimed": false
+  },
+  "dedicated_variant_TCN_inference": false,
+  "training_performed": false,
+  "reserved_test_accessed": false
+}

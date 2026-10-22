@@ -107,6 +107,8 @@ class RecoveryEnv:
         self.last_commands = {}
         self.emission_positions = {}
         self.last_native_states = {}
+        self.previous_physics_poses = {}
+        self.diagnostic_packets = {}
 
     def write(self, name, row):
         import json
@@ -190,6 +192,10 @@ class RecoveryEnv:
         self.initial[key] = self.routes[key].line.project(Point(vehicle.position))
         self.previous_positions[key] = list(map(float, vehicle.position))
         self.reverse_used[key] = 0.0
+        self.previous_physics_poses[key] = (
+            list(map(float, vehicle.position)),
+            float(vehicle.heading_theta),
+        )
         self.introduced[key] = self.at_s
         self.metadata["vehicles"][key] = dict(
             length_m=float(vehicle.LENGTH),
@@ -228,6 +234,28 @@ class RecoveryEnv:
     def audit_physics(self, at):
         agents = self.native.agents
         ids = sorted(agents)
+        if self.contract.version == "recovery-physical-3":
+            for key in ids:
+                vehicle = agents[key]
+                previous, heading = self.previous_physics_poses[key]
+                delta = np.asarray(vehicle.position) - previous
+                self.reverse_used[key] += max(
+                    0.0,
+                    -float(delta @ np.array([math.cos(heading), math.sin(heading)])),
+                )
+                self.previous_physics_poses[key] = (
+                    list(map(float, vehicle.position)),
+                    float(vehicle.heading_theta),
+                )
+                if self.reverse_used[key] > self.contract.reverse_budget_m + 1e-7:
+                    self.errors.append(
+                        dict(
+                            kind="reverse_budget_exceeded",
+                            ego=key,
+                            at_s=at,
+                            measured_m=self.reverse_used[key],
+                        )
+                    )
         bodies = {key: body(agents[key]) for key in ids}
         states = {
             key: list(
@@ -272,7 +300,13 @@ class RecoveryEnv:
                 pairs.append([left, right, gap, contact, overlap])
         self.write(
             "physics",
-            dict(at_s=at, states=states, pairs=pairs, pair_center_cutoff_m=8.0),
+            dict(
+                at_s=at,
+                states=states,
+                pairs=pairs,
+                pair_center_cutoff_m=8.0,
+                reverse_m=dict(self.reverse_used),
+            ),
         )
 
     def observe(self):
@@ -326,6 +360,9 @@ class RecoveryEnv:
             )
             views[key].own_commitment_until_s = self.endpoints[key].committed_until_s
             views[key].own_controls = self.last_commands.get(key)
+            views[key].remaining_horizon_s = max(
+                0.0, self.spec["horizon_s"] - self.at_s
+            )
             state_messages.append(
                 self.endpoints[key].send(
                     "STATE",
@@ -389,6 +426,7 @@ class RecoveryEnv:
         self.views = views
         if self.diagnostics is not None and views:
             packets, outputs = self.diagnostics.observe(self)
+            self.diagnostic_packets = packets
             for key in views:
                 self.write("diagnostic-inputs", packets[key])
                 self.write("diagnostics", dict(ego=key, at_s=self.at_s, **outputs[key]))
@@ -484,9 +522,10 @@ class RecoveryEnv:
             previous = self.previous_positions[key]
             dx = np.asarray(v.position) - previous
             heading = self.views[key].own["heading_rad"]
-            self.reverse_used[key] += max(
-                0.0, -float(dx @ np.array([math.cos(heading), math.sin(heading)]))
-            )
+            if self.contract.version != "recovery-physical-3":
+                self.reverse_used[key] += max(
+                    0.0, -float(dx @ np.array([math.cos(heading), math.sin(heading)]))
+                )
             self.previous_positions[key] = list(map(float, v.position))
         for key in actions:
             if not terminated.get(key) and not truncated.get(key):
@@ -566,6 +605,8 @@ def run(
     policy_factory=None,
     instrumentation_hook=None,
     policy_version=None,
+    observation_hook=None,
+    coordinator_factory=None,
 ):
     if method not in {
         "nominal",
@@ -573,12 +614,15 @@ def run(
         "cooperative",
         "global_search",
         "graph_policy",
+        "causal_audit",
     }:
         raise ValueError("Méthode inconnue.")
-    if (method == "graph_policy") != (policy_factory is not None):
+    if (method in {"graph_policy", "causal_audit"}) != (policy_factory is not None):
         raise ValueError(
             "La méthode apprise exige une fabrique d'acteurs locale explicite."
         )
+    if coordinator_factory is not None and method != "causal_audit":
+        raise ValueError("Le coordinateur alternatif est réservé à l'audit explicite.")
     output = Path(output)
     protect_frozen_dataset(output)
     started, cpu = time.perf_counter(), time.process_time()
@@ -587,6 +631,8 @@ def run(
     )
     policies = {}
     coordinator = None
+    if coordinator_factory is not None:
+        coordinator = coordinator_factory()
     if method == "global_search":
         from .feasibility import GlobalCoordinator, GlobalBodyGuard
 
@@ -596,6 +642,8 @@ def run(
         try:
             instance.views = instance.reset()
             while not instance.done:
+                if observation_hook is not None:
+                    observation_hook(instance)
                 actions, outgoing = {}, []
                 for ego, view in instance.views.items():
                     if ego not in policies:
@@ -663,13 +711,19 @@ def run(
                     policy_version and policy_version.get("updates", 0) > 0
                 ),
             )
-            summary["neural_policy_interface"] = policy_factory is not None
+            summary["neural_policy_interface"] = method == "graph_policy"
             summary["policy_version"] = policy_version
             summary["passive_diagnostic_measurement_contract"] = measurement_contract
-            summary["global_audit_in_actor"] = coordinator is not None
+            summary["global_audit_in_actor"] = bool(
+                coordinator is not None
+                and getattr(coordinator, "uses_privileged_information", True)
+            )
+            summary["global_audit_in_actor"] |= bool(
+                policy_version and policy_version.get("privileged_information", False)
+            )
             summary["decision_scope"] = (
                 "privileged_global_feasibility_only"
-                if coordinator
+                if summary["global_audit_in_actor"]
                 else summary["decision_scope"]
             )
             if coordinator:

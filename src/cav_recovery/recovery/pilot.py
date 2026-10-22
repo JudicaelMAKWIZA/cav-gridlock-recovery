@@ -114,6 +114,10 @@ def train(config_path, output, *, proof_path=None, stop_after=None):
     verified = json_file(verified_folder / "summary.json")
     if verified.get("global_audit_in_actor") or verified["method"] != "cooperative":
         raise ValueError("Une preuve privilégiée globale ne suffit pas à ce pilote.")
+    if json_file(verified_folder / "contract.json") != RecoveryContract().record():
+        raise ValueError(
+            "La preuve locale doit correspondre au domaine physique courant."
+        )
     for name, sha in json_file(verified_folder / "manifest.json")["files"].items():
         if file_hash(verified_folder / name) != sha:
             raise ValueError("Preuve locale modifiée.")

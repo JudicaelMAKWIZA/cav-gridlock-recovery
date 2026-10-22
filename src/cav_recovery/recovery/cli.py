@@ -40,7 +40,70 @@ def main(argv=None):
     pilot.add_argument("--output", type=Path, required=True)
     pilot.add_argument("--proof", type=Path, required=True)
     pilot.add_argument("--stop-after", type=int)
+    audit = commands.add_parser(
+        "audit-run", help="Une condition causale, sans entraînement."
+    )
+    audit.add_argument("--config", type=Path, required=True)
+    audit.add_argument("--case", required=True)
+    audit.add_argument("--condition", default="A")
+    audit.add_argument(
+        "--mode",
+        choices=[
+            "current",
+            "plan",
+            "ideal",
+            "sequence",
+            "motion-global",
+            "motion-local",
+        ],
+        default="current",
+        help="Variante expérimentale explicite ; les modes globaux sont privilégiés.",
+    )
+    audit.add_argument("--output", type=Path, required=True)
+    audit.add_argument("--temporal-model", type=Path)
+    audit.add_argument("--inference-threads", type=int, default=1)
     args = parser.parse_args(argv)
+    if args.command == "audit-run":
+        from .causal import case_specification, run_condition
+
+        config = json.loads(args.config.read_text("utf-8"))
+        spec = case_specification(config, args.case)
+        if args.mode != "current" and (
+            args.temporal_model is not None
+            or args.condition != "A"
+            or args.inference_threads != 1
+        ):
+            parser.error(
+                "Les variantes dédiées définissent leur propre condition et leur déclencheur."
+            )
+        if args.mode == "current":
+            result = run_condition(
+                spec,
+                args.output,
+                config["conditions"][args.condition],
+                temporal_model=args.temporal_model,
+                inference_threads=args.inference_threads,
+            )
+        elif args.mode == "plan":
+            from .plan_audit import run_planned_trigger
+
+            result = run_planned_trigger(spec, args.output)
+        elif args.mode == "ideal":
+            from .oracle_audit import run_ideal_guard
+
+            result = run_ideal_guard(spec, args.output)
+        elif args.mode == "sequence":
+            from .sequence_audit import run_sequence
+
+            result = run_sequence(spec, args.output)
+        else:
+            from .motion_audit import run_motion_condition
+
+            result = run_motion_condition(
+                spec, args.output, local=args.mode == "motion-local"
+            )
+        print(json.dumps(result, indent=2))
+        return 1 if result["errors"] else 0
     if args.command == "pilot":
         from .pilot import train
 

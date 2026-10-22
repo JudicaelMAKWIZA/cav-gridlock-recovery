@@ -1,0 +1,31 @@
+{
+  "version": "REC-CAUSAL-AUDIT-1",
+  "development_only": true,
+  "horizon_s": 180.0,
+  "cases": [
+    {"name": "oblique-4", "catalogue": "collective-3", "seed": 21021, "vehicles": 4},
+    {"name": "oblique-8", "catalogue": "collective-3", "seed": 21021, "vehicles": 8},
+    {"name": "crossing-4", "generator": "crossing", "seed": 41001, "vehicles": 4}
+  ],
+  "conditions": {
+    "N": {"strategy": "nominal", "information": "local", "trigger": "local", "planner": false, "not_before_s": 69.0},
+    "A": {"strategy": "current", "information": "local", "trigger": "local", "planner": false, "not_before_s": 69.0},
+    "B": {"strategy": "current", "information": "oracle_global", "trigger": "local", "planner": false, "not_before_s": 69.0},
+    "C": {"strategy": "nominal", "information": "oracle_global", "trigger": "local", "planner": true, "not_before_s": 69.0},
+    "D": {"strategy": "clearance", "information": "local", "trigger": "local", "planner": false, "not_before_s": 69.0},
+    "L": {"strategy": "current", "information": "local", "trigger": "local", "planner": false, "not_before_s": 0.0},
+    "RAW": {"strategy": "current", "information": "local", "trigger": "d01_raw", "planner": false, "not_before_s": 0.0},
+    "METRO": {"strategy": "current", "information": "local", "trigger": "d01_metro", "planner": false, "not_before_s": 0.0},
+    "TCN": {"strategy": "current", "information": "local", "trigger": "tcn", "planner": false, "not_before_s": 0.0},
+    "ORACLE_TRIGGER": {"strategy": "current", "information": "local", "trigger": "oracle", "planner": false, "not_before_s": 0.0}
+  },
+  "trigger_ablation_case": "oblique-8",
+  "temporal_artifact_environment_variable": "CGR_TCN_MODEL",
+  "temporal_artifact_historical_selection": "M02_tcn_h12_validation_selected_threshold_0.8_frozen",
+  "safety": "REC_PHYS_3_same_local_sensor_guard_all_conditions",
+  "controlled_information_comparison": "A_vs_B_same_policy_gate_actions_guard_global_positions_and_current_witnesses_declared_B",
+  "planning_comparison": "B_vs_C_changes_sequence_decision_and_global_persistent_incident_activation_explicitly",
+  "local_correction_comparison": "A_vs_D_changes_option_ranking_preparatory_request_extent_and_option_duration",
+  "training_performed": false,
+  "reserved_test_accessed": false
+}

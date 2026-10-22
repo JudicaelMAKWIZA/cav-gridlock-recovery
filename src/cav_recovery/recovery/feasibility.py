@@ -10,7 +10,13 @@ from .safety import LocalGuard
 from .contracts import Action
 
 
-def search(instance, relevant_requesters=None):
+def search(
+    instance,
+    relevant_requesters=None,
+    *,
+    pose_predictor=endpoint_pose,
+    sweep_predictor=trajectory,
+):
     """Énumère 15 commandes × 4 distances × véhicules, autres corps figés.
 
     Ce résultat cinématique est un candidat, jamais une preuve dynamique.
@@ -45,12 +51,12 @@ def search(instance, relevant_requesters=None):
                     > instance.contract.reverse_budget_m
                 ):
                     continue
-                sweep = trajectory(view.own, action, distance)
+                sweep = sweep_predictor(view.own, action, distance)
                 if not view.road.buffer(1e-5).covers(sweep) or sweep.intersects(
                     obstacles
                 ):
                     continue
-                pose = endpoint_pose(view.own, action, distance)
+                pose = pose_predictor(view.own, action, distance)
                 end = rectangle(
                     pose[:2], pose[2], view.own["length_m"], view.own["width_m"]
                 )
@@ -93,7 +99,7 @@ def search(instance, relevant_requesters=None):
         for first, view in views.items():
             for distance in [2.0, 4.5]:
                 action = Action(-0.6)
-                first_sweep = trajectory(view.own, action, distance)
+                first_sweep = sweep_predictor(view.own, action, distance)
                 obstacles = unary_union(
                     [b for k, b in bodies.items() if k != first]
                 ).buffer(0.15)
@@ -101,7 +107,7 @@ def search(instance, relevant_requesters=None):
                     obstacles
                 ):
                     continue
-                pose = endpoint_pose(view.own, action, distance)
+                pose = pose_predictor(view.own, action, distance)
                 first_end = rectangle(
                     pose[:2], pose[2], view.own["length_m"], view.own["width_m"]
                 )
@@ -114,7 +120,9 @@ def search(instance, relevant_requesters=None):
                         continue
                     for secondary in [Action(-0.6, s) for s in [-0.3, 0.0, 0.3]]:
                         for extent in [2.0, 4.5]:
-                            sweep = trajectory(views[second].own, secondary, extent)
+                            sweep = sweep_predictor(
+                                views[second].own, secondary, extent
+                            )
                             obstacles2 = unary_union(
                                 [b for k, b in altered.items() if k != second]
                             ).buffer(0.15)
@@ -122,7 +130,7 @@ def search(instance, relevant_requesters=None):
                                 obstacles2
                             ):
                                 continue
-                            endpoint = endpoint_pose(
+                            endpoint = pose_predictor(
                                 views[second].own, secondary, extent
                             )
                             other = views[second].own
@@ -178,6 +186,7 @@ class GlobalCoordinator:
         self.log = []
         self.count = 0
         self.next_search = 30.0
+        self.searcher = search
 
     def decide(self, instance, nominal_actions):
         now = instance.at_s
@@ -197,7 +206,7 @@ class GlobalCoordinator:
             if not relevant:
                 self.next_search = now + 1.0
                 return nominal_actions, outgoing
-            report = search(instance, relevant)
+            report = self.searcher(instance, relevant)
             self.log.append(report)
             best = next(
                 (c for c in report["candidates"] if c["locally_admitted"]), None

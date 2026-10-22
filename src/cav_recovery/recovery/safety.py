@@ -27,6 +27,8 @@ class LocalView:
     diagnostic: dict | None = None
     graph: dict | None = None
     measurement_contract: str | None = None
+    remaining_horizon_s: float = 300.0
+    temporal: dict | None = None
 
 
 def trajectory(own, action, distance):
@@ -93,10 +95,21 @@ class LocalGuard:
             # autoriser son enveloppe opposée comme si le signe avait déjà changé.
             return self._refuse(action, "SIGN_CHANGE_REQUIRES_STOP")
         speed = abs(own["speed_mps"])
+        settling = 0.02
+        if c.version == "recovery-physical-3":
+            if (
+                not math.isfinite(view.remaining_horizon_s)
+                or view.remaining_horizon_s < 0
+            ):
+                return self._refuse(action, "HORIZON_UNAVAILABLE")
+            # Le frein natif peut conserver une dérive de repos. La réserve
+            # couvre tout le suivi restant, sans effacer ce mouvement mesuré.
+            settling += c.stationary_drift_bound_mps * view.remaining_horizon_s
+            settling += abs(action.speed_mps) * c.step_s
         if (
             action.speed_mps < 0
             and c.reverse_budget_m - view.reverse_used_m
-            < speed * c.step_s + speed**2 / 2 + 0.02
+            < speed * c.step_s + speed**2 / 2 + settling
         ):
             return self._refuse(action, "REVERSE_STOPPING_BUDGET")
         length = max(
