@@ -85,7 +85,10 @@ class LocalGuard:
         if scan.get("full_circle") is not True:
             return self._refuse(action, "PERCEPTION_COVERAGE")
         own = view.own
-        if action.speed_mps * own["speed_mps"] < -0.001:
+        if (
+            action.speed_mps * own["speed_mps"] < 0
+            and abs(own["speed_mps"]) > c.direction_change_speed_mps
+        ):
             # Pendant l'arrêt, le corps continue dans son sens actuel. Ne pas
             # autoriser son enveloppe opposée comme si le signe avait déjà changé.
             return self._refuse(action, "SIGN_CHANGE_REQUIRES_STOP")
@@ -114,7 +117,16 @@ class LocalGuard:
         visible = Polygon(endpoints)
         if not visible.is_valid:
             visible = visible.buffer(0)
-        angular = scan["range_m"] * math.sin(math.pi / len(rays))
+        # L'erreur angulaire est bornée sur la zone balayée à vérifier,
+        # pas sur les 30 m du capteur : la distance transverse entre rayons
+        # croît avec le rayon du point testé. La carte visible reste entière.
+        polygons = list(sweep.geoms) if hasattr(sweep, "geoms") else [sweep]
+        radius = max(
+            math.dist(xy, point)
+            for polygon in polygons
+            for point in polygon.exterior.coords
+        )
+        angular = min(scan["range_m"], radius + 0.5) * math.sin(math.pi / len(rays))
         horizon = c.step_s + view.at_s - scan["at_s"]
         received = [
             m
@@ -152,9 +164,10 @@ class LocalGuard:
             default=0.0,
         )
         dynamic_reserve = (
-            c.maximum_forward_mps * horizon
+            c.unknown_object_speed_bound_mps * horizon
             if unknown_hit
-            else known_speed * horizon + 2 * horizon**2
+            else known_speed * horizon
+            + 0.5 * c.neighbor_acceleration_bound_mps2 * horizon**2
         )
         clearance = visible.buffer(-(c.margin_m + angular + dynamic_reserve))
         present = rectangle(xy, own["heading_rad"], own["length_m"], own["width_m"])
@@ -177,9 +190,10 @@ class LocalGuard:
             reserve = (
                 c.margin_m
                 + abs(state["speed_mps"]) * (age + c.step_s)
-                + 2 * (age + c.step_s) ** 2
+                + state["speed_mps"] ** 2 / 2
+                + 0.5 * c.neighbor_acceleration_bound_mps2 * (age + c.step_s) ** 2
             )
-            if required.intersects(other.buffer(reserve)):
+            if sweep.intersects(other.buffer(reserve)):
                 return self._refuse(action, "RECEIVED_OCCUPANCY")
         if action.speed_mps < 0 and require_agreement:
             partners = {

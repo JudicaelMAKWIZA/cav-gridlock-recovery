@@ -1,0 +1,51 @@
+{
+  "version": "REC-PHYS-2_COOP-2",
+  "historical_contracts_unchanged": ["M02_C1_C7", "K04", "REC-EVAL-1"],
+  "actuation": {
+    "direction_change_stationary_bound_mps": 0.01,
+    "native_brake": "same_M01_independent_four_wheel_brake_maximum_force_variant_rejected",
+    "vehicle_dimensions_m": [4.515, 1.852],
+    "forward_target_limit_mps": 2.0,
+    "recovery_forward_options_mps": [0.4, 0.8],
+    "reverse_target_limit_mps": 0.6,
+    "normalized_steering_options": [-0.6, -0.3, 0.0, 0.3, 0.6],
+    "cumulative_reverse_budget_m": 8.0
+  },
+  "guard": {
+    "lidar_rays": 360,
+    "angular_error_radius": "tested_sweep_radius_plus_0.5m_bounded_by_sensor_range",
+    "other_vehicle_stopping_reserve": "speed_squared_divided_by_2_for_1mps2_braking",
+    "other_acceleration_reserve_mps2": 6.0,
+    "unknown_object_speed_reserve_mps": 2.1,
+    "includes_present_body_in_dynamic_test": true,
+    "scope": "sampled_local_CAV_domain_not_universal_safety_certificate"
+  },
+  "coordination": {
+    "version": "REC-V2V-2_CLEAR_REQUEST",
+    "request_semantics": "sender_declared_required_space_not_confirmed_causal_edge",
+    "hold_and_agreement_radius_m": 10.0,
+    "communication_range_m": 30.0,
+    "activation": "net_own_progress_below_0.5m_over_stall_window_or_received_relevant_clearance_request",
+    "development_stall_windows_s": [5.0, 15.0, 35.0],
+    "primary_post_persistence_stall_window_s": 35.0,
+    "preparatory_request": "local_rear_space_must_be_available_before_helping_another_requester",
+    "termination": "measured_own_body_clears_announced_space_or_option_budget_timeout"
+  },
+  "success": {
+    "window_s": 10.0,
+    "net_mission_progress_vehicle_lengths": 1.0,
+    "effect_window_s": 5.0,
+    "followup_without_relapse_s": 30.0,
+    "first_candidate_kept": true,
+    "verified_native_arrival_is_terminal": true
+  },
+  "global_search": "declared_upper_bound_with_global_body_guard_not_operational_actor_input",
+  "pilot": "shared_hierarchical_Graph_PPO_local_critic_finite_protocol_no_GRU_in_technical_pilot",
+  "curriculum": [
+    {"stage": 1, "vehicles_active": [2, 4], "gate": "local_durable_recovery_verified"},
+    {"stage": 2, "vehicles_active": [5, 8], "gate": "preparatory_clearance_and_partial_groups_need_validation"},
+    {"stage": 3, "vehicles_active": [8, 12], "gate": "multiple_resource_sequences_need_validation"},
+    {"stage": 4, "vehicles_active": [20, 30], "gate": "only_after_previous_stages"}
+  ],
+  "evaluation": "known_development_only_reserved_test_parents_untouched"
+}

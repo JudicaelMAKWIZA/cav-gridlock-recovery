@@ -1,0 +1,33 @@
+{
+  "version": "REC-GRAPH-PILOT-2",
+  "scope": "technical_development_only_no_generalization_claim",
+  "prerequisite": "local_durable_recovery_oblique_4_v3_verified_before_training",
+  "algorithm": "shared_hierarchical_graph_PPO_local_critic",
+  "hidden": 32,
+  "gamma_per_physics_decision": 0.995,
+  "learning_rate": 0.0003,
+  "ppo_epochs": 2,
+  "clip_ratio": 0.2,
+  "entropy_coefficient": 0.01,
+  "value_coefficient": 0.5,
+  "gradient_norm": 0.5,
+  "training_seed": 107,
+  "episodes_total": 2,
+  "native_horizon_s": 180.0,
+  "vehicles": 4,
+  "development_scenario": "collective-3",
+  "scenario_seed": 21021,
+  "measurement_contract": "REC-METRO-1",
+  "neural_control": "physical_option_and_neighbor_hold_agreement_or_refusal",
+  "single_decision_advantage": "keep_raw_advantage_instead_of_normalizing_to_zero",
+  "reward": {
+    "shared_net_progress_per_vehicle_length": 1.0,
+    "verified_native_arrival": 2.0,
+    "per_step_cost": 0.005,
+    "invalid_episode": -10.0
+  },
+  "train_validation_test_policy": "known_development_parent_only_no_reserved_test_generation_or_tuning",
+  "checkpoint_policy": "atomic_at_complete_episode_boundary_partial_Bullet_episode_not_restored",
+  "recurrent_memory": false,
+  "limitations": "fixed_cooperative_protocol_hierarchical_interventions_not_end_to_end_driving_or_final_Graph_MAPPO"
+}

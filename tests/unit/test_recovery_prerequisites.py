@@ -223,7 +223,7 @@ def test_learning_boundary_never_copies_privileged_dynamic_attributes():
     projected = observation(v)
     assert "secret" not in repr(projected) and "future_label" not in projected
     options, mask = action_mask(v, LocalGuard())
-    assert len(options) == len(mask) == 8 and mask[0]
+    assert len(options) == len(mask) == 17 and mask[0]
 
 
 def test_composed_diagnostics_keep_raw_and_measurement_variant_separate():

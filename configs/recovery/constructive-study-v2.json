@@ -1,0 +1,17 @@
+{
+  "version": "REC-CONSTRUCTIVE-2",
+  "development_only": true,
+  "catalogue_scenario": "collective-3",
+  "seed": 21021,
+  "agent_selection": "first_n_agents_before_native_reset",
+  "vehicles": [4, 8],
+  "horizon_s": 180.0,
+  "phase": "recovery_constructive_development",
+  "methods": ["nominal", "cooperative", "global_search"],
+  "timing_stall_s": [5.0, 15.0, 35.0],
+  "global_followup_horizon_s": 240.0,
+  "qualification": "historical_C1_C7_unchanged",
+  "recovery_evaluation": "REC-EVAL-1_unchanged",
+  "reserved_test_parents_used": false,
+  "curriculum_next_gate": "repeated_local_durable_recovery_at_5_to_8_vehicles_before_8_to_12"
+}

@@ -21,7 +21,7 @@ from ..laboratory.storage import (
     protect_frozen_dataset,
     single_writer,
 )
-from ..metadrive.control import apply_command, DriveCommand
+from .actuation import command as apply_recovery_command
 from ..metadrive.native import configuration_record, missions_for
 from ..metadrive.observation import body, rectangle, signed_speed
 from ..metadrive.planning import requested_path
@@ -148,6 +148,10 @@ class RecoveryEnv:
         atomic_json(self.output / "spec.json", self.spec)
         atomic_json(self.output / "contract.json", self.contract.record())
         self.native = environment(self.spec)
+        self.native.config["vehicle_config"]["vehicle_model"] = "cgr_recovery_v2"
+        self.native.config["agent_configs"]["agent0"]["vehicle_model"] = (
+            "cgr_recovery_v2"
+        )
         self.native.reset(seed=self.spec["seed"])
         atomic_json(
             self.output / "configuration.json",
@@ -453,9 +457,10 @@ class RecoveryEnv:
                 key
             ].committed_until_s
             accepted, receipt = self.guard.limit(self.views[key], action)
-            native_actions[key] = apply_command(
+            native_actions[key] = apply_recovery_command(
                 self.native.agents[key],
-                DriveCommand(accepted.speed_mps, accepted.steering),
+                accepted,
+                self.contract,
             )
             self.last_commands[key] = dict(
                 proposed=asdict(action),
@@ -551,9 +556,29 @@ class RecoveryEnv:
         self.stack.close()
 
 
-def run(spec, output, *, method="nominal", contract=None, measurement_contract=None):
-    if method not in {"nominal", "deterministic"}:
+def run(
+    spec,
+    output,
+    *,
+    method="nominal",
+    contract=None,
+    measurement_contract=None,
+    policy_factory=None,
+    instrumentation_hook=None,
+    policy_version=None,
+):
+    if method not in {
+        "nominal",
+        "deterministic",
+        "cooperative",
+        "global_search",
+        "graph_policy",
+    }:
         raise ValueError("Méthode inconnue.")
+    if (method == "graph_policy") != (policy_factory is not None):
+        raise ValueError(
+            "La méthode apprise exige une fabrique d'acteurs locale explicite."
+        )
     output = Path(output)
     protect_frozen_dataset(output)
     started, cpu = time.perf_counter(), time.process_time()
@@ -561,6 +586,12 @@ def run(spec, output, *, method="nominal", contract=None, measurement_contract=N
         spec, output, contract, measurement_contract=measurement_contract
     )
     policies = {}
+    coordinator = None
+    if method == "global_search":
+        from .feasibility import GlobalCoordinator, GlobalBodyGuard
+
+        coordinator = GlobalCoordinator()
+        instance.guard = GlobalBodyGuard(instance)
     with single_writer(output.parent / (output.name + "-lock")):
         try:
             instance.views = instance.reset()
@@ -568,17 +599,34 @@ def run(spec, output, *, method="nominal", contract=None, measurement_contract=N
                 actions, outgoing = {}, []
                 for ego, view in instance.views.items():
                     if ego not in policies:
-                        policies[ego] = DeterministicPolicy(
-                            ego,
-                            instance.endpoints[ego],
-                            instance.contract,
-                            enabled=method == "deterministic",
-                        )
+                        if policy_factory is not None:
+                            policies[ego] = policy_factory(
+                                ego, instance.endpoints[ego], instance.contract
+                            )
+                        elif method == "cooperative":
+                            from .cooperative import CooperativePolicy
+
+                            policies[ego] = CooperativePolicy(
+                                ego, instance.endpoints[ego], instance.contract
+                            )
+                        else:
+                            policies[ego] = DeterministicPolicy(
+                                ego,
+                                instance.endpoints[ego],
+                                instance.contract,
+                                enabled=method == "deterministic",
+                            )
                     actions[ego] = policies[ego].decide(
                         view, nominal_action(view, instance.contract), instance.guard
                     )
                     outgoing.extend(policies[ego].outbox)
+                if coordinator is not None:
+                    actions, outgoing = coordinator.decide(instance, actions)
                 instance.step(actions, outgoing)
+                if instrumentation_hook is not None:
+                    # Ce consommateur produit les récompenses/traces après
+                    # action ; son résultat n'entre jamais dans LocalView.
+                    instrumentation_hook(instance)
             integrity = dict(
                 errors=instance.errors,
                 complete_measurements=True,
@@ -611,9 +659,21 @@ def run(spec, output, *, method="nominal", contract=None, measurement_contract=N
                 decision_scope="local_state_rays_received_messages_only",
                 global_audit_in_actor=False,
                 activation="own_stall_plus_blocked_nominal_local_forward_or_agreed_reverse_not_K04_confirmation",
-                trained_policy=False,
+                trained_policy=bool(
+                    policy_version and policy_version.get("updates", 0) > 0
+                ),
             )
+            summary["neural_policy_interface"] = policy_factory is not None
+            summary["policy_version"] = policy_version
             summary["passive_diagnostic_measurement_contract"] = measurement_contract
+            summary["global_audit_in_actor"] = coordinator is not None
+            summary["decision_scope"] = (
+                "privileged_global_feasibility_only"
+                if coordinator
+                else summary["decision_scope"]
+            )
+            if coordinator:
+                atomic_json(output / "global-search.json", coordinator.log)
             atomic_json(output / "summary.json", summary)
         except Exception as error:
             if output.exists():

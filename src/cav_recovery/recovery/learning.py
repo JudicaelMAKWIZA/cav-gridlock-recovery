@@ -2,7 +2,7 @@
 
 from .contracts import Action
 from .protocol import validate
-from .baseline import gentle_forward_options
+from .cooperative import option_bank
 import copy
 
 
@@ -36,9 +36,14 @@ def observation(view):
     )
 
 
-def action_mask(view, guard, *, steering=0.0, attempt=None):
+def action_mask(view, guard, *, steering=None, attempt=None, for_intention=False):
+    """Le masque d'intention ne vaut pas autorisation d'exécution sans accord."""
     options = [
-        Action(v, steering, reason="learning_interface", attempt=attempt)
-        for v in [0.0, 0.4, 0.8, -0.3, -0.6]
-    ] + gentle_forward_options()
-    return options, [guard.check(view, a)["accepted"] for a in options]
+        Action(a.speed_mps, a.steering, a.reason, attempt)
+        for a in option_bank()
+        if steering is None or a.speed_mps == 0 or a.steering == steering
+    ]
+    return options, [
+        guard.check(view, a, require_agreement=not for_intention)["accepted"]
+        for a in options
+    ]

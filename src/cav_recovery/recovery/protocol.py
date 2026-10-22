@@ -4,7 +4,7 @@ import copy
 import math
 
 
-KINDS = {"INTENT", "AGREE_HOLD", "REFUSE", "CANCEL", "DONE", "STATE"}
+KINDS = {"INTENT", "AGREE_HOLD", "REFUSE", "CANCEL", "DONE", "STATE", "CLEAR_REQUEST"}
 
 
 def validate(message, now):
@@ -23,7 +23,7 @@ def validate(message, now):
     if (
         not isinstance(message, dict)
         or set(message) != fields
-        or message["version"] != "REC-V2V-1"
+        or message["version"] not in {"REC-V2V-1", "REC-V2V-2"}
     ):
         raise ValueError("Schéma coopératif invalide.")
     if (
@@ -60,6 +60,7 @@ def validate(message, now):
     if not isinstance(message["payload"], dict):
         raise ValueError("Contenu coopératif invalide.")
     fields_by_kind = dict(
+        CLEAR_REQUEST={"space_wkt", "progress_m"},
         STATE={"speed_mps", "heading_rad", "length_m", "width_m", "progress_m"},
         INTENT={"speed_mps", "steering", "distance_m"},
         AGREE_HOLD={"until_s"},
@@ -71,7 +72,15 @@ def validate(message, now):
     if set(payload) != fields_by_kind[message["kind"]]:
         raise ValueError("Champs non recevables dans le contenu.")
     for key, value in payload.items():
-        if key == "reason":
+        if key == "space_wkt":
+            from shapely import wkt
+
+            if not isinstance(value, str) or len(value) > 20000:
+                raise ValueError("Espace demandé invalide.")
+            polygon = wkt.loads(value)
+            if polygon.is_empty or not polygon.is_valid or polygon.area > 200:
+                raise ValueError("Espace demandé hors domaine.")
+        elif key == "reason":
             if not isinstance(value, str) or not 0 < len(value) < 256:
                 raise ValueError("Motif invalide.")
         elif (
@@ -111,7 +120,7 @@ class Endpoint:
     def send(self, kind, attempt, position, now, *, target=None, payload=None):
         self.sequence += 1
         message = dict(
-            version="REC-V2V-1",
+            version="REC-V2V-2" if kind == "CLEAR_REQUEST" else "REC-V2V-1",
             sender=self.ego,
             sequence=self.sequence,
             kind=kind,
