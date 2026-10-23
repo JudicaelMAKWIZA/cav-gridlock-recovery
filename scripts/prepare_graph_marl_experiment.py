@@ -76,9 +76,19 @@ def main():
         content = json_file(identity)
         content["config_sha256"] = file_hash(target)
         atomic_json(identity, content)
-    atomic_json(ROOT / "environment.json", environment_check(PROJECT, ROOT))
     source_paths = [CONFIG, NOTEBOOK] + sorted(
         (PROJECT / "src/cav_recovery/recovery").glob("*.py"))
+    source_manifest = ROOT / "source-manifest.json"
+    if source_manifest.exists() and (ROOT / "checkpoints/latest.json").exists():
+        previous = json_file(source_manifest)["files"]
+        changed = [path.relative_to(PROJECT).as_posix() for path in source_paths
+                   if previous.get(path.relative_to(PROJECT).as_posix()) != file_hash(path)]
+        if changed:
+            raise ValueError(
+                "Sources modifiées après le premier checkpoint : "
+                f"{changed}. Utiliser une procédure d'amendement traçable."
+            )
+    atomic_json(ROOT / "environment.json", environment_check(PROJECT, ROOT))
     commit = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=PROJECT, text=True).strip()
     atomic_json(ROOT / "source-manifest.json", dict(

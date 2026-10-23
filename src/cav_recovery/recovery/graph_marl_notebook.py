@@ -73,13 +73,19 @@ def process_status(root):
                     and experiment.get("state") in {
                         "training_complete", "memory_pressure_at_boundary",
                         "wall_budget_at_boundary", "stopped_at_boundary",
-                        "invalid_episode_stop",
+                        "invalid_episode_stop", "interrupted_at_episode",
                     })
     starting = bool(process and not terminal and not worker_alive
                     and time.time() - process["started_at"] < 120)
+    alive = worker_alive or starting
+    interrupted = bool(process and experiment and not alive
+                       and experiment.get("updated_at", 0) >= process["started_at"]
+                       and experiment.get("state") == "running")
     return dict(process=process, worker=worker,
                 worker_pid=worker["pid"] if worker_alive else None,
-                alive=worker_alive or starting,
+                alive=alive, interrupted=interrupted,
+                effective_state=("interrupted_with_error" if interrupted else
+                                 experiment.get("state") if experiment else None),
                 experiment=experiment,
                 preflight=json_file(root / "reports" / "preflight.json")
                 if (root / "reports" / "preflight.json").exists() else None,

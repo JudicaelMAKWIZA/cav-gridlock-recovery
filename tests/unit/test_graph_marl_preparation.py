@@ -193,3 +193,20 @@ def test_memory_gate_respects_vehicle_count(monkeypatch):
                   minimum_available_gib_eight_cav=2.5)
     assert _memory_ready(config, 4)
     assert not _memory_ready(config, 8)
+
+
+def test_dead_worker_is_reported_as_interrupted(tmp_path):
+    report = tmp_path / "reports"
+    report.mkdir()
+    started = time.time() - 121
+    atomic_json(report / "process.json", dict(
+        task="train", pid=999999, created=0.0,
+        started_at=started, log="unused"))
+    atomic_json(report / "experiment_status.json", dict(
+        state="running", updated_at=started + 1,
+        completed_episodes=3, current_episode=3))
+    state = process_status(tmp_path)
+    assert not state["alive"]
+    assert state["interrupted"]
+    assert state["effective_state"] == "interrupted_with_error"
+    assert state["experiment"]["state"] == "running"

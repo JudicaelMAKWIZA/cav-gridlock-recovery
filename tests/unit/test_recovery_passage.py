@@ -3,18 +3,37 @@
 import copy
 
 import pytest
-from shapely.geometry import box
+from shapely.geometry import Point, box
 
 from cav_recovery.recovery.contracts import Action, RecoveryContract
 from cav_recovery.metadrive.observation import rectangle
 from cav_recovery.recovery.passage_policy import Passage, PassagePolicy
-from cav_recovery.recovery.protocol import Endpoint, validate
+from cav_recovery.recovery.protocol import (
+    Endpoint, MAX_SPACE_WKT_CHARS, validate,
+)
 from cav_recovery.recovery.safety import LocalGuard
 from cav_recovery.recovery.verified_passage_policy import (
     FreshPartnerPolicy, RevalidatedPassagePolicy, VerifiedPassagePolicy,
     PrioritizedPassagePolicy, ContinuousPassagePolicy, OfferedPassage,
 )
 from tests.unit.test_recovery_prerequisites import view
+
+
+def test_detailed_local_space_is_transmitted_without_simplification():
+    space = Point(0, 0).buffer(2, quad_segs=400).wkt
+    assert 20000 < len(space) < MAX_SPACE_WKT_CHARS
+    message = Endpoint("V0").send(
+        "CLEAR_REQUEST", "V0:space", [0.0, 0.0], 1.0,
+        target="V3", payload={"space_wkt": space, "progress_m": 1.0},
+    )
+    assert message["payload"]["space_wkt"] == space
+    excessive = Point(0, 0).buffer(2, quad_segs=500).wkt
+    assert len(excessive) > MAX_SPACE_WKT_CHARS
+    with pytest.raises(ValueError, match="Espace demandé invalide"):
+        Endpoint("V0").send(
+            "CLEAR_REQUEST", "V0:space", [0.0, 0.0], 1.0,
+            target="V3", payload={"space_wkt": excessive, "progress_m": 1.0},
+        )
 
 
 def prepared_policy():

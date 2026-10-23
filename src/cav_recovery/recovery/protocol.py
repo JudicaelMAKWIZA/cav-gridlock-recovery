@@ -9,6 +9,11 @@ KINDS = {
     "CLEAR_REQUEST", "PASSAGE_OFFER", "PASSAGE_REPORT",
 }
 
+# Les enveloppes balayées d'un mouvement tournant peuvent produire un WKT
+# détaillé, même lorsque leur surface reste locale. Cette limite borne la
+# taille du message sans simplifier la géométrie transmise.
+MAX_SPACE_WKT_CHARS = 65536
+
 
 def validate(message, now):
     fields = {
@@ -94,7 +99,7 @@ def validate(message, now):
         if key in {"space_wkt", "required_wkt"}:
             from shapely import wkt
 
-            if not isinstance(value, str) or len(value) > 20000:
+            if not isinstance(value, str) or len(value) > MAX_SPACE_WKT_CHARS:
                 raise ValueError("Espace demandé invalide.")
             polygon = wkt.loads(value)
             if polygon.is_empty or not polygon.is_valid or polygon.area > 200:
