@@ -12,7 +12,7 @@ from .clearance_policy import ClearancePolicy
 from .passage_policy import PassagePolicy
 from .verified_passage_policy import (
     FreshPartnerPolicy, RevalidatedPassagePolicy, VerifiedPassagePolicy,
-    PrioritizedPassagePolicy, ContinuousPassagePolicy,
+    PrioritizedPassagePolicy, ContinuousPassagePolicy, GuardEnvelopePassagePolicy,
 )
 from .feasibility import GlobalCoordinator
 from .temporal import temporal_row
@@ -64,6 +64,7 @@ class AuditPolicy:
             "verified_clearance": VerifiedPassagePolicy,
             "prioritized_clearance": PrioritizedPassagePolicy,
             "continuous_clearance": ContinuousPassagePolicy,
+            "guard_envelope_clearance": GuardEnvelopePassagePolicy,
         }.get(condition["strategy"], CooperativePolicy)
         self.policy = cls(ego, endpoint, contract)
         self.outbox = []

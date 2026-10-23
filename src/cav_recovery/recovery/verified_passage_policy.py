@@ -337,3 +337,38 @@ le garde conserve toutes ses vérifications physiques à chaque pas.
             )
             return False
         return super().yield_to_intent(view, nominal, guard, message)
+
+
+class GuardEnvelopePassagePolicy(ContinuousPassagePolicy):
+    """Demande le corridor nominal avec la réserve appliquée au voisin connu.
+
+    La réserve provient du STATE frais de ce voisin et du contrat du garde.
+    Une demande élargie ne vaut jamais autorisation de mouvement : le cédeur
+    et le bénéficiaire restent soumis à leurs contrôles physiques ordinaires.
+    """
+
+    def request_clearance(self, view, space, *, target, purpose, action):
+        if purpose != "NOMINAL_PASSAGE":
+            return super().request_clearance(
+                view, space, target=target, purpose=purpose, action=action,
+            )
+        state = self._fresh_state(view, target)
+        if state is None:
+            return super().request_clearance(
+                view, space, target=target, purpose=purpose, action=action,
+            )
+        age = view.at_s - state["sent_s"]
+        speed = state["payload"]["speed_mps"]
+        contract = self.contract
+        reserve = (
+            contract.margin_m
+            + abs(speed) * (age + contract.step_s)
+            + speed**2 / 2
+            + 0.5 * contract.neighbor_acceleration_bound_mps2
+            * (age + contract.step_s) ** 2
+        )
+        _, _, required = self._request_guard.action_envelope(view, action)
+        enlarged = space.union(required).buffer(reserve)
+        return super().request_clearance(
+            view, enlarged, target=target, purpose=purpose, action=action,
+        )

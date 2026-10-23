@@ -14,12 +14,14 @@ from .safety import LocalGuard
 def run_passage_condition(
     spec, output, *, passage=False, aligned_guard=False, fresh_partners=False,
     revalidate=False, verified=False, prioritized=False, continuous=False,
+    envelope=False,
     label=None,
 ):
     """Un facteur à la fois ; le contrat physique REC-PHYS-3 reste constant."""
     output = Path(output)
     condition = dict(
         strategy=(
+            "guard_envelope_clearance" if envelope else
             "continuous_clearance" if continuous else
             "prioritized_clearance" if prioritized else
             "verified_clearance" if verified else
@@ -50,14 +52,16 @@ def run_passage_condition(
         ),
         factors={
             "resource_passage_commitment": any((
-                passage, fresh_partners, revalidate, verified, prioritized, continuous,
+                passage, fresh_partners, revalidate, verified, prioritized,
+                continuous, envelope,
             )),
             "center_aligned_guard": aligned_guard,
             "fresh_partners": fresh_partners,
             "option_revalidated": revalidate,
-            "verified_passage_report": verified or prioritized or continuous,
-            "upstream_passage_priority": prioritized or continuous,
-            "in_flight_passage_priority": continuous,
+            "verified_passage_report": verified or prioritized or continuous or envelope,
+            "upstream_passage_priority": prioritized or continuous or envelope,
+            "in_flight_passage_priority": continuous or envelope,
+            "guard_reserved_nominal_envelope": envelope,
         },
         domain="DefaultVehicle_only_local_development_scenes",
         motion_prediction="REC-MOTION-2",
