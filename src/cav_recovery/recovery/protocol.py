@@ -13,6 +13,7 @@ KINDS = {
 # détaillé, même lorsque leur surface reste locale. Cette limite borne la
 # taille du message sans simplifier la géométrie transmise.
 MAX_SPACE_WKT_CHARS = 65536
+MAX_SPACE_AREA_M2 = 200.0
 
 
 def validate(message, now):
@@ -102,7 +103,8 @@ def validate(message, now):
             if not isinstance(value, str) or len(value) > MAX_SPACE_WKT_CHARS:
                 raise ValueError("Espace demandé invalide.")
             polygon = wkt.loads(value)
-            if polygon.is_empty or not polygon.is_valid or polygon.area > 200:
+            if (polygon.is_empty or not polygon.is_valid
+                    or polygon.area > MAX_SPACE_AREA_M2):
                 raise ValueError("Espace demandé hors domaine.")
         elif key in {"reason", "guard_reason", "policy_reason"}:
             if not isinstance(value, str) or not 0 < len(value) < 256:

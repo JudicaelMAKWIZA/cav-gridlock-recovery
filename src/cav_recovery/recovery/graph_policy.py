@@ -53,9 +53,15 @@ def local_graph(view, *, response=False):
         for m in view.messages
         if m["sent_s"] <= view.at_s + 1e-7 and m["expires_s"] >= view.at_s - 1e-7
     ]
+    latest_state = {}
     for message in messages:
-        if message["kind"] != "STATE":
-            continue
+        if message["kind"] == "STATE" and message["sender"] != view.ego:
+            sender = message["sender"]
+            if (sender not in latest_state
+                    or message["sent_s"] > latest_state[sender]["sent_s"]):
+                latest_state[sender] = message
+    for sender in sorted(latest_state):
+        message = latest_state[sender]
         row = [0.0] * FEATURES
         row[1] = 1.0
         row[3:5] = relative(message["position"])
@@ -134,7 +140,10 @@ def local_graph(view, *, response=False):
     for a, b in links:
         adjacency[a, b] = 1.0
     adjacency /= adjacency.sum(axis=1, keepdims=True)
-    return np.asarray(nodes, dtype=np.float32), adjacency
+    features = np.asarray(nodes, dtype=np.float32)
+    if not np.isfinite(features).all() or not np.isfinite(adjacency).all():
+        raise ValueError("Graphe local non fini.")
+    return features, adjacency
 
 
 class GraphActorCritic(nn.Module):
@@ -148,6 +157,12 @@ class GraphActorCritic(nn.Module):
         self.critic = nn.Linear(hidden * 2, 1)
 
     def forward(self, nodes, adjacency):
+        if (nodes.ndim != 2 or nodes.shape[1] != FEATURES
+                or adjacency.shape != (nodes.shape[0], nodes.shape[0])
+                or nodes.shape[0] < 1):
+            raise ValueError("Dimensions du graphe local invalides.")
+        if not torch.isfinite(nodes).all() or not torch.isfinite(adjacency).all():
+            raise ValueError("Tenseur du graphe local non fini.")
         hidden = torch.tanh(self.input(nodes))
         for _ in range(2):
             hidden = torch.tanh(hidden + self.message(adjacency @ hidden))

@@ -42,7 +42,9 @@ class P4GraphPolicy(GuardEnvelopePassagePolicy):
             action=index, old_logprob=logprob, value=float(value),
             probability=float(distribution.probs[index]),
             admissible_count=sum(mask),
+            strategic_choice=sum(mask) > 1,
             chosen=dict(speed_mps=bank[index].speed_mps,
-                        steering=bank[index].steering, reason=bank[index].reason),
+                        steering=bank[index].steering,
+                        reason="no_new_option" if index == 0 else bank[index].reason),
         ))
         return [] if index == 0 else [bank[index]]

@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 
 from ..experiments.catalog import specification
+from ..dataset.contract import digest
 from ..laboratory.storage import file_hash, json_file
 from .cooperative import option_bank
 from .contracts import RecoveryContract
@@ -15,9 +16,13 @@ from .graph_policy import GraphActorCritic
 
 def load_config(path):
     config = json_file(path)
-    if config["version"] != "REC-GRAPH-MARL-P4-1":
+    versions = {
+        "REC-GRAPH-MARL-P4-1": "shared_local_graph_PPO_P4_physical_option_only",
+        "REC-GRAPH-PPO-P4-2": "shared_local_graph_option_PPO_P4",
+    }
+    if config["version"] not in versions:
         raise ValueError("Contrat Graph-MARL inconnu.")
-    if config["algorithm"] != "shared_local_graph_PPO_P4_physical_option_only":
+    if config["algorithm"] != versions[config["version"]]:
         raise ValueError("Algorithme inattendu.")
     if config["maximum_wall_minutes"] <= 0 or config["cpu_threads"] < 1:
         raise ValueError("Budget de ressources invalide.")
@@ -34,32 +39,58 @@ def load_config(path):
             if row["vehicles"] not in range(2, 9) or row["horizon_s"] <= 0:
                 raise ValueError("Effectif ou horizon hors du pilote.")
             if split != "preflight":
-                previous = parents.setdefault(row["name"], split)
+                parent = row.get("source_parent", row["name"])
+                previous = parents.setdefault(parent, split)
                 if previous != split:
                     raise ValueError("Même parent dans train et validation.")
+    if config["version"] == "REC-GRAPH-PPO-P4-2":
+        if config["ppo_batch_size"] < 32 or config["minibatch_size"] < 1:
+            raise ValueError("Lot PPO de préparation insuffisant.")
+        if not 0 <= config["gae_lambda"] <= 1:
+            raise ValueError("Lambda GAE invalide.")
+        if config["validation_every_episodes"] < 1:
+            raise ValueError("Fréquence de validation invalide.")
+        validation_ids = {row["source_id"] for row in splits["validation"]}
+        periodic = config["periodic_validation_ids"]
+        if (not periodic or len(periodic) != len(set(periodic))
+                or not set(periodic) <= validation_ids):
+            raise ValueError("Scènes de validation périodique non figées.")
     return config
 
 
 def scenario(row, split):
     """Gèle la description avant toute interaction, sans lui attribuer de label."""
-    spec = specification(row["name"], seed=row["seed"], horizon_s=row["horizon_s"])
-    spec["agents"] = copy.deepcopy(spec["agents"][:row["vehicles"]])
-    spec["active_limit"] = row["vehicles"]
+    if "source_spec_path" in row:
+        path = Path(row["source_spec_path"])
+        if file_hash(path) != row["source_spec_sha256"]:
+            raise ValueError("Empreinte de la scène source incohérente.")
+        spec = copy.deepcopy(json_file(path))
+        if (row["seed"] != spec["seed"]
+                or row["vehicles"] != spec["active_limit"]
+                or row.get("source_spec_id", row["source_id"]) != spec["id"]):
+            raise ValueError("Identité ou capacité M02 incohérente.")
+        spec["horizon_s"] = row["horizon_s"]
+    else:
+        spec = specification(row["name"], seed=row["seed"],
+                             horizon_s=row["horizon_s"],
+                             vehicle_count=row["vehicles"])
+        if len(spec["agents"]) != row["vehicles"]:
+            raise ValueError("Le générateur n'a pas construit l'effectif demandé.")
     spec["phase"] = f"graph_marl_{split}_development_only"
     spec["experiment_name"] = f"graph-marl-{split}-{row['name']}-{row['seed']}"
-    if len(spec["agents"]) != row["vehicles"]:
-        raise ValueError("Nombre de CAV indisponible dans cette scène.")
+    spec["id"] = digest(spec)[:24]
     return spec
 
 
 def scene_plan(config):
-    return [
-        dict(split=split, name=row["name"], seed=row["seed"],
-             vehicles=row["vehicles"], horizon_s=row["horizon_s"],
-             parent_id=scenario(row, split)["parent_id"],
-             topology=scenario(row, split)["topology"])
-        for split, rows in config["scenes"].items() for row in rows
-    ]
+    plan = []
+    for split, rows in config["scenes"].items():
+        for row in rows:
+            spec = scenario(row, split)
+            plan.append(dict(split=split, name=row["name"], seed=row["seed"],
+                             vehicles=row["vehicles"], horizon_s=row["horizon_s"],
+                             parent_id=spec["parent_id"], topology=spec["topology"]))
+    return plan
 
 
 def weight_hash(model):
@@ -73,10 +104,12 @@ def weight_hash(model):
 def compatibility(config_path, config):
     sources = Path(__file__).parent
     names = ["graph_marl_core.py", "graph_marl_policy.py", "graph_marl_training.py",
+             "graph_ppo.py", "graph_ppo_campaign.py",
              "graph_policy.py", "cooperative.py", "verified_passage_policy.py",
              "passage_policy.py", "safety.py", "environment.py", "contracts.py"]
     return dict(config_sha256=file_hash(config_path),
                 sources={name: file_hash(sources / name) for name in names},
+                catalogue_sha256=file_hash(sources.parent / "experiments" / "catalog.py"),
                 contract=RecoveryContract().record(),
                 action_count=len(option_bank()),
                 engine=config["engine_commit"], p4_commit=config["p4_commit"])

@@ -5,9 +5,29 @@ from dataclasses import dataclass
 import math
 
 from shapely import wkt
+from shapely.errors import GEOSException
 
 from ..metadrive.observation import rectangle
 from .passage_policy import PassagePolicy
+from .protocol import MAX_SPACE_AREA_M2, MAX_SPACE_WKT_CHARS
+
+
+def _message_space_state(polygon):
+    """Vérifie la géométrie après la même sérialisation WKT que le message."""
+    serialized = polygon.wkt
+    details = dict(area_m2=polygon.area, wkt_chars=len(serialized))
+    if len(serialized) > MAX_SPACE_WKT_CHARS:
+        return False, details
+    try:
+        received = wkt.loads(serialized)
+    except (GEOSException, TypeError, ValueError) as error:
+        details["parse_error"] = type(error).__name__
+        return False, details
+    details.update(received_area_m2=received.area,
+                   received_valid=received.is_valid,
+                   received_empty=received.is_empty)
+    return (not received.is_empty and received.is_valid
+            and received.area <= MAX_SPACE_AREA_M2), details
 
 
 class FreshPartnerPolicy(PassagePolicy):
@@ -97,22 +117,49 @@ class VerifiedPassagePolicy(PassagePolicy):
         self.request_purposes = {}
         self._request_guard = None
         self._option_cancelled = False
+        self.request_domain_rejections = 0
+        self.request_domain_examples = []
 
     def request_clearance(self, view, space, *, target, purpose, action):
         """Transmet la mission et l'enveloppe locale effectivement testée."""
         _, _, required = self._request_guard.action_envelope(view, action)
+        space_ok, space_details = _message_space_state(space)
+        required_ok, required_details = _message_space_state(required)
+        if not space_ok or not required_ok:
+            # Un corridor trop étendu ne peut pas être négocié par ce protocole.
+            # Ne pas transmettre une géométrie tronquée qui fausserait l'accord.
+            self.request_domain_rejections += 1
+            if len(self.request_domain_examples) < 10:
+                self.request_domain_examples.append(dict(
+                    at_s=view.at_s, target=target, purpose=purpose,
+                    requested=space_details, required=required_details,
+                ))
+            return False
         receipt = self._request_guard.check(
             view, action, require_agreement=False,
         )
-        self.emit(
-            "CLEAR_REQUEST", view,
-            dict(
-                space_wkt=space.wkt, progress_m=view.own["progress_m"],
-                purpose=purpose, movement_id=view.route.agent["movement_id"],
-                required_wkt=required.wkt, guard_reason=receipt["reason"],
-            ),
-            target=target, attempt=f"{self.ego}:clear:{purpose}",
-        )
+        try:
+            self.emit(
+                "CLEAR_REQUEST", view,
+                dict(
+                    space_wkt=space.wkt, progress_m=view.own["progress_m"],
+                    purpose=purpose, movement_id=view.route.agent["movement_id"],
+                    required_wkt=required.wkt, guard_reason=receipt["reason"],
+                ),
+                target=target, attempt=f"{self.ego}:clear:{purpose}",
+            )
+        except ValueError as error:
+            if str(error) not in {"Espace demandé hors domaine.",
+                                  "Espace demandé invalide."}:
+                raise
+            self.request_domain_rejections += 1
+            if len(self.request_domain_examples) < 10:
+                self.request_domain_examples.append(dict(
+                    at_s=view.at_s, target=target, purpose=purpose,
+                    post_serialization_rejection=str(error),
+                    requested=space_details, required=required_details,
+                ))
+            return False
 
     def passage_crossed(self, passage, vehicle, progress, length_m):
         if passage.purpose == "REVERSE_OPTION":

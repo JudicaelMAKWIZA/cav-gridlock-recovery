@@ -33,7 +33,7 @@ def catalog():
     return entries
 
 
-def specification(name, seed=None, *, horizon_s=None):
+def specification(name, seed=None, *, horizon_s=None, vehicle_count=None):
     """Fixe missions, flux et arrivées avant simulation ; aucun label n'est injecté."""
     entry = next((row for row in catalog() if row["name"] == name), None)
     if entry is None:
@@ -76,6 +76,10 @@ def specification(name, seed=None, *, horizon_s=None):
             140.0,
             "conflicting",
         )
+    if vehicle_count is not None:
+        if not isinstance(vehicle_count, int) or not 2 <= vehicle_count <= 30:
+            raise ValueError("Effectif de la scène hors domaine.")
+        count, cap = vehicle_count, min(vehicle_count, cap)
     templates = copy.deepcopy(spec["agents"])
     agents = []
     lane_count = spec["topology"]["lane_num"]
@@ -126,13 +130,15 @@ def specification(name, seed=None, *, horizon_s=None):
     if (situation == "collective" and variant == 4) or situation == "natural_release":
         # Un flux transversal soutenu et une file concurrente peuvent produire
         # une chaîne sans cycle ; aucun véhicule ne reçoit une consigne d'arrêt.
-        stream_count = 34 if situation == "collective" else 18 + 4 * variant
+        stream_count = (max(2, count - 2) if vehicle_count is not None else
+                        34 if situation == "collective" else 18 + 4 * variant)
+        competing_count = (count - stream_count if vehicle_count is not None else 6)
         arrivals = [
             (index * 1.2, 1, 3, index % 2, 4.6, 12.0) for index in range(stream_count)
         ]
         arrivals += [
             (2.0 + index * 2.0, 0, 2, min(1, lane_count - 1), 3.6, 4.0)
-            for index in range(6)
+            for index in range(competing_count)
         ]
         agents = []
         for index, (
@@ -173,5 +179,7 @@ def specification(name, seed=None, *, horizon_s=None):
         movement_profile=movements,
         demand=dict(headway_s=headway, profile=movements),
     )
+    if vehicle_count is not None:
+        spec["construction"] = "direct_agent_generation"
     spec["id"] = digest(spec)[:24]
     return spec

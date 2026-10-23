@@ -103,7 +103,10 @@ def launch(task, project, root):
         pid = status["worker_pid"] or status["process"]["pid"]
         raise RuntimeError(f"Une tâche est déjà active : PID {pid}.")
     config_path = root / "experiment-config.json"
-    load_config(config_path)
+    config = load_config(config_path)
+    if config["version"] == "REC-GRAPH-PPO-P4-2":
+        from .graph_ppo_campaign import readiness_gate
+        readiness_gate(root)
     if task == "train":
         gate = status["preflight"]
         if not gate or not gate.get("proceed"):
@@ -112,7 +115,9 @@ def launch(task, project, root):
             raise RuntimeError("L'entraînement est déjà complet ; aucune relance nécessaire.")
     elif not (root / "checkpoints" / "latest.json").exists():
         raise RuntimeError("Aucun checkpoint entraîné pour la validation.")
-    elif not status["experiment"] or status["experiment"].get("state") != "training_complete":
+    elif (not status["experiment"] or status["experiment"].get("state") not in
+          ({"training_complete", "wall_budget_at_boundary"}
+           if config["version"] == "REC-GRAPH-PPO-P4-2" else {"training_complete"})):
         raise RuntimeError("Terminer l'entraînement avant la validation.")
     elif (root / "reports" / "validation_summary.json").exists():
         raise RuntimeError("La validation est déjà complète ; consulter ses résultats.")
@@ -205,7 +210,9 @@ def render_figures(root):
     with table.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=[
             "episode", "scene", "seed", "reward", "arrivals", "valid",
-            "decisions", "ppo_updates", "wall_s", "reverse_max_m"])
+            "decisions", "ppo_updates", "wall_s", "cpu_s", "reverse_max_m",
+            "reverse_total_m", "guard_refusals", "domain_rejections",
+            "recovery_status", "recovery_success", "confirmed_passages"])
         writer.writeheader()
         for row in history:
             writer.writerow(dict(
@@ -215,13 +222,21 @@ def render_figures(root):
                 decisions=row["learning"]["decisions"],
                 ppo_updates=row["learning"]["updates"],
                 wall_s=row["summary"]["wall_s"],
-                reverse_max_m=row["validity"]["reverse_max_m"]))
+                cpu_s=row["summary"]["cpu_s"],
+                reverse_max_m=row["validity"]["reverse_max_m"],
+                reverse_total_m=row.get("physical", {}).get("reverse_total_m"),
+                guard_refusals=row.get("physical", {}).get("guard_refusals"),
+                domain_rejections=row.get("physical", {}).get("domain_rejections"),
+                recovery_status=row.get("physical", {}).get("recovery_status"),
+                recovery_success=row.get("physical", {}).get("recovery_success"),
+                confirmed_passages=row.get("physical", {}).get("confirmed_passages")))
     outputs["training_table"] = str(table)
     components = []
     for row in history:
         receipt = root / row["folder"] / "reward-summary.json"
         components.append(json_file(receipt)["by_component"] if receipt.exists() else {})
-    keys = ["progress", "passage", "arrival", "time", "reverse", "idle", "invalid"]
+    keys = ["progress", "passage", "arrival", "collective_recovery",
+            "time", "reverse", "idle", "invalid"]
     fig, ax = plt.subplots(figsize=(9, 5), constrained_layout=True)
     for key in keys:
         values = [row.get(key, 0.0) for row in components]
@@ -233,6 +248,34 @@ def render_figures(root):
     fig.savefig(target, dpi=220)
     plt.close(fig)
     outputs["reward_components"] = str(target)
+    updates = [(row["index"] + 1, loss) for row in history
+               for loss in row["learning"].get("losses", [])]
+    if updates:
+        fig, ax = plt.subplots(figsize=(9, 5), constrained_layout=True)
+        for key in ("policy", "value", "total", "entropy"):
+            ax.plot([episode for episode, _ in updates],
+                    [loss[key] for _, loss in updates], ".", label=key)
+        ax.set(xlabel="Épisode", ylabel="Valeur mesurée",
+               title="Pertes et entropie à chaque mise à jour PPO")
+        ax.legend()
+        target = folder / "ppo_losses.png"
+        fig.savefig(target, dpi=220)
+        plt.close(fig)
+        outputs["ppo_losses"] = str(target)
+    if any("physical" in row for row in history):
+        fig, ax = plt.subplots(figsize=(9, 4), constrained_layout=True)
+        ax.step(xs, [int(row.get("physical", {}).get("recovery_success", False))
+                     for row in history], where="mid", label="reprise durable")
+        ax.step(xs, [int(row["qualified_label"] == "POSITIVE_CONFIRMED")
+                     for row in history], where="mid", alpha=0.5,
+                label="obstruction nominale qualifiée")
+        ax.set(xlabel="Épisode", ylabel="0 ou 1",
+               title="Obstruction et récupération physique observées", ylim=(-0.1, 1.1))
+        ax.legend()
+        target = folder / "physical_recovery.png"
+        fig.savefig(target, dpi=220)
+        plt.close(fig)
+        outputs["physical_recovery"] = str(target)
     validation = root / "reports" / "validation_summary.json"
     if validation.exists():
         comparisons = json_file(validation)["comparisons"]
@@ -253,7 +296,9 @@ def render_figures(root):
                     nominal_success=paired["nominal"]["success"],
                     gain_non_spontaneous=paired["improvement_not_spontaneous"]))
         outputs["comparison_table"] = str(table)
-        methods = ["b3", "p4", "graph_marl"]
+        neural_name = ("graph_ppo" if any(row["method"] == "graph_ppo"
+                                       for row in comparisons) else "graph_marl")
+        methods = ["b3", "p4", neural_name]
         gains = [sum(row["paired"]["improvement_not_spontaneous"]
                      for row in comparisons if row["method"] == method)
                  for method in methods]

@@ -3,6 +3,7 @@
 import argparse
 import gzip
 import json
+import math
 import os
 from pathlib import Path
 import random
@@ -16,6 +17,7 @@ from ..laboratory.checkpoints import CheckpointStore, restore_random_state
 from ..laboratory.storage import atomic_json, file_hash, json_file, single_writer
 from .environment import run
 from .evaluation import compare
+from .evaluation import physical_outcome, rows as physical_rows
 from .graph_marl_core import (
     compatibility, load_config, make_model, ppo_update, scenario,
     status_of_episode, weight_hash,
@@ -28,20 +30,26 @@ from .verified_passage_policy import GuardEnvelopePassagePolicy
 class RewardTracker:
     """Récompense hors acteur calculée après le pas natif."""
 
-    def __init__(self, weights, policies):
+    def __init__(self, weights, policies, affected=None):
         self.weights, self.policies = weights, policies
+        self.affected = None if affected is None else frozenset(affected)
         self.rewards, self.components = [], []
         self.progress, self.reverse, self.arrivals = {}, {}, set()
         self.passage_attempts = set()
         self.last_progress_at = {}
         self.error_count = 0
+        self.physical_finalized = False
+        self.final_views = {}
 
     def __call__(self, instance):
         at = instance.at_s
+        self.final_views = dict(instance.views)
         part = dict(progress=0.0, passage=0.0, arrival=0.0,
                     collective_recovery=0.0, time=-self.weights["per_step_cost"],
                     reverse=0.0, idle=0.0, invalid=0.0)
         for ego, view in instance.views.items():
+            if self.affected is not None and ego not in self.affected:
+                continue
             progress = view.own["progress_m"]
             previous = self.progress.setdefault(ego, progress)
             length = instance.metadata["vehicles"][ego]["length_m"]
@@ -57,6 +65,8 @@ class RewardTracker:
             part["reverse"] -= self.weights["reverse_per_m"] * max(0.0, used - earlier)
             self.reverse[ego] = used
         new_arrivals = set(instance.arrivals) - self.arrivals
+        if self.affected is not None:
+            new_arrivals &= self.affected
         part["arrival"] += self.weights["arrival"] * len(new_arrivals)
         self.arrivals.update(new_arrivals)
         for policy in self.policies.values():
@@ -72,7 +82,66 @@ class RewardTracker:
                 len(instance.errors) - self.error_count)
             self.error_count = len(instance.errors)
         self.components.append(part)
-        self.rewards.append(sum(part.values()))
+        total = sum(part.values())
+        if not math.isfinite(total):
+            raise ValueError("Récompense non finie.")
+        self.rewards.append(total)
+
+    def finalize_physical(self, folder, summary, affected, reference_start_s,
+                          nominal_folder=None):
+        """Ne prime un succès collectif que s'il n'est pas spontané."""
+        if self.physical_finalized:
+            raise RuntimeError("Récompense terminale déjà évaluée.")
+        self.physical_finalized = True
+        if not self.components or len(affected) < 2 or summary["errors"]:
+            return None
+        outcome = physical_outcome(
+            list(physical_rows(folder / "reference.jsonl.gz")),
+            json_file(folder / "physical-annotation.json"),
+            json_file(folder / "metadata.json"), summary["arrivals"],
+            set(affected), reference_start_s,
+            json_file(folder / "contract.json"),
+        )
+        nominal_success = None
+        applied_releases = None
+        if nominal_folder is not None:
+            nominal_folder = Path(nominal_folder)
+            nominal_summary = json_file(nominal_folder / "summary.json")
+            nominal = physical_outcome(
+                list(physical_rows(nominal_folder / "reference.jsonl.gz")),
+                json_file(nominal_folder / "physical-annotation.json"),
+                json_file(nominal_folder / "metadata.json"),
+                nominal_summary["arrivals"], set(affected), reference_start_s,
+                json_file(nominal_folder / "contract.json"),
+            )
+            nominal_success = nominal["success"]
+            with gzip.open(folder / "commands.jsonl.gz", "rt",
+                           encoding="utf-8") as stream:
+                applied_releases = sum(
+                    row["guard"]["accepted"]
+                    and row["applied"]["reason"] in {
+                        "cooperative_release", "graph_policy_option"}
+                    for row in (json.loads(line) for line in stream)
+                )
+        bonus_credited = (outcome["success"] and not nominal_success
+                          and (nominal_folder is None or applied_releases > 0))
+        bonus_at_s = None
+        if bonus_credited:
+            bonus = self.weights["collective_recovery"]
+            bonus_at_s = outcome.get("t_conf_s")
+            if bonus_at_s is None:
+                bonus_at_s = summary["at_s"]
+            step_s = summary["at_s"] / len(self.rewards)
+            index = min(len(self.rewards) - 1,
+                        max(0, round(bonus_at_s / step_s) - 1))
+            self.components[index]["collective_recovery"] += bonus
+            self.rewards[index] += bonus
+        return dict({key: value for key, value in outcome.items()
+                     if key != "timeline"},
+                    nominal_success=nominal_success,
+                    applied_cooperative_commands=applied_releases,
+                    bonus_credited=bonus_credited,
+                    bonus_at_s=bonus_at_s)
 
 
 def _json_lines(path, rows):
@@ -121,11 +190,13 @@ def _recoverable_folder(base):
 
 
 def _episode(spec, folder, config, model=None, *, method="graph_policy", updates=0,
-             sample=True, record_rewards=False):
+             sample=True, record_rewards=False, affected=None,
+             reference_start_s=None, nominal_folder=None):
     if folder.exists():
         raise FileExistsError(f"Épisode déjà présent : {folder}")
     decisions, policies = [], {}
-    tracker = RewardTracker(config["reward"], policies) if record_rewards else None
+    tracker = (RewardTracker(config["reward"], policies, affected=affected)
+               if record_rewards else None)
 
     def factory(ego, endpoint, contract):
         cls = P4GraphPolicy if method == "graph_policy" else (
@@ -142,20 +213,40 @@ def _episode(spec, folder, config, model=None, *, method="graph_policy", updates
         measurement_contract=config["measurement_contract"],
         policy_factory=None if method == "nominal" else factory,
         instrumentation_hook=tracker,
-        policy_version=dict(updates=updates, source="Graph-MARL-P4")
+        policy_version=dict(
+            updates=updates,
+            source=("Graph-PPO-P4" if config["version"] == "REC-GRAPH-PPO-P4-2"
+                    else "Graph-MARL-P4"))
         if method == "graph_policy" else None,
     )
     if method == "graph_policy":
         _json_lines(folder / "neural-decisions.jsonl", decisions)
         _command_evidence(folder, decisions)
     if tracker is not None:
+        outcome = None
+        if affected and reference_start_s is not None:
+            outcome = tracker.finalize_physical(
+                folder, summary, affected, reference_start_s,
+                nominal_folder=nominal_folder)
         _json_lines(folder / "reward-components.jsonl", tracker.components)
         atomic_json(folder / "reward-summary.json", dict(
             total=sum(tracker.rewards),
             by_component={key: sum(row[key] for row in tracker.components)
                           for key in tracker.components[0]} if tracker.components else {},
             confirmed_passage_attempts=len(tracker.passage_attempts),
+            physical_recovery=outcome,
         ))
+    rejected = {ego: policy.request_domain_rejections
+                for ego, policy in policies.items()
+                if getattr(policy, "request_domain_rejections", 0)}
+    atomic_json(folder / "policy-domain-summary.json", dict(
+        rejected_clearance_requests=sum(rejected.values()),
+        by_vehicle=rejected,
+        examples={ego: policy.request_domain_examples
+                  for ego, policy in policies.items()
+                  if getattr(policy, "request_domain_rejections", 0)},
+        reason="requested_space_outside_REC_V2V_domain",
+    ))
     atomic_json(folder / "graph-marl-manifest.json", dict(files={
         path.name: file_hash(path) for path in folder.iterdir() if path.is_file()
     }))
@@ -231,9 +322,15 @@ def _preflight(config_path, root):
     else:
         if folder.exists():
             folder = folder.with_name(folder.name + f"-retry-{time.time_ns()}")
+        affected, reference_start, nominal_folder = None, None, None
+        if config["version"] == "REC-GRAPH-PPO-P4-2":
+            from .graph_ppo_campaign import _qualified_reference
+            affected, reference_start, nominal_folder = _qualified_reference(config, row)
         summary, decisions, tracker = _episode(
             scenario(row, "preflight"), folder, config, model,
-            record_rewards=True,
+            record_rewards=True, affected=affected,
+            reference_start_s=reference_start,
+            nominal_folder=nominal_folder,
         )
         reward_sum = sum(tracker.rewards)
         reward_steps = tracker.rewards
@@ -278,6 +375,9 @@ def _progress(root, history, state, **extra):
 def train(config_path, root):
     """Reprend uniquement à une frontière d'épisode complet vérifiée."""
     config, root = _prepare(config_path, root)
+    if config["version"] == "REC-GRAPH-PPO-P4-2":
+        from .graph_ppo_campaign import train as train_graph_ppo
+        return train_graph_ppo(config_path, root)
     gate = json_file(root / "reports" / "preflight.json")
     if not gate["proceed"]:
         raise ValueError("Le précontrôle physique ou neuronal a échoué.")
@@ -354,7 +454,10 @@ def _validate(config_path, root):
     """Évalue sans gradient les checkpoints terminaux sur des parents distincts."""
     config, root = _prepare(config_path, root)
     training_status = json_file(root / "reports" / "experiment_status.json")
-    if training_status.get("state") != "training_complete":
+    allowed_states = {"training_complete"}
+    if config["version"] == "REC-GRAPH-PPO-P4-2":
+        allowed_states.add("wall_budget_at_boundary")
+    if training_status.get("state") not in allowed_states:
         raise ValueError("L'entraînement prévu n'est pas terminé.")
     _, model, _, store, saved, receipt = initialize(config_path, root)
     if saved is None or not saved["history"]:
@@ -382,11 +485,23 @@ def _validate(config_path, root):
         atomic_json(root / "reports" / "validation_status.json",
                     dict(state="running", phase="nominal_reference", scene=index,
                          checkpoint=None))
-        base = root / "validation" / "baselines" / f"scene-{index:02d}" / "nominal"
-        folder, completed = _recoverable_folder(base)
-        if not completed:
-            _episode(scenario(scene_row, "validation"), folder, config,
-                     method="nominal")
+        if config["version"] == "REC-GRAPH-PPO-P4-2":
+            qualified = next((item for item in json_file(
+                Path(config["qualification_root"]) / "qualification.json")["scenes"]
+                if item["split"] == "validation"
+                and item["source_id"] == scene_row["source_id"]), None)
+            folder = (Path(config["qualification_root"]) / "nominal" /
+                      "validation" / scene_row["source_id"])
+            if (qualified is None or not qualified["status"]["valid"]
+                    or file_hash(folder / "physical-annotation.json")
+                    != qualified["annotation_sha256"]):
+                raise ValueError("Référence nominale de validation invalide.")
+        else:
+            base = root / "validation" / "baselines" / f"scene-{index:02d}" / "nominal"
+            folder, completed = _recoverable_folder(base)
+            if not completed:
+                _episode(scenario(scene_row, "validation"), folder, config,
+                         method="nominal")
         nominal_folders[index] = folder
     scores = []
     for candidate in candidates:
@@ -454,7 +569,7 @@ def _validate(config_path, root):
                          checkpoint=selected["checkpoint"]))
         spec = scenario(scene_row, "validation")
         folders = {}
-        for method in ("nominal", "b3", "p4"):
+        for method in ("b3", "p4"):
             if stop.exists():
                 atomic_json(root / "reports" / "validation_status.json",
                             dict(state="stopped_at_scene_boundary"))
@@ -464,10 +579,13 @@ def _validate(config_path, root):
             if not completed:
                 _episode(spec, folder, config, method=method)
             folders[method] = folder
+        folders["nominal"] = nominal_folders[index]
         graph_folder = root / selected["scenes"][index]["folder"]
+        neural_name = ("graph_ppo" if config["version"] == "REC-GRAPH-PPO-P4-2"
+                       else "graph_marl")
         for method, folder in [("b3", folders["b3"]),
                                ("p4", folders["p4"]),
-                               ("graph_marl", graph_folder)]:
+                               (neural_name, graph_folder)]:
             comparison = compare(
                 folders["nominal"], folder,
                 root / "validation" / "comparisons" /
