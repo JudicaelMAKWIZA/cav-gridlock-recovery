@@ -110,7 +110,7 @@ display({'architecture': str(model), 'parameters': sum(p.numel() for p in model.
          len(saved['history']) if saved else 0})""")
 
 section(8, "Précontrôle physique — exécution par l'étudiant",
-        "**Cette cellule lance le premier épisode MetaDrive.** Elle vérifie le garde, les décisions neuronales, les récompenses et les sorties. Un verdict défavorable bloque 09. Son résultat n'est pas une validation scientifique.",
+        "**Cette cellule lance le premier épisode MetaDrive.** Elle vérifie le garde, les décisions neuronales, la présence d'au moins une alternative physique admissible, les récompenses et les sorties. Elle indique séparément les commandes coopératives réellement appliquées. Un verdict défavorable bloque 09. Ce contrôle n'est pas une validation scientifique.",
         BOOT + """from cav_recovery.recovery.graph_marl_training import preflight
 verdict = preflight(CONFIG, ROOT)
 display(verdict)

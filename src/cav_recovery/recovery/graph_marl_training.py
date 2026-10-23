@@ -237,11 +237,19 @@ def _preflight(config_path, root):
         reward_sum = sum(tracker.rewards)
         reward_steps = tracker.rewards
     validity = status_of_episode(summary)
+    available_choices = sum(row["admissible_count"] > 1 for row in decisions)
+    with gzip.open(folder / "commands.jsonl.gz", "rt", encoding="utf-8") as stream:
+        applied_options = sum(
+            json.loads(line)["applied"]["reason"] == "cooperative_release"
+            for line in stream
+        )
     validity.update(neural_decisions=len(decisions),
                     neural_non_hold=sum(row["action"] != 0 for row in decisions),
+                    choices_with_physical_alternative=available_choices,
+                    applied_cooperative_commands=applied_options,
                     reward_sum=reward_sum, folder=str(folder.relative_to(root)),
                     proceed=validity["valid"] and bool(decisions)
-                    and bool(reward_steps))
+                    and bool(available_choices) and bool(reward_steps))
     atomic_json(report, validity)
     return validity
 
