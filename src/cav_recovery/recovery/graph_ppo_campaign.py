@@ -96,7 +96,9 @@ def _learn_from_episode(model, optimizer, config, folder, summary, decisions,
                         tracker, validity, pending):
     """Ajoute les options complètes au lot puis met à jour seulement au seuil."""
     if not validity["valid"]:
-        return dict(updates=0, decisions=0, reason="episode_invalide"), pending
+        return dict(updates=0, decisions=0, collected_transitions=0,
+                    trained_transitions=0, ppo_batches=0,
+                    reason="episode_invalide"), pending
     bootstrap = _bootstrap_values(model, tracker.final_views,
                                   summary["arrivals"])
     new = option_transitions(
@@ -112,10 +114,15 @@ def _learn_from_episode(model, optimizer, config, folder, summary, decisions,
     pending.extend(new)
     if len(pending) < config["ppo_batch_size"]:
         return (dict(updates=0, decisions=len(new),
+                     collected_transitions=len(new), trained_transitions=0,
+                     ppo_batches=0,
                      reason="accumulation_on_policy", pending=len(pending)),
                 pending)
     metrics = ppo_update_batch(model, optimizer, pending,
                                **_learning_config(config))
+    metrics.update(collected_transitions=len(new),
+                   trained_transitions=len(pending), ppo_batches=1,
+                   pending=0)
     return metrics, []
 
 
@@ -131,6 +138,10 @@ def _physical_metrics(folder, summary, tracker):
         confirmed_passages=len(tracker.passage_attempts),
         recovery_status=None if recovery is None else recovery["status"],
         recovery_success=False if recovery is None else recovery["success"],
+        recovery_time_s=None if recovery is None else recovery.get("t_conf_s"),
+        affected_count=len(tracker.affected or ()),
+        affected_arrivals=sum(ego in summary["arrivals"]
+                              for ego in (tracker.affected or ())),
         relapse=False if recovery is None else recovery.get("relapse", False),
         domain_rejections=json_file(folder / "policy-domain-summary.json")[
             "rejected_clearance_requests"],
@@ -151,6 +162,19 @@ def _periodic_validation(config, root, model, episode_index):
     if len(identifiers) != len(set(identifiers)) or any(key not in rows for key in identifiers):
         raise ValueError("Sous-ensemble de validation périodique invalide.")
     before = weight_hash(model)
+    started = time.monotonic()
+    target_summary = (root / "validation" / "periodic" /
+                      f"after-{episode_index:03d}" / "summary.json")
+    for earlier in sorted((root / "validation" / "periodic").glob(
+            "after-*/summary.json")):
+        previous = json_file(earlier)
+        if previous["weight_hash"] == before:
+            atomic_json(target_summary, dict(
+                episode_index=episode_index, weight_hash=before,
+                outcomes=previous["outcomes"], elapsed_wall_s=0.0,
+                reused_from=str(earlier.relative_to(root)),
+            ))
+            return previous["outcomes"]
     state = random_state()
     previous_mode = model.training
     model.eval()
@@ -188,10 +212,9 @@ def _periodic_validation(config, root, model, episode_index):
         restore_random_state(state)
     if weight_hash(model) != before:
         raise RuntimeError("La validation a modifié les poids du réseau.")
-    atomic_json(root / "validation" / "periodic" /
-                f"after-{episode_index:03d}" / "summary.json",
+    atomic_json(target_summary,
                 dict(episode_index=episode_index, weight_hash=before,
-                     outcomes=outcomes))
+                     outcomes=outcomes, elapsed_wall_s=time.monotonic() - started))
     return outcomes
 
 
@@ -207,6 +230,15 @@ def train(config_path, root):
         history = [] if saved is None else saved["history"]
         pending = [] if saved is None else saved.get("pending_transitions", [])
         step = 0 if saved is None else saved["global_step"]
+        if saved is None:
+            receipt = store.save(dict(
+                global_step=0, model=model.state_dict(),
+                optimizer=optimizer.state_dict(), history=[],
+                pending_transitions=[], weight_hash=weight_hash(model),
+                consumed_wall_s=0.0, episodes_completed=0,
+                optimizer_steps=0, ppo_batches=0,
+                collected_transitions=0, trained_transitions=0,
+            ))
         if history and not history[-1]["validity"]["valid"]:
             raise RuntimeError("Dernier épisode invalide : reprise interdite.")
         if saved is not None:
@@ -217,16 +249,22 @@ def train(config_path, root):
         _progress(root, history, "running", total=len(scenes), checkpoint=receipt)
         for index in range(len(history), len(scenes)):
             if (root / "stop-requested").exists():
-                _progress(root, history, "stopped_at_boundary", total=len(scenes))
+                _progress(root, history, "stopped_at_boundary", total=len(scenes),
+                          checkpoint=receipt, pending_decisions=len(pending),
+                          unused_on_policy_transitions=len(pending))
                 return 86
             consumed = previously_consumed + time.monotonic() - started
             if history and consumed >= 60 * config["maximum_wall_minutes"]:
-                _progress(root, history, "wall_budget_at_boundary", total=len(scenes))
+                _progress(root, history, "wall_budget_at_boundary", total=len(scenes),
+                          checkpoint=receipt, pending_decisions=len(pending),
+                          unused_on_policy_transitions=len(pending))
                 return 86
             row = scenes[index]
             if not _memory_ready(config, row["vehicles"]):
                 _progress(root, history, "memory_pressure_at_boundary",
-                          total=len(scenes), next_vehicles=row["vehicles"])
+                          total=len(scenes), next_vehicles=row["vehicles"],
+                          checkpoint=receipt, pending_decisions=len(pending),
+                          unused_on_policy_transitions=len(pending))
                 return 86
             affected, reference_start, nominal_folder = _qualified_reference(config, row)
             folder = _episode_folder(root, index)
@@ -237,15 +275,22 @@ def train(config_path, root):
                 record_rewards=True, affected=affected,
                 reference_start_s=reference_start,
                 nominal_folder=nominal_folder,
+                detailed_trace=(not config.get("light_training_trace", False)
+                                or index == 0),
             )
             validity = status_of_episode(summary)
             metrics, pending = _learn_from_episode(
                 model, optimizer, config, folder, summary, decisions,
                 tracker, validity, pending)
+            completed_updates = sum(item["learning"]["updates"] for item in history)
+            for offset, loss in enumerate(metrics.get("losses", []), start=1):
+                loss["global_update_step"] = completed_updates + offset
+                loss["episode"] = index + 1
             step += len(tracker.rewards)
             history.append(dict(
                 index=index, name=row["name"], seed=row["seed"],
                 qualified_label=row["qualified_label"],
+                qualified_affected=affected,
                 folder=str(folder.relative_to(root)), summary=summary,
                 validity=validity, learning=metrics,
                 neural_decisions=len(decisions),
@@ -264,15 +309,30 @@ def train(config_path, root):
                 global_step=step, model=model.state_dict(),
                 optimizer=optimizer.state_dict(), history=history,
                 pending_transitions=pending, weight_hash=weight_hash(model),
-                consumed_wall_s=previously_consumed + time.monotonic() - started))
+                consumed_wall_s=previously_consumed + time.monotonic() - started,
+                episodes_completed=len(history),
+                optimizer_steps=sum(item["learning"]["updates"] for item in history),
+                ppo_batches=sum(item["learning"].get("ppo_batches", 0)
+                                for item in history),
+                collected_transitions=sum(item["learning"].get(
+                    "collected_transitions", 0) for item in history),
+                trained_transitions=sum(item["learning"].get(
+                    "trained_transitions", 0) for item in history)))
             atomic_json(root / "training" / "history.json", history)
             _progress(root, history, "running", total=len(scenes), checkpoint=receipt,
-                      pending_decisions=len(pending))
+                      pending_decisions=len(pending),
+                      collected_transitions=sum(item["learning"].get(
+                          "collected_transitions", 0) for item in history),
+                      trained_transitions=sum(item["learning"].get(
+                          "trained_transitions", 0) for item in history),
+                      optimizer_steps=sum(item["learning"]["updates"]
+                                          for item in history))
             if not validity["valid"]:
                 _progress(root, history, "invalid_episode_stop",
                           total=len(scenes), checkpoint=receipt,
                           problems=validity["problems"])
                 return 87
         _progress(root, history, "training_complete", total=len(scenes),
-                  checkpoint=receipt, pending_decisions=len(pending))
+                  checkpoint=receipt, pending_decisions=len(pending),
+                  unused_on_policy_transitions=len(pending))
     return 0

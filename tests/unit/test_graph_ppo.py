@@ -15,6 +15,8 @@ from cav_recovery.recovery import graph_ppo_campaign
 from cav_recovery.recovery import graph_marl_training
 from cav_recovery.recovery.verified_passage_policy import GuardEnvelopePassagePolicy
 from cav_recovery.recovery.graph_marl_notebook import render_figures
+from cav_recovery.recovery.graph_marl_notebook import close_training
+from cav_recovery.recovery.graph_ppo_validation import select_checkpoint
 from cav_recovery.laboratory.storage import atomic_json, file_hash
 from cav_recovery.laboratory.checkpoints import CheckpointStore
 
@@ -124,6 +126,28 @@ def test_ppo_minibatches_change_weights_and_reject_stale_batch():
         ppo_update_batch(model, optimizer, transitions, **settings)
 
 
+def test_frozen_twelve_transition_batch_has_four_real_optimizer_steps():
+    torch.manual_seed(12)
+    model = GraphActorCritic()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0003)
+    decisions = [decision(model, f"V{index}", 0.0)
+                 for index in range(12)]
+    transitions = option_transitions(decisions, [0.5, 1.0],
+                                     gamma=0.99, terminal=True)
+    before = [parameter.detach().clone() for parameter in model.parameters()]
+    result = ppo_update_batch(
+        model, optimizer, transitions, epochs=2, minibatch_size=6,
+        clip_ratio=0.2, value_coefficient=0.5,
+        entropy_coefficient=0.01, gradient_norm=0.5)
+    assert result["decisions"] == 12
+    assert result["updates"] == 4
+    assert len(result["losses"]) == 4
+    assert all(torch.isfinite(torch.tensor(list(loss.values()))).all()
+               for loss in result["losses"])
+    assert any(not torch.equal(previous, parameter)
+               for previous, parameter in zip(before, model.parameters()))
+
+
 def test_catalogue_constructs_requested_population_without_prefix_cut():
     row = dict(name="collective-3", seed=231004, vehicles=8, horizon_s=240.0)
     spec = scenario(row, "train")
@@ -219,8 +243,10 @@ def test_periodic_validation_preserves_weights_and_random_state(tmp_path, monkey
                   scenes={"validation": [row]})
     model = GraphActorCritic()
     before = [parameter.detach().clone() for parameter in model.parameters()]
+    calls = []
 
     def fake_episode(spec, folder, configuration, network, *, sample):
+        calls.append(folder)
         random.random()
         folder.mkdir(parents=True)
         atomic_json(folder / "graph-marl-manifest.json", {"files": {}})
@@ -237,7 +263,11 @@ def test_periodic_validation_preserves_weights_and_random_state(tmp_path, monkey
     random.seed(7)
     result = graph_ppo_campaign._periodic_validation(config, tmp_path / "campaign",
                                                       model, 10)
+    again = graph_ppo_campaign._periodic_validation(config, tmp_path / "campaign",
+                                                     model, 20)
     assert result[0]["source_id"] == "positive"
+    assert again == result
+    assert len(calls) == 1
     assert random.random() == expected
     assert all(torch.equal(old, parameter) for old, parameter in zip(before, model.parameters()))
 
@@ -298,6 +328,57 @@ def test_training_resumes_at_boundary_with_pending_on_policy_options(tmp_path,
     assert resumed["history"][-1]["learning"]["updates"] == 4
     assert resumed["weight_hash"] != saved["weight_hash"]
     assert resumed["consumed_wall_s"] >= saved["consumed_wall_s"]
+    assert [row["global_update_step"] for row in
+            resumed["history"][-1]["learning"]["losses"]] == [1, 2, 3, 4]
+    assert resumed["history"][-1]["learning"]["ppo_batches"] == 1
+
+
+def test_checkpoint_selection_uses_periodic_evidence_not_recency(tmp_path):
+    store = CheckpointStore(tmp_path / "checkpoints", {"contract": "test"})
+    receipts = []
+    for index, fingerprint in enumerate(("initial", "good", "late", "late")):
+        receipts.append(store.save(dict(
+            global_step=index, model={}, optimizer={}, weight_hash=fingerprint,
+            history=[] if index == 0 else [dict(learning={"updates": 1})],
+            pending_transitions=[],
+        )))
+    for episode, fingerprint, gain in ((12, "good", True), (24, "late", False)):
+        folder = tmp_path / "validation" / "periodic" / f"after-{episode:03d}"
+        folder.mkdir(parents=True)
+        atomic_json(folder / "summary.json", dict(
+            episode_index=episode, weight_hash=fingerprint,
+            outcomes=[dict(validity={"valid": True, "arrived": 4},
+                           paired={"improvement_not_spontaneous": gain})],
+        ))
+    selected, record = select_checkpoint(tmp_path, store)
+    assert selected == receipts[1]
+    assert record["distinct_trained_weights"] == 2
+    assert record["rule"] == "periodic_gains_then_arrivals_then_earliest"
+
+
+def test_voluntary_closure_keeps_checkpoint_and_pending_count(tmp_path, monkeypatch):
+    import cav_recovery.recovery.graph_marl_notebook as notebook
+
+    folder = tmp_path / "checkpoints"
+    folder.mkdir()
+    checkpoint = folder / "checkpoint.pt"
+    checkpoint.write_bytes(b"checkpoint conserve")
+    receipt = dict(file=checkpoint.name, sha256=file_hash(checkpoint))
+    atomic_json(folder / "latest.json", receipt)
+    atomic_json(tmp_path / "reports" / "experiment_status.json", dict(
+        state="stopped_at_boundary", completed_episodes=3,
+        pending_decisions=7))
+    atomic_json(tmp_path / "training" / "history.json", [
+        dict(learning={"updates": 1})])
+    (tmp_path / "stop-requested").touch()
+    monkeypatch.setattr(notebook, "process_status", lambda root: dict(
+        alive=False, experiment=json.loads((tmp_path / "reports" /
+                                             "experiment_status.json").read_text())))
+    result = close_training(tmp_path)
+    assert result["pending_decisions"] == 7
+    assert not (tmp_path / "stop-requested").exists()
+    assert json.loads((tmp_path / "reports" / "experiment_status.json").read_text())["state"] == "closed_at_boundary"
+    assert checkpoint.read_bytes() == b"checkpoint conserve"
 
 
 def test_collective_reward_requires_non_spontaneous_native_intervention(

@@ -141,7 +141,8 @@ class RewardTracker:
                     nominal_success=nominal_success,
                     applied_cooperative_commands=applied_releases,
                     bonus_credited=bonus_credited,
-                    bonus_at_s=bonus_at_s)
+                    bonus_at_s=bonus_at_s,
+                    attribution_to_graph="not_established_without_P4_counterfactual")
 
 
 def _json_lines(path, rows):
@@ -191,7 +192,7 @@ def _recoverable_folder(base):
 
 def _episode(spec, folder, config, model=None, *, method="graph_policy", updates=0,
              sample=True, record_rewards=False, affected=None,
-             reference_start_s=None, nominal_folder=None):
+             reference_start_s=None, nominal_folder=None, detailed_trace=False):
     if folder.exists():
         raise FileExistsError(f"Épisode déjà présent : {folder}")
     decisions, policies = [], {}
@@ -213,9 +214,11 @@ def _episode(spec, folder, config, model=None, *, method="graph_policy", updates
         measurement_contract=config["measurement_contract"],
         policy_factory=None if method == "nominal" else factory,
         instrumentation_hook=tracker,
+        record_diagnostic_inputs=(detailed_trace or
+                                  not config.get("light_training_trace", False)),
         policy_version=dict(
             updates=updates,
-            source=("Graph-PPO-P4" if config["version"] == "REC-GRAPH-PPO-P4-2"
+            source=("Graph-PPO-P4" if config["version"].startswith("REC-GRAPH-PPO-P4-")
                     else "Graph-MARL-P4"))
         if method == "graph_policy" else None,
     )
@@ -323,7 +326,7 @@ def _preflight(config_path, root):
         if folder.exists():
             folder = folder.with_name(folder.name + f"-retry-{time.time_ns()}")
         affected, reference_start, nominal_folder = None, None, None
-        if config["version"] == "REC-GRAPH-PPO-P4-2":
+        if config["version"].startswith("REC-GRAPH-PPO-P4-"):
             from .graph_ppo_campaign import _qualified_reference
             affected, reference_start, nominal_folder = _qualified_reference(config, row)
         summary, decisions, tracker = _episode(
@@ -331,6 +334,7 @@ def _preflight(config_path, root):
             record_rewards=True, affected=affected,
             reference_start_s=reference_start,
             nominal_folder=nominal_folder,
+            detailed_trace=True,
         )
         reward_sum = sum(tracker.rewards)
         reward_steps = tracker.rewards
@@ -375,7 +379,7 @@ def _progress(root, history, state, **extra):
 def train(config_path, root):
     """Reprend uniquement à une frontière d'épisode complet vérifiée."""
     config, root = _prepare(config_path, root)
-    if config["version"] == "REC-GRAPH-PPO-P4-2":
+    if config["version"].startswith("REC-GRAPH-PPO-P4-"):
         from .graph_ppo_campaign import train as train_graph_ppo
         return train_graph_ppo(config_path, root)
     gate = json_file(root / "reports" / "preflight.json")
@@ -453,9 +457,12 @@ def train(config_path, root):
 def _validate(config_path, root):
     """Évalue sans gradient les checkpoints terminaux sur des parents distincts."""
     config, root = _prepare(config_path, root)
+    if config["version"] == "REC-GRAPH-PPO-P4-3":
+        from .graph_ppo_validation import validate as validate_graph_ppo
+        return validate_graph_ppo(config_path, root)
     training_status = json_file(root / "reports" / "experiment_status.json")
     allowed_states = {"training_complete"}
-    if config["version"] == "REC-GRAPH-PPO-P4-2":
+    if config["version"].startswith("REC-GRAPH-PPO-P4-"):
         allowed_states.add("wall_budget_at_boundary")
     if training_status.get("state") not in allowed_states:
         raise ValueError("L'entraînement prévu n'est pas terminé.")
@@ -485,7 +492,7 @@ def _validate(config_path, root):
         atomic_json(root / "reports" / "validation_status.json",
                     dict(state="running", phase="nominal_reference", scene=index,
                          checkpoint=None))
-        if config["version"] == "REC-GRAPH-PPO-P4-2":
+        if config["version"].startswith("REC-GRAPH-PPO-P4-"):
             qualified = next((item for item in json_file(
                 Path(config["qualification_root"]) / "qualification.json")["scenes"]
                 if item["split"] == "validation"
@@ -581,7 +588,7 @@ def _validate(config_path, root):
             folders[method] = folder
         folders["nominal"] = nominal_folders[index]
         graph_folder = root / selected["scenes"][index]["folder"]
-        neural_name = ("graph_ppo" if config["version"] == "REC-GRAPH-PPO-P4-2"
+        neural_name = ("graph_ppo" if config["version"].startswith("REC-GRAPH-PPO-P4-")
                        else "graph_marl")
         for method, folder in [("b3", folders["b3"]),
                                ("p4", folders["p4"]),
@@ -607,14 +614,21 @@ def _validate(config_path, root):
     return scores
 
 
-def validate(config_path, root):
+def validate(config_path, root, *, full=False):
     with single_writer(Path(root) / "writer"):
+        if full:
+            config, root = _prepare(config_path, root)
+            if config["version"] != "REC-GRAPH-PPO-P4-3":
+                raise ValueError("Extension complète réservée à Graph-PPO P4-3.")
+            from .graph_ppo_validation import validate as validate_graph_ppo
+            return validate_graph_ppo(config_path, root, full=True)
         return _validate(config_path, root)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("task", choices=["preflight", "train", "validate"])
+    parser.add_argument("task", choices=["preflight", "train", "validate",
+                                         "validate_full"])
     parser.add_argument("--config", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -623,7 +637,8 @@ def main():
     elif args.task == "train":
         print("Code de sortie :", train(args.config, args.output), flush=True)
     else:
-        print(validate(args.config, args.output), flush=True)
+        print(validate(args.config, args.output,
+                       full=args.task == "validate_full"), flush=True)
 
 
 if __name__ == "__main__":

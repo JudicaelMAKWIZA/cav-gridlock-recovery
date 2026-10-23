@@ -73,6 +73,7 @@ def process_status(root):
                     and experiment.get("state") in {
                         "training_complete", "memory_pressure_at_boundary",
                         "wall_budget_at_boundary", "stopped_at_boundary",
+                        "closed_at_boundary",
                         "invalid_episode_stop", "interrupted_at_episode",
                     })
     starting = bool(process and not terminal and not worker_alive
@@ -95,7 +96,7 @@ def process_status(root):
 
 def launch(task, project, root):
     """Démarre au plus un producteur externe ; le noyau reste interactif."""
-    if task not in {"train", "validate"}:
+    if task not in {"train", "validate", "validate_full"}:
         raise ValueError("Tâche inconnue.")
     project, root = Path(project).resolve(), Path(root).resolve()
     status = process_status(root)
@@ -104,23 +105,38 @@ def launch(task, project, root):
         raise RuntimeError(f"Une tâche est déjà active : PID {pid}.")
     config_path = root / "experiment-config.json"
     config = load_config(config_path)
-    if config["version"] == "REC-GRAPH-PPO-P4-2":
+    if config["version"].startswith("REC-GRAPH-PPO-P4-"):
         from .graph_ppo_campaign import readiness_gate
         readiness_gate(root)
     if task == "train":
+        if (config["version"] == "REC-GRAPH-PPO-P4-3"
+                and psutil.virtual_memory().available / 1024**3
+                < config["minimum_available_gib_eight_cav"]):
+            raise RuntimeError(
+                "Libérer de la mémoire avant le lancement : le seuil huit CAV "
+                f"est {config['minimum_available_gib_eight_cav']:.1f} Gio."
+            )
         gate = status["preflight"]
         if not gate or not gate.get("proceed"):
             raise RuntimeError("Exécuter d'abord la cellule 08 et résoudre ses alertes.")
-        if status["experiment"] and status["experiment"].get("state") == "training_complete":
+        if status["experiment"] and status["experiment"].get("state") in {
+                "training_complete", "closed_at_boundary"}:
             raise RuntimeError("L'entraînement est déjà complet ; aucune relance nécessaire.")
     elif not (root / "checkpoints" / "latest.json").exists():
         raise RuntimeError("Aucun checkpoint entraîné pour la validation.")
     elif (not status["experiment"] or status["experiment"].get("state") not in
-          ({"training_complete", "wall_budget_at_boundary"}
-           if config["version"] == "REC-GRAPH-PPO-P4-2" else {"training_complete"})):
+          ({"training_complete", "wall_budget_at_boundary", "closed_at_boundary"}
+           if config["version"].startswith("REC-GRAPH-PPO-P4-")
+           else {"training_complete"})):
         raise RuntimeError("Terminer l'entraînement avant la validation.")
-    elif (root / "reports" / "validation_summary.json").exists():
+    elif task == "validate" and (root / "reports" / "validation_summary.json").exists():
         raise RuntimeError("La validation est déjà complète ; consulter ses résultats.")
+    elif task == "validate_full" and not (root / "reports" /
+                                           "validation_priority_summary.json").exists():
+        raise RuntimeError("La validation prioritaire doit précéder l'extension.")
+    elif task == "validate_full" and (root / "reports" /
+                                       "validation_full_summary.json").exists():
+        raise RuntimeError("La validation complète est déjà enregistrée.")
     (root / "stop-requested").unlink(missing_ok=True)
     folder = root / "training" / "logs"
     folder.mkdir(parents=True, exist_ok=True)
@@ -178,6 +194,38 @@ def request_stop(root):
     return "Arrêt demandé. L'épisode en cours se termine avant le checkpoint."
 
 
+def close_training(root):
+    """Clôt explicitement un arrêt à frontière, sans changer les poids."""
+    root = Path(root)
+    status = process_status(root)
+    if status["alive"]:
+        raise RuntimeError("Attendre la fin effective du producteur.")
+    experiment = status["experiment"]
+    if not experiment or experiment["state"] != "stopped_at_boundary":
+        raise RuntimeError("La clôture volontaire exige un arrêt à frontière.")
+    receipt_path = root / "checkpoints" / "latest.json"
+    if not receipt_path.exists():
+        raise RuntimeError("Aucun checkpoint à clôturer.")
+    receipt = json_file(receipt_path)
+    if file_hash(root / "checkpoints" / receipt["file"]) != receipt["sha256"]:
+        raise RuntimeError("Checkpoint altéré.")
+    if experiment.get("completed_episodes", 0) < 1:
+        raise RuntimeError("Aucun épisode terminé.")
+    history = recent_history(root)
+    if not any(row["learning"]["updates"] for row in history):
+        raise RuntimeError("Aucune mise à jour PPO ; reprendre avant de clôturer.")
+    (root / "stop-requested").unlink(missing_ok=True)
+    closure = dict(previous_state=experiment["state"],
+                   completed_episodes=experiment["completed_episodes"],
+                   pending_decisions=experiment.get("pending_decisions", 0),
+                   checkpoint=receipt, closed_at=time.time())
+    atomic_json(root / "reports" / "training_closure.json", closure)
+    atomic_json(root / "reports" / "experiment_status.json",
+                dict(experiment, state="closed_at_boundary", updated_at=time.time(),
+                     closure="reports/training_closure.json"))
+    return closure
+
+
 def recent_history(root):
     path = Path(root) / "training" / "history.json"
     return json_file(path) if path.exists() else []
@@ -210,9 +258,13 @@ def render_figures(root):
     with table.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=[
             "episode", "scene", "seed", "reward", "arrivals", "valid",
-            "decisions", "ppo_updates", "wall_s", "cpu_s", "reverse_max_m",
+            "decisions", "useful_choices", "collected_transitions",
+            "trained_transitions", "pending_transitions", "ppo_batches",
+            "ppo_updates", "wall_s", "cpu_s", "reverse_max_m",
             "reverse_total_m", "guard_refusals", "domain_rejections",
-            "recovery_status", "recovery_success", "confirmed_passages"])
+            "affected_count", "affected_arrivals", "recovery_status",
+            "recovery_success", "recovery_time_s", "relapse",
+            "confirmed_passages"])
         writer.writeheader()
         for row in history:
             writer.writerow(dict(
@@ -220,6 +272,11 @@ def render_figures(root):
                 reward=row["reward"], arrivals=row["validity"]["arrived"],
                 valid=row["validity"]["valid"],
                 decisions=row["learning"]["decisions"],
+                useful_choices=row.get("useful_choices", 0),
+                collected_transitions=row["learning"].get("collected_transitions", 0),
+                trained_transitions=row["learning"].get("trained_transitions", 0),
+                pending_transitions=row["learning"].get("pending", 0),
+                ppo_batches=row["learning"].get("ppo_batches", 0),
                 ppo_updates=row["learning"]["updates"],
                 wall_s=row["summary"]["wall_s"],
                 cpu_s=row["summary"]["cpu_s"],
@@ -227,8 +284,12 @@ def render_figures(root):
                 reverse_total_m=row.get("physical", {}).get("reverse_total_m"),
                 guard_refusals=row.get("physical", {}).get("guard_refusals"),
                 domain_rejections=row.get("physical", {}).get("domain_rejections"),
+                affected_count=row.get("physical", {}).get("affected_count"),
+                affected_arrivals=row.get("physical", {}).get("affected_arrivals"),
                 recovery_status=row.get("physical", {}).get("recovery_status"),
                 recovery_success=row.get("physical", {}).get("recovery_success"),
+                recovery_time_s=row.get("physical", {}).get("recovery_time_s"),
+                relapse=row.get("physical", {}).get("relapse"),
                 confirmed_passages=row.get("physical", {}).get("confirmed_passages")))
     outputs["training_table"] = str(table)
     components = []
@@ -248,20 +309,49 @@ def render_figures(root):
     fig.savefig(target, dpi=220)
     plt.close(fig)
     outputs["reward_components"] = str(target)
-    updates = [(row["index"] + 1, loss) for row in history
+    updates = [loss for row in history
                for loss in row["learning"].get("losses", [])]
     if updates:
         fig, ax = plt.subplots(figsize=(9, 5), constrained_layout=True)
         for key in ("policy", "value", "total", "entropy"):
-            ax.plot([episode for episode, _ in updates],
-                    [loss[key] for _, loss in updates], ".", label=key)
-        ax.set(xlabel="Épisode", ylabel="Valeur mesurée",
+            ax.plot([loss.get("global_update_step", index)
+                     for index, loss in enumerate(updates, start=1)],
+                    [loss[key] for loss in updates], ".-", label=key)
+        ax.set(xlabel="Pas global de l'optimiseur", ylabel="Valeur mesurée",
                title="Pertes et entropie à chaque mise à jour PPO")
         ax.legend()
         target = folder / "ppo_losses.png"
         fig.savefig(target, dpi=220)
         plt.close(fig)
         outputs["ppo_losses"] = str(target)
+        if all("gradient_norm_before_clip" in row for row in updates):
+            fig, ax = plt.subplots(figsize=(9, 4), constrained_layout=True)
+            ax.plot([row.get("global_update_step", index)
+                     for index, row in enumerate(updates, start=1)],
+                    [row["gradient_norm_before_clip"] for row in updates], ".-")
+            ax.set(xlabel="Pas global de l'optimiseur", ylabel="Norme avant clipping",
+                   title="Gradient réellement mesuré")
+            target = folder / "ppo_gradient_norm.png"
+            fig.savefig(target, dpi=220)
+            plt.close(fig)
+            outputs["ppo_gradient_norm"] = str(target)
+    fig, ax = plt.subplots(figsize=(9, 4), constrained_layout=True)
+    choices, steps = 0, 0
+    cumulative_choices, cumulative_steps = [], []
+    for row in history:
+        choices += row.get("useful_choices", 0)
+        steps += row["learning"]["updates"]
+        cumulative_choices.append(choices)
+        cumulative_steps.append(steps)
+    ax.step(xs, cumulative_choices, where="post", label="choix libres")
+    ax.step(xs, cumulative_steps, where="post", label="pas d'optimiseur")
+    ax.set(xlabel="Épisode", ylabel="Cumul observé",
+           title="Expérience réellement collectée et utilisée")
+    ax.legend()
+    target = folder / "learning_volume.png"
+    fig.savefig(target, dpi=220)
+    plt.close(fig)
+    outputs["learning_volume"] = str(target)
     if any("physical" in row for row in history):
         fig, ax = plt.subplots(figsize=(9, 4), constrained_layout=True)
         ax.step(xs, [int(row.get("physical", {}).get("recovery_success", False))

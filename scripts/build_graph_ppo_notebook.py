@@ -7,7 +7,7 @@ import nbformat as nbf
 
 PROJECT = Path(__file__).resolve().parents[1]
 OUTPUT = PROJECT / "notebooks/12_ENTRAINEMENT_GRAPH_PPO_COMPLET.ipynb"
-ROOT = Path("D:/cav-recovery-data/graph-ppo-training-20261023")
+ROOT = Path("D:/cav-recovery-data/graph-ppo-final-20261023")
 notebook = nbf.v4.new_notebook()
 cells = []
 
@@ -37,7 +37,7 @@ from IPython.display import display
 from cav_recovery.recovery.graph_marl_core import load_config, scene_plan
 from cav_recovery.recovery.graph_ppo_campaign import readiness_gate
 from cav_recovery.recovery.graph_marl_notebook import (
-    environment_check, process_status, launch, request_stop,
+    environment_check, process_status, launch, request_stop, close_training,
     recent_history, render_figures, final_manifest)
 print('Interpréteur :', sys.executable)
 print('Projet :', PROJECT, '\\nCampagne :', ROOT)
@@ -49,7 +49,8 @@ config, _ = _prepare(CONFIG, ROOT)
 display({'verdict': report['verdict'], 'commit': report.get('git_commit'),
          'scènes entraînement': len(config['scenes']['train']),
          'scènes validation': len(config['scenes']['validation']),
-         'validation périodique': config['periodic_validation_ids']})
+         'validation périodique': config['periodic_validation_ids'],
+         'validation finale prioritaire': config['priority_validation_ids']})
 """)
 
 section("03 — Environnement et ressources", "Vérifie Python, Torch, MetaDrive, les dépendances, la mémoire et le stockage sur D:.", """diagnostic = environment_check(PROJECT, ROOT)
@@ -82,7 +83,7 @@ for index, option in enumerate(option_bank()):
     print(index, option)
 """)
 
-section("06 — Récompense et PPO", "Le bonus collectif dépend d'une preuve physique après l'épisode. Les options sont actualisées selon leur durée réelle ; les cas censurés utilisent une valeur locale de continuation.", """display({'récompense': config['reward'],
+section("06 — Récompense et PPO", "Par pas physique de 0,2 s, la récompense d'équipe additionne 0,2 × Δprogression/longueur des CAV affectés, 1 × passage confirmé, 2 × arrivée affectée, −0,002 de temps, −0,2 × mètres de recul supplémentaires, −0,001 par CAV affecté immobile au-delà de 10 s, et −100 par nouvel événement invalide. Le bonus +10 n'est ajouté rétrospectivement qu'après une récupération collective durable non spontanée avec commande coopérative effectivement appliquée. Ce bonus est une récompense du système P4+Graph : son attribution propre au réseau reste non démontrée sans contrefactuel P4. Les options sont actualisées selon leur durée réelle ; les cas censurés utilisent une valeur locale de continuation.", """display({'récompense': config['reward'],
          'gamma par pas': config['gamma_per_step'],
          'lambda GAE': config['gae_lambda'],
          'taille de lot': config['ppo_batch_size'],
@@ -102,15 +103,9 @@ display(result)
 assert result['proceed'], 'Précontrôle non concluant : ne pas démarrer.'
 """)
 
-section("08 — Estimation avant lancement", "Le budget de six heures inclut les épisodes et les validations périodiques. Les estimations reposent sur les temps de qualification mesurés.", """qualification = json.loads((Path(config['qualification_root']) / 'qualification.json').read_text(encoding='utf-8'))['scenes']
-ids = {row['source_id'] for row in config['scenes']['train']}
-durations = [row['summary']['wall_s'] for row in qualification
-             if row['split'] == 'train' and row['source_id'] in ids]
-estimate = sum(durations) / len(durations)
-print('Temps nominal moyen mesuré (s) :', round(estimate, 1))
-print('Ordre de grandeur sans validation périodique :',
-      int(360 * 60 / estimate), 'épisodes en six heures')
-print('Cette projection ne garantit ni le nombre de lots PPO ni la récupération.')
+section("08 — Estimation avant lancement", "Le rapport scellé inclut le ralentissement Graph-PPO et les validations. Les bornes restent incertaines, et la validation finale est hors des six heures.", """report = readiness_gate(ROOT)
+display(report['capacity_estimate'])
+print('La projection porte sur les choix libres et les lots PPO, pas sur une convergence.')
 """)
 
 section("09 — État et absence de doublon", "Consulter le vrai processus, le journal et la progression avant toute relance.", """state = process_status(ROOT)
@@ -144,33 +139,49 @@ for row in history[-8:]:
           'valide', row['validity']['valid'])
 """)
 
-section("12 — Courbes de récompense et pertes PPO", "Les courbes utilisent exclusivement les mesures déjà enregistrées ; une absence de mise à jour reste visible.", """import matplotlib.pyplot as plt
+section("12 — Courbes de récompense et pertes PPO", "Relancer pendant l'entraînement ; les points proviennent uniquement des épisodes enregistrés. L'abscisse PPO compte les vrais pas de l'optimiseur.", """import matplotlib.pyplot as plt
 history = recent_history(ROOT)
 if not history:
     print('Aucun épisode terminé.')
 else:
     x = [row['index'] + 1 for row in history]
-    fig, axes = plt.subplots(2, 1, figsize=(10, 7), constrained_layout=True)
+    fig, axes = plt.subplots(3, 1, figsize=(10, 10), constrained_layout=True)
     axes[0].plot(x, [row['reward'] for row in history], '.-')
     axes[0].set(title='Récompense observée', xlabel='Épisode', ylabel='Somme')
-    points = [(row['index'] + 1, loss) for row in history
+    points = [loss for row in history
               for loss in row['learning'].get('losses', [])]
-    for key in ('policy', 'value', 'total', 'entropy'):
-        axes[1].plot([p[0] for p in points], [p[1][key] for p in points],
-                     '.', label=key)
-    axes[1].set(title='Pertes à chaque mise à jour PPO', xlabel='Épisode')
+    for key in ('policy', 'value', 'total', 'entropy', 'gradient_norm_before_clip'):
+        axes[1].plot([p['global_update_step'] for p in points],
+                     [p[key] for p in points], '.-', label=key)
+    axes[1].set(title='Pertes à chaque mise à jour PPO', xlabel='Pas global de l’optimiseur')
     axes[1].legend()
+    choices = [sum(r['useful_choices'] for r in history[:i]) for i in range(1, len(history)+1)]
+    updates = [sum(r['learning']['updates'] for r in history[:i]) for i in range(1, len(history)+1)]
+    axes[2].step(x, choices, where='post', label='Choix libres cumulés')
+    axes[2].step(x, updates, where='post', label='Pas PPO cumulés')
+    axes[2].set(title='Expérience réellement exploitée', xlabel='Épisode')
+    axes[2].legend()
     display(fig)
     plt.close(fig)
 """)
 
 section("13 — Récupérations et validation périodique", "La récupération durable et les comparaisons sont des mesures physiques, distinctes de la récompense.", """history = recent_history(ROOT)
+physical_rows = []
 for row in history[-10:]:
     receipt = ROOT / row['folder'] / 'reward-summary.json'
     recovery = json.loads(receipt.read_text(encoding='utf-8')).get('physical_recovery') if receipt.exists() else None
-    print(row['index'] + 1, row['name'], 'récupération',
-          None if recovery is None else recovery['status'],
-          'sécurité', row['validity']['problems'])
+    affected = set(config['scenes']['train'][row['index']]['qualified_affected'])
+    physical_rows.append({'épisode': row['index'] + 1, 'scène': row['name'],
+        'affectés': len(affected),
+        'arrivés affectés': sum(ego in row['summary']['arrivals'] for ego in affected),
+        'passages confirmés': row.get('physical', {}).get('confirmed_passages'),
+        'récupération durable': row.get('physical', {}).get('recovery_success'),
+        'temps de confirmation': None if recovery is None else recovery.get('t_conf_s'),
+        'rechute': row.get('physical', {}).get('relapse'),
+        'refus du garde': row.get('physical', {}).get('guard_refusals'),
+        'recul maximal m': row['validity']['reverse_max_m'],
+        'sécurité': row['validity']['problems']})
+display(physical_rows)
 for path in sorted((ROOT / 'validation/periodic').glob('after-*/summary.json')):
     record = json.loads(path.read_text(encoding='utf-8'))
     print('Validation après épisode', record['episode_index'],
@@ -194,21 +205,38 @@ if RESUME_NOW and not state['alive']:
     display(launch('train', PROJECT, ROOT))
 """)
 
-section("16 — Validation finale appariée", "À la fin ou au budget de six heures, compare sur les scènes de validation fixes le nominal, B3, P4 et deux checkpoints Graph-PPO. Cette phase peut durer longtemps et ne met pas à jour les poids.", """state = process_status(ROOT)
+section("16 — Clôture volontaire", "Un arrêt demandé pour reprendre reste réversible. Après un arrêt effectif à frontière, cette cellule clôt explicitement le checkpoint pour évaluation ; les transitions en attente restent comptabilisées comme non utilisées.", """state = process_status(ROOT)
+print('État actuel :', state['effective_state'])
+CLOSE_FOR_VALIDATION = False  # Mettre True uniquement si la campagne est définitivement close.
+if CLOSE_FOR_VALIDATION:
+    display(close_training(ROOT))
+""")
+
+section("17 — Validation finale prioritaire", "Le modèle est choisi sur deux scènes périodiques figées. La validation prioritaire couvre deux positifs et deux négatifs ; elle compare nominal, B3, P4 et Graph-PPO sans ajuster les poids.", """state = process_status(ROOT)
 if state['alive']:
     print('Attendre la fin du producteur avant la validation.')
-elif state['experiment'] and state['experiment'].get('state') in {'training_complete', 'wall_budget_at_boundary'}:
+elif state['experiment'] and state['experiment'].get('state') in {'training_complete', 'wall_budget_at_boundary', 'closed_at_boundary'}:
     if (ROOT / 'reports/validation_summary.json').exists():
-        print('Validation finale déjà terminée.')
+        print('Validation prioritaire déjà terminée.')
     else:
         display(launch('validate', PROJECT, ROOT))
 else:
-    print('Entraînement non terminé ou aucun checkpoint sélectionnable.')
+    print('Entraînement non clôturé ou aucun checkpoint sélectionnable.')
 """)
 
-section("17 — Figures, tableaux et manifeste", "Exporter uniquement les mesures effectivement disponibles, puis conserver les preuves et les échecs.", """if recent_history(ROOT):
+section("18 — Extension aux dix scènes", "Cette extension est facultative et préenregistrée. Elle réutilise les quatre scènes déjà évaluées et ajoute six scènes, sans sélectionner à nouveau les poids.", """RUN_FULL_VALIDATION = False  # Mettre True seulement si le temps disponible le permet.
+if RUN_FULL_VALIDATION:
+    display(launch('validate_full', PROJECT, ROOT))
+else:
+    print('Extension non lancée ; portée statistique limitée au lot prioritaire.')
+""")
+
+section("19 — Figures, tableaux et manifeste", "Exporter uniquement les mesures effectivement disponibles, puis conserver les preuves et les échecs.", """if recent_history(ROOT):
     display(render_figures(ROOT))
-    display(final_manifest(ROOT))
+    if not process_status(ROOT)['alive'] and (ROOT / 'reports/validation_summary.json').exists():
+        display(final_manifest(ROOT))
+    else:
+        print('Manifeste final différé : attendre la fin du producteur et de la validation prioritaire.')
 else:
     print('Aucun résultat à exporter.')
 print('Dossier privé :', ROOT)

@@ -19,6 +19,7 @@ def load_config(path):
     versions = {
         "REC-GRAPH-MARL-P4-1": "shared_local_graph_PPO_P4_physical_option_only",
         "REC-GRAPH-PPO-P4-2": "shared_local_graph_option_PPO_P4",
+        "REC-GRAPH-PPO-P4-3": "shared_local_graph_option_PPO_P4",
     }
     if config["version"] not in versions:
         raise ValueError("Contrat Graph-MARL inconnu.")
@@ -43,8 +44,11 @@ def load_config(path):
                 previous = parents.setdefault(parent, split)
                 if previous != split:
                     raise ValueError("Même parent dans train et validation.")
-    if config["version"] == "REC-GRAPH-PPO-P4-2":
-        if config["ppo_batch_size"] < 32 or config["minibatch_size"] < 1:
+    if config["version"].startswith("REC-GRAPH-PPO-P4-"):
+        minimum_batch = 12 if config["version"].endswith("-3") else 32
+        if (config["ppo_batch_size"] < minimum_batch
+                or config["minibatch_size"] < 1
+                or config["minibatch_size"] > config["ppo_batch_size"]):
             raise ValueError("Lot PPO de préparation insuffisant.")
         if not 0 <= config["gae_lambda"] <= 1:
             raise ValueError("Lambda GAE invalide.")
@@ -55,6 +59,17 @@ def load_config(path):
         if (not periodic or len(periodic) != len(set(periodic))
                 or not set(periodic) <= validation_ids):
             raise ValueError("Scènes de validation périodique non figées.")
+        if config["version"].endswith("-3"):
+            priority = config["priority_validation_ids"]
+            if (not priority or len(priority) != len(set(priority))
+                    or not set(priority) <= validation_ids
+                    or not set(periodic) <= set(priority)):
+                raise ValueError("Validation prioritaire non figée.")
+            labels = {row["source_id"]: row["qualified_label"]
+                      for row in splits["validation"]}
+            if (len({labels[key] for key in priority}) < 2
+                    or len({labels[key] for key in periodic}) < 2):
+                raise ValueError("Les validations doivent contenir les deux classes.")
     return config
 
 

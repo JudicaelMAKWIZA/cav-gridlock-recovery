@@ -86,17 +86,27 @@ def build_config(source, *, repetitions=5):
                                              row["source_id"]))
     config = json_file(PROJECT / "configs/recovery/graph-marl-p4-v1.json")
     config.update(
-        version="REC-GRAPH-PPO-P4-2",
+        version="REC-GRAPH-PPO-P4-3",
         scope="development_qualified_no_reserved_test",
         algorithm="shared_local_graph_option_PPO_P4",
         qualification_root=str(source),
         maximum_wall_minutes=360,
-        ppo_batch_size=32,
-        minibatch_size=16,
+        ppo_batch_size=12,
+        minibatch_size=6,
         gae_lambda=0.995,
-        validation_every_episodes=10,
+        validation_every_episodes=12,
+        minimum_available_gib_eight_cav=2.0,
+        light_training_trace=True,
+        detailed_trace_rule="preflight_and_training_episode_zero_only",
         periodic_validation_ids=[periodic_positive["source_id"],
                                  periodic_negative["source_id"]],
+        priority_validation_ids=[
+            "ad1ba7cbf83eea435c26cf7b",  # T positif, validation périodique.
+            "4b44e8aedd659cece99a84e5",  # Oblique positif.
+            "e87ea0d593e625c709c8e4b7",  # Oblique négatif, périodique.
+            "635fa94e0f506e80137f345b",  # Quatre approches négatif.
+        ],
+        model_selection_rule="periodic_gains_then_arrivals_then_earliest",
     )
     config["reward"] = dict(
         progress_per_vehicle_length=0.2,
@@ -110,8 +120,14 @@ def build_config(source, *, repetitions=5):
     )
     train = []
     for repeat in range(repetitions):
-        train.extend(copy.deepcopy(interleave(train_positive, train_negative,
-                                              231023 + repeat)))
+        ordered = interleave(train_positive, train_negative, 231023 + repeat)
+        if repeat == 0:
+            # Les deux témoins récupérables apparaissent avant l'épuisement
+            # possible du budget, sans supprimer les autres configurations.
+            controls = [row for key in ("p4-oblique-4-21021", "p4-oblique-8-21021")
+                        for row in ordered if row["source_id"] == key]
+            ordered = controls + [row for row in ordered if row not in controls]
+        train.extend(copy.deepcopy(ordered))
     preflight_row = next(
         (row for row in train_positive
          if row["source_id"] == "p4-oblique-4-21021"), None,

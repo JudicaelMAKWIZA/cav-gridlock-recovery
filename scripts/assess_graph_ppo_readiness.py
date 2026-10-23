@@ -5,6 +5,8 @@ from collections import Counter
 from pathlib import Path
 import statistics
 import subprocess
+import math
+import psutil
 
 from cav_recovery.laboratory.storage import atomic_json, file_hash, json_file
 from cav_recovery.recovery.graph_marl_core import load_config
@@ -55,6 +57,51 @@ def estimate_costs(config, qualified, train, probe, validation_probe, source):
 
 def write_report(root, report, qualified_count):
     """Présente le même verdict et ses limites dans un texte consultable."""
+    if "capacity_estimate" in report:
+        capacity = report["capacity_estimate"]
+        lines = ["# Graph-PPO P4-3 — préparation finale", "",
+                 f"Verdict logiciel et scientifique : **{report['verdict']}**.",
+                 "L'entraînement long reste lancé personnellement dans Jupyter.",
+                 "", "| Contrôle | Résultat |", "|---|---|"]
+        lines += [f"| {name} | {'PASS' if value else 'FAIL'} |"
+                  for name, value in report["checks"].items()]
+        lines += ["", f"Commit : `{report['git_commit']}` ; "
+                  f"qualification historique : {qualified_count} scènes.",
+                  f"Train : {report['training_episodes']} épisodes planifiés ; "
+                  "18 scènes positives et 10 négatives distinctes. "
+                  "Validation : 5 positives et 5 négatives distinctes.",
+                  "", "## Capacité estimée, six heures", ""]
+        for key in ("optimistic", "prudent", "adverse"):
+            row = capacity[key]
+            lines += [f"- {key} : {row['episodes']} épisodes, "
+                      f"{row['positives']} positifs, {row['negatives']} négatifs, "
+                      f"{row['free_choices_low']}–{row['free_choices_typical']} "
+                      f"choix libres supposés, {row['ppo_batches_low']}–"
+                      f"{row['ppo_batches_typical']} lots PPO, "
+                      f"{row['optimizer_steps_low']}–"
+                      f"{row['optimizer_steps_typical']} pas d'optimiseur. "
+                      f"Validation périodique : {row['periodic_validation_wall_s']/60:.1f} min."]
+        lines += ["", f"Validation finale prioritaire : "
+                  f"{capacity['final_priority_wall']['lower_s']/60:.0f}–"
+                  f"{capacity['final_priority_wall']['upper_s']/60:.0f} min hors budget.",
+                  f"Validation complète : {capacity['final_full_wall']['lower_s']/60:.0f}–"
+                  f"{capacity['final_full_wall']['upper_s']/60:.0f} min hors budget.",
+                  f"RAM libre relevée : {capacity['free_ram_gib']:.2f} Gio ; "
+                  f"seuil huit CAV : {capacity['minimum_eight_cav_gib']:.1f} Gio ; "
+                  f"pic RSS observé : {capacity['observed_peak_process_rss_gib']:.2f} Gio.",
+                  f"Traces légères estimées : {capacity['projected_trace_gib']:.2f} Gio.",
+                  "Trace diagnostique détaillée : précontrôle et premier épisode "
+                  "d'entraînement uniquement ; référence, physique, commandes "
+                  "et diagnostics restent conservés pour tous les épisodes.",
+                  "", "## Limites", ""]
+        lines += [f"- {item}" for item in report["limitations"]]
+        lines += ["- Les résultats de P4 et du réseau non entraîné ne prouvent pas "
+                  "la contribution d'un réseau entraîné.",
+                  "- Aucune convergence ni supériorité sur P4 n'est prédite.",
+                  "- Le test réservé n'a pas été consulté."]
+        (root / "TRAINING_READINESS_REPORT.md").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8")
+        return
     verdict = report["verdict"]
     counts = report["selected_unique_counts"]
     lines = ["# Préparation Graph-PPO — verdict " + verdict, "",
@@ -183,11 +230,114 @@ def evidence_hashes(root, source, quality_path, train, validation):
             {str(path): file_hash(path) for path in sorted(set(external))})
 
 
+def capacity_estimate(config, qualified, preparation):
+    """Projette les épisodes dans leur ordre figé avec des sondes de deux classes.
+
+    Les bornes englobent l'incertitude de géométrie et de charge Windows.
+    Les choix libres hors scènes sondées restent une hypothèse, non une mesure.
+    """
+    probes = {kind: json_file(preparation / f"probe-{identifier}.json")
+              for kind, identifier in (
+                  ("negative", "d5b80c6afbc99d5abbd03867"),
+                  ("positive", "d9a6ef14caaf56793d7b7c35"),
+                  ("positive_four_arm", "c590be2ff28ee70a2bab7727"))}
+    nominal = {(row["split"], row["source_id"]): row["summary"]["wall_s"]
+               for row in qualified}
+    ratios = {
+        kind: probe["wall_s"] / nominal["train", probe["source_id"]]
+        for kind, probe in probes.items()
+    }
+    ratios["positive_4_control"] = (
+        json_file(Path(config["qualification_root"]) /
+                  "probes/p4-oblique-4-21021/probe-summary.json")["wall_s"] /
+        nominal["train", "p4-oblique-4-21021"])
+
+    def projected(scale):
+        elapsed = 0.0
+        selected = []
+        periodic_cost = sum(
+            nominal["validation", identifier] * ratios[
+                "positive" if next(row for row in config["scenes"]["validation"]
+                                   if row["source_id"] == identifier)["qualified_label"]
+                == "POSITIVE_CONFIRMED" else "negative"] * scale
+            for identifier in config["periodic_validation_ids"])
+        for row in config["scenes"]["train"]:
+            kind = "positive" if row["qualified_label"] == "POSITIVE_CONFIRMED" else "negative"
+            ratio = (ratios["positive_4_control"] if row["vehicles"] == 4 else
+                     ratios["positive_four_arm"] if kind == "positive" and
+                     row["source_family"] == "four_arm" else ratios[kind])
+            episode_cost = nominal["train", row["source_id"]] * ratio * scale
+            after = len(selected) + 1
+            if after % config["validation_every_episodes"] == 0:
+                episode_cost += periodic_cost
+            if elapsed + episode_cost > config["maximum_wall_minutes"] * 60:
+                break
+            elapsed += episode_cost
+            selected.append(row)
+        positive_count = sum(row["qualified_label"] == "POSITIVE_CONFIRMED"
+                             for row in selected)
+        negative_count = len(selected) - positive_count
+        measured_negative = probes["negative"]["free_choices"]
+        choices_low = 3 * positive_count + measured_negative * negative_count
+        choices_typical = 5 * positive_count + measured_negative * negative_count
+        batches_low = choices_low // config["ppo_batch_size"]
+        batches_typical = choices_typical // config["ppo_batch_size"]
+        steps_per_batch = (config["ppo_epochs"] *
+                           math.ceil(config["ppo_batch_size"] /
+                                     config["minibatch_size"]))
+        return dict(episodes=len(selected), positives=positive_count,
+                    negatives=negative_count, predicted_wall_s=round(elapsed),
+                    free_choices_low=choices_low,
+                    free_choices_typical=choices_typical,
+                    ppo_batches_low=batches_low,
+                    ppo_batches_typical=batches_typical,
+                    optimizer_steps_low=batches_low * steps_per_batch,
+                    optimizer_steps_typical=batches_typical * steps_per_batch,
+                    periodic_validation_wall_s=round(
+                        len(selected) // config["validation_every_episodes"]
+                        * periodic_cost))
+
+    def validation_cost(identifiers):
+        rows = {row["source_id"]: row for row in config["scenes"]["validation"]}
+        # Deux baselines supplémentaires par scène ; facteur 1 à 2 selon
+        # les sondes. Les références nominales sont déjà qualifiées.
+        graph = sum(nominal["validation", identifier] * ratios[
+            "positive_four_arm" if rows[identifier]["qualified_label"] ==
+            "POSITIVE_CONFIRMED" and rows[identifier]["source_family"] ==
+            "four_arm" else "positive" if rows[identifier]["qualified_label"] ==
+            "POSITIVE_CONFIRMED" else "negative"] for identifier in identifiers)
+        baseline = sum(nominal["validation", identifier] for identifier in identifiers)
+        return dict(lower_s=round(graph + 2 * baseline),
+                    upper_s=round(1.4 * graph + 4 * baseline))
+
+    memory = psutil.virtual_memory()
+    return dict(
+        measured_probes=probes, measured_graph_over_nominal_ratios=ratios,
+        optimistic=projected(1.0), prudent=projected(1.3),
+        adverse=projected(1.7),
+        final_priority_wall=validation_cost(config["priority_validation_ids"]),
+        final_full_wall=validation_cost(
+            [row["source_id"] for row in config["scenes"]["validation"]]),
+        free_ram_gib=round(memory.available / 2**30, 3),
+        minimum_eight_cav_gib=config["minimum_available_gib_eight_cav"],
+        observed_peak_process_rss_gib=max(probe["peak_rss_gib"]
+                                          for probe in probes.values()),
+        observed_minimum_free_gib=min(probe["min_available_gib"]
+                                      for probe in probes.values()),
+        projected_trace_gib=round(
+            statistics.mean(probe["bytes"] for probe in probes.values())
+            * projected(1.3)["episodes"] / 2**30, 2),
+        warning="Extrapolation depuis trois sondes légères et contrôles P4 ; "
+                "les choix des scènes non sondées ne sont pas démontrés.",
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--campaign", type=Path, required=True)
     parser.add_argument("--qualification", type=Path, required=True)
     parser.add_argument("--quality", type=Path, required=True)
+    parser.add_argument("--preparation", type=Path)
     args = parser.parse_args()
     root, source = args.campaign.resolve(), args.qualification.resolve()
     config = load_config(root / "experiment-config.json")
@@ -285,11 +435,28 @@ def main():
         "preflight": bool(preflight.get("proceed")),
         "software_checks": quality["passed"],
     }
+    capacity = None
+    if config["version"] == "REC-GRAPH-PPO-P4-3":
+        if args.preparation is None:
+            raise ValueError("Les sondes légères sont requises pour P4-3.")
+        capacity = capacity_estimate(config, qualified, args.preparation.resolve())
+        proof["trace_physical_equivalence"] = all(json_file(
+            args.preparation / "light-physical-comparison.json")["matching"].values())
+        proof["resources_current"] = (capacity["free_ram_gib"] >=
+                                      capacity["minimum_eight_cav_gib"])
+        proof["learning_capacity"] = capacity["prudent"]["ppo_batches_low"] >= 5
     verdict = "TRAIN_READY" if all(proof.values()) else "TRAIN_NOT_READY"
     estimates = estimate_costs(config, qualified, train, probe,
                                validation_probe, source)
     fingerprints, external_fingerprints = evidence_hashes(
         root, source, args.quality.resolve(), train, validation)
+    if capacity is not None:
+        for path in (list(args.preparation.glob("*.json")) +
+                     list(args.preparation.glob("*.md")) +
+                     list((args.preparation / "scenes").glob("*"))):
+            if not path.is_file():
+                continue
+            external_fingerprints[str(path.resolve())] = file_hash(path)
     report = dict(
         verdict=verdict, checks=proof, git_commit=commit,
         source_commit=manifest["git_commit"],
@@ -342,6 +509,7 @@ def main():
                                       (8, graph_control_eight,
                                        graph_control_eight_paired))},
         **estimates,
+        **({"capacity_estimate": capacity} if capacity is not None else {}),
         fingerprints=fingerprints,
         external_fingerprints=external_fingerprints,
         limitations=[

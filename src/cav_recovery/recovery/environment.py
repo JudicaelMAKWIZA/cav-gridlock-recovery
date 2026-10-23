@@ -67,7 +67,7 @@ class RecoveryEnv:
 
     def __init__(
         self, spec, output, contract=None, *, measurement_contract=None,
-        guard_factory=None,
+        guard_factory=None, record_diagnostic_inputs=True,
     ):
         self.spec, self.output = spec, Path(output)
         protect_frozen_dataset(self.output)
@@ -92,6 +92,7 @@ class RecoveryEnv:
 
             self.diagnostics = NativeRecoveryDiagnostics(measurement_contract)
         self.measurement_contract = measurement_contract
+        self.record_diagnostic_inputs = record_diagnostic_inputs
         self.guard = (
             guard_factory(self.contract) if guard_factory else LocalGuard(self.contract)
         )
@@ -149,8 +150,7 @@ class RecoveryEnv:
                 "reference",
                 "events",
                 "diagnostics",
-                "diagnostic-inputs",
-            ]
+            ] + (["diagnostic-inputs"] if self.record_diagnostic_inputs else [])
         }
         atomic_json(self.output / "spec.json", self.spec)
         atomic_json(self.output / "contract.json", self.contract.record())
@@ -433,7 +433,8 @@ class RecoveryEnv:
             packets, outputs = self.diagnostics.observe(self)
             self.diagnostic_packets = packets
             for key in views:
-                self.write("diagnostic-inputs", packets[key])
+                if self.record_diagnostic_inputs:
+                    self.write("diagnostic-inputs", packets[key])
                 self.write("diagnostics", dict(ego=key, at_s=self.at_s, **outputs[key]))
         return views
 
@@ -612,6 +613,7 @@ def run(
     policy_version=None,
     observation_hook=None,
     coordinator_factory=None,
+    record_diagnostic_inputs=True,
     guard_factory=None,
 ):
     if method not in {
@@ -635,6 +637,7 @@ def run(
     instance = RecoveryEnv(
         spec, output, contract, measurement_contract=measurement_contract,
         guard_factory=guard_factory,
+        record_diagnostic_inputs=record_diagnostic_inputs,
     )
     policies = {}
     coordinator = None
@@ -709,6 +712,7 @@ def run(
                 peak_active=max(len(f["states"]) for f in instance.audit_frames),
                 reverse_m=instance.reverse_used,
                 physical_label=annotation["label"],
+                diagnostic_inputs_recorded=record_diagnostic_inputs,
                 wall_s=time.perf_counter() - started,
                 cpu_s=time.process_time() - cpu,
                 decision_scope="local_state_rays_received_messages_only",
