@@ -1,0 +1,44 @@
+{
+  "version": "REC-GRAPH-MARL-P4-1",
+  "scope": "development_pilot_no_reserved_test",
+  "p4_commit": "e49e42eaa81ff8379f255496bfba94ef5c74d70f",
+  "engine_commit": "fe54b03327b14bcfc17a9a04b60c8abbee4d7ab1",
+  "algorithm": "shared_local_graph_PPO_P4_physical_option_only",
+  "measurement_contract": "REC-METRO-1",
+  "training_seed": 231023,
+  "hidden": 32,
+  "cpu_threads": 2,
+  "minimum_available_gib_before_episode": 2.5,
+  "learning_rate": 0.0003,
+  "gamma_per_step": 0.995,
+  "ppo_epochs": 2,
+  "clip_ratio": 0.2,
+  "entropy_coefficient": 0.01,
+  "value_coefficient": 0.5,
+  "gradient_norm": 0.5,
+  "maximum_wall_minutes": 60,
+  "scenes": {
+    "preflight": [{"name": "collective-3", "seed": 21021, "vehicles": 4, "horizon_s": 210.0}],
+    "train": [
+      {"name": "collective-3", "seed": 231001, "vehicles": 4, "horizon_s": 210.0},
+      {"name": "individual_obstruction-1", "seed": 231002, "vehicles": 3, "horizon_s": 180.0},
+      {"name": "temporary_interaction-1", "seed": 231003, "vehicles": 4, "horizon_s": 150.0},
+      {"name": "collective-3", "seed": 231004, "vehicles": 8, "horizon_s": 240.0}
+    ],
+    "validation": [
+      {"name": "collective-4", "seed": 232001, "vehicles": 4, "horizon_s": 210.0},
+      {"name": "individual_obstruction-2", "seed": 232002, "vehicles": 4, "horizon_s": 180.0},
+      {"name": "natural_release-1", "seed": 232003, "vehicles": 4, "horizon_s": 150.0}
+    ]
+  },
+  "reward": {
+    "progress_per_vehicle_length": 1.0,
+    "confirmed_passage": 0.5,
+    "arrival": 2.0,
+    "collective_recovery": 0.0,
+    "per_step_cost": 0.005,
+    "reverse_per_m": 0.05,
+    "idle_after_10s_per_step": 0.01,
+    "invalid_event": -10.0
+  }
+}
