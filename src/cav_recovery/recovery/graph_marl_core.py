@@ -21,7 +21,9 @@ def load_config(path):
         raise ValueError("Algorithme inattendu.")
     if config["maximum_wall_minutes"] <= 0 or config["cpu_threads"] < 1:
         raise ValueError("Budget de ressources invalide.")
-    if config["minimum_available_gib_before_episode"] < 2:
+    if (config["minimum_available_gib_before_episode"] < 2
+            or config["minimum_available_gib_eight_cav"]
+            < config["minimum_available_gib_before_episode"]):
         raise ValueError("Réserve mémoire insuffisante pour MetaDrive.")
     splits = config["scenes"]
     parents = {}

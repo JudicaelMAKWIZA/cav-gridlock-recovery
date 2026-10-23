@@ -2,9 +2,12 @@
 
 from pathlib import Path
 from types import SimpleNamespace
+import os
+import time
 
 import numpy as np
 import pytest
+import psutil
 import torch
 
 from cav_recovery.recovery.cooperative import CooperativePolicy, option_bank
@@ -15,7 +18,10 @@ from cav_recovery.recovery.graph_marl_core import (
 from cav_recovery.laboratory.checkpoints import CheckpointStore
 from cav_recovery.laboratory.storage import file_hash
 from cav_recovery.recovery.graph_marl_policy import P4GraphPolicy
-from cav_recovery.recovery.graph_marl_training import RewardTracker, _recoverable_folder
+from cav_recovery.recovery.graph_marl_training import (
+    RewardTracker, _memory_ready, _recoverable_folder,
+)
+from cav_recovery.recovery.graph_marl_notebook import process_status
 from cav_recovery.laboratory.storage import atomic_json
 from cav_recovery.recovery.graph_policy import GraphActorCritic
 from cav_recovery.recovery.verified_passage_policy import GuardEnvelopePassagePolicy
@@ -161,3 +167,29 @@ def test_incomplete_validation_trace_is_preserved_on_resume(tmp_path):
         "summary.json": file_hash(replacement / "summary.json")}))
     found, complete = _recoverable_folder(base)
     assert complete and found == replacement
+
+
+def test_process_status_tracks_actual_writer_not_launcher(tmp_path):
+    report = tmp_path / "reports"
+    report.mkdir()
+    atomic_json(report / "process.json", dict(
+        task="train", pid=999999, created=0.0,
+        started_at=time.time() - 121, log="unused"))
+    writer = tmp_path / "writer"
+    writer.mkdir()
+    atomic_json(writer / "writer.lock", dict(
+        pid=os.getpid(), created=psutil.Process().create_time()))
+    state = process_status(tmp_path)
+    assert state["alive"]
+    assert state["worker_pid"] == os.getpid()
+    (writer / "writer.lock").unlink()
+    assert not process_status(tmp_path)["alive"]
+
+
+def test_memory_gate_respects_vehicle_count(monkeypatch):
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: SimpleNamespace(
+        available=int(2.2 * 1024**3)))
+    config = dict(minimum_available_gib_before_episode=2.0,
+                  minimum_available_gib_eight_cav=2.5)
+    assert _memory_ready(config, 4)
+    assert not _memory_ready(config, 8)

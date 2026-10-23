@@ -177,9 +177,10 @@ def _prepare(config_path, root):
     return config, root
 
 
-def _memory_ready(config):
-    return (psutil.virtual_memory().available / 1024**3
-            >= config["minimum_available_gib_before_episode"])
+def _memory_ready(config, vehicles):
+    threshold = (config["minimum_available_gib_eight_cav"] if vehicles >= 8
+                 else config["minimum_available_gib_before_episode"])
+    return psutil.virtual_memory().available / 1024**3 >= threshold
 
 
 def initialize(config_path, root):
@@ -211,7 +212,7 @@ def _preflight(config_path, root):
     if saved is not None:
         raise ValueError("Le contrôle préalable doit précéder l'entraînement.")
     row = config["scenes"]["preflight"][0]
-    if not _memory_ready(config):
+    if not _memory_ready(config, row["vehicles"]):
         raise RuntimeError("Mémoire disponible insuffisante pour le précontrôle.")
     folder = root / "preflight" / "episode-000"
     complete = next((candidate for candidate in sorted(folder.parent.glob("episode-000*"))
@@ -264,6 +265,7 @@ def _progress(root, history, state, **extra):
     durations = [row["summary"]["wall_s"] for row in history]
     atomic_json(root / "reports" / "experiment_status.json", dict(
         state=state, pid=os.getpid(), updated_at=time.time(),
+        available_memory_gib=round(psutil.virtual_memory().available / 1024**3, 3),
         completed_episodes=completed, episode_wall_mean_s=(sum(durations) / completed
                                                            if completed else None),
         estimated_remaining_s=(None if not completed else
@@ -297,10 +299,15 @@ def train(config_path, root):
             if history and time.monotonic() - started >= 60 * config["maximum_wall_minutes"]:
                 _progress(root, history, "wall_budget_at_boundary", total=total)
                 return 86
-            if not _memory_ready(config):
-                _progress(root, history, "memory_pressure_at_boundary", total=total)
-                return 86
             row = config["scenes"]["train"][index]
+            if not _memory_ready(config, row["vehicles"]):
+                threshold = (config["minimum_available_gib_eight_cav"]
+                             if row["vehicles"] >= 8 else
+                             config["minimum_available_gib_before_episode"])
+                _progress(root, history, "memory_pressure_at_boundary",
+                          total=total, required_memory_gib=threshold,
+                          next_vehicles=row["vehicles"])
+                return 86
             folder = root / "training" / "episodes" / f"episode-{index:03d}"
             if folder.exists():
                 ignored = root / "reports" / "uncheckpointed_fragments.json"
@@ -370,7 +377,7 @@ def _validate(config_path, root):
             atomic_json(root / "reports" / "validation_status.json",
                         dict(state="stopped_at_scene_boundary"))
             return []
-        if not _memory_ready(config):
+        if not _memory_ready(config, scene_row["vehicles"]):
             raise RuntimeError("Mémoire insuffisante avant la référence nominale.")
         atomic_json(root / "reports" / "validation_status.json",
                     dict(state="running", phase="nominal_reference", scene=index,
@@ -399,7 +406,7 @@ def _validate(config_path, root):
                 atomic_json(root / "reports" / "validation_status.json",
                             dict(state="stopped_at_scene_boundary", checkpoint=candidate))
                 return scores
-            if not _memory_ready(config):
+            if not _memory_ready(config, scene_row["vehicles"]):
                 raise RuntimeError("Mémoire insuffisante avant l'épisode de validation.")
             atomic_json(root / "reports" / "validation_status.json",
                         dict(state="running", phase="candidate", scene=index,
@@ -440,7 +447,7 @@ def _validate(config_path, root):
             atomic_json(root / "reports" / "validation_status.json",
                         dict(state="stopped_at_scene_boundary"))
             return scores
-        if not _memory_ready(config):
+        if not _memory_ready(config, scene_row["vehicles"]):
             raise RuntimeError("Mémoire insuffisante avant la scène comparative.")
         atomic_json(root / "reports" / "validation_status.json",
                     dict(state="running", phase="baseline_comparison", scene=index,

@@ -65,7 +65,21 @@ def process_status(root):
     process = json_file(process_file) if process_file.exists() else None
     experiment_file = root / "reports" / "experiment_status.json"
     experiment = json_file(experiment_file) if experiment_file.exists() else None
-    return dict(process=process, alive=_live(process) if process else False,
+    writer_file = root / "writer" / "writer.lock"
+    worker = json_file(writer_file) if writer_file.exists() else None
+    worker_alive = _live(worker) if worker else False
+    terminal = bool(process and experiment
+                    and experiment.get("updated_at", 0) >= process["started_at"]
+                    and experiment.get("state") in {
+                        "training_complete", "memory_pressure_at_boundary",
+                        "wall_budget_at_boundary", "stopped_at_boundary",
+                        "invalid_episode_stop",
+                    })
+    starting = bool(process and not terminal and not worker_alive
+                    and time.time() - process["started_at"] < 120)
+    return dict(process=process, worker=worker,
+                worker_pid=worker["pid"] if worker_alive else None,
+                alive=worker_alive or starting,
                 experiment=experiment,
                 preflight=json_file(root / "reports" / "preflight.json")
                 if (root / "reports" / "preflight.json").exists() else None,
@@ -80,7 +94,8 @@ def launch(task, project, root):
     project, root = Path(project).resolve(), Path(root).resolve()
     status = process_status(root)
     if status["alive"]:
-        raise RuntimeError(f"Une tâche est déjà active : PID {status['process']['pid']}.")
+        pid = status["worker_pid"] or status["process"]["pid"]
+        raise RuntimeError(f"Une tâche est déjà active : PID {pid}.")
     config_path = root / "experiment-config.json"
     load_config(config_path)
     if task == "train":
@@ -114,9 +129,31 @@ def launch(task, project, root):
                                    creationflags=flags)
     record = dict(task=task, pid=process.pid,
                   created=psutil.Process(process.pid).create_time(),
+                  launcher_pid=process.pid,
                   started_at=time.time(), log=str(log),
                   config_sha256=file_hash(config_path))
     atomic_json(root / "reports" / "process.json", record)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        state = process_status(root)
+        if state["worker_pid"] is not None:
+            record["pid"] = state["worker_pid"]
+            record["created"] = state["worker"]["created"]
+            atomic_json(root / "reports" / "process.json", record)
+            return record
+        if state["experiment"] and state["experiment"].get("updated_at", 0) >= record["started_at"]:
+            name = state["experiment"].get("state")
+            if name == "memory_pressure_at_boundary":
+                raise RuntimeError(
+                    "Entraînement arrêté avant l'épisode : mémoire libre "
+                    f"{state['experiment'].get('available_memory_gib', 'inconnue')} Gio ; "
+                    f"seuil {state['experiment'].get('required_memory_gib', 'inconnu')} Gio. "
+                    "Aucun producteur ne reste actif."
+                )
+            if name in {"training_complete", "stopped_at_boundary",
+                        "wall_budget_at_boundary", "invalid_episode_stop"}:
+                return record
+        time.sleep(0.1)
     return record
 
 

@@ -53,7 +53,7 @@ display(diagnostic)
 if diagnostic['memory_available_gib'] < 4:
     print('Réserve : moins de 4 Gio de RAM libres ; fermer les applications lourdes'
           ' avant les épisodes à huit CAV. Le producteur refuse chaque épisode'
-          ' si moins de 2,5 Gio sont disponibles.')""")
+          ' si moins de 2,0 Gio (2–4 CAV) ou 2,5 Gio (8 CAV) sont disponibles.')""")
 
 section(3, "Configuration versionnée",
         "Un seul fichier fixe algorithme, scènes, graines, horizons, budget et récompenses.",
